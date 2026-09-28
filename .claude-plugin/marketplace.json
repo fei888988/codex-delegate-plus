@@ -1,0 +1,14 @@
+{
+  "name": "claude-codex-delegate",
+  "owner": { "name": "aashahin", "url": "https://github.com/aashahin" },
+  "metadata": { "description": "Use OpenAI Codex models from Claude Code." },
+  "plugins": [
+    {
+      "name": "codex-delegate",
+      "source": "./",
+      "description": "Delegate implementation to OpenAI Codex models (GPT-6 Sol, Astra, Luna…) while Claude stays the orchestrator.",
+      "version": "0.1.0",
+      "category": "development"
+    }
+  ]
+}
