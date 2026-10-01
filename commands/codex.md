@@ -1,5 +1,5 @@
 ---
-description: Delegate a task to an OpenAI Codex model (e.g. /codex sol 6#high -- add input validation to the signup form)
+description: Delegate a task to an OpenAI Codex model (e.g. /codex sol 6.1#xhigh fast -- add input validation to the signup form)
 argument-hint: [model] -- <task>
 ---
 
@@ -7,7 +7,7 @@ Delegate this to a Codex model, following the codex-delegate skill: $ARGUMENTS
 
 The text before `--` is the model name, with an optional `#effort`. Pass it to the tool unchanged,
 and the server will resolve it. If there is no `--`, work out the model name from the text, or leave
-the model out to use the default (gpt-6-sol).
+the model out to use the one in ~/.codex/config.toml. If the text says "fast", pass `fast: true`.
 
 The text after `--` is the task. Before you call `delegate`, expand it into a self-contained brief
 using what you know about this project.

@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { config, SANDBOXES } from "./config.ts";
+import { config, configuredModel, SANDBOXES } from "./config.ts";
 import { delegate, formatOutcome } from "./delegate.ts";
 import { listModels } from "./models.ts";
 import { listSessions } from "./sessions.ts";
@@ -25,12 +25,16 @@ const delegateShape = {
     .string()
     .optional()
     .describe(
-      `Codex model: exact slug (e.g. 'gpt-6-sol') or a loose name ('sol 6', 'gpt 6 luna', '5.6 terra'). Append '#effort' for reasoning effort ('sol 6#high'). Omit to use the default: ${config.defaultModel ?? "codex's configured model"}. On a follow-up (session_id) omitting it keeps the session's model.`,
+      `Codex model: exact slug (e.g. 'gpt-6-sol') or a loose name ('sol 6', 'gpt 6 luna', '5.6 terra'). Append '#effort' for reasoning effort ('sol 6#high'). Omit to use the default: ${config.defaultModel ?? `the model in ~/.codex/config.toml${configuredModel() ? ` (${configuredModel()})` : ""}`}. On a follow-up (session_id) omitting it keeps the session's model.`,
     ),
   effort: z
     .string()
     .optional()
     .describe(`Reasoning effort: low, medium, high, xhigh, max (ultra on some models). Default: ${config.effort ?? "model_reasoning_effort from ~/.codex/config.toml"}.`),
+  fast: z
+    .boolean()
+    .optional()
+    .describe(`Fast service tier (priority): faster responses, higher usage. false forces the normal tier. Default: ${config.fast ?? "service_tier from ~/.codex/config.toml"}.`),
   cwd: z.string().optional().describe("Working directory for the task (absolute, or relative to the server's cwd). Defaults to the current project."),
   images: z.array(z.string()).optional().describe("Image files to attach to the prompt (screenshots, mockups)."),
   session_id: z.string().optional().describe("Continue an existing Codex session (returned by a previous call) for follow-ups."),
@@ -63,7 +67,8 @@ server.registerTool(
     let models = listModels();
     if (!models.length) return text(`no model cache at ${config.codexHome}/models_cache.json — run \`codex\` once to populate it. Model slugs are still passed through as given.`, true);
     if (filter) models = models.filter((m) => m.slug.toLowerCase().includes(filter.toLowerCase()));
-    const lines = models.map((m) => `${m.slug}${m.slug === config.defaultModel ? " (default)" : ""}  efforts: ${m.efforts.join(", ")}`);
+    const dflt = config.defaultModel ?? configuredModel();
+    const lines = models.map((m) => `${m.slug}${m.slug === dflt ? " (default)" : ""}  efforts: ${m.efforts.join(", ")}`);
     return text(lines.length ? lines.join("\n") : "(no models match)");
   },
 );

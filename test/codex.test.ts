@@ -23,6 +23,12 @@ describe("buildArgs", () => {
       "-c", 'approval_policy="never"', "--", "more",
     ]);
   });
+  test("fast maps to codex service tiers", () => {
+    const tier = (fast?: boolean) => buildArgs({ prompt: "x", sandbox: "workspace-write", fast }).find((a) => a.startsWith("service_tier"));
+    expect(tier(true)).toBe('service_tier="priority"');
+    expect(tier(false)).toBe('service_tier="default"');
+    expect(tier(undefined)).toBeUndefined();
+  });
   test("fork", () => {
     expect(buildArgs({ prompt: "x", sessionId: "abc", fork: true, sandbox: "danger-full-access" }).slice(0, 5)).toEqual([
       "exec", "fork", "abc", "-c", 'sandbox_mode="danger-full-access"',
@@ -55,6 +61,12 @@ describe("EventCollector", () => {
     expect(c.errors).toEqual(["The 'no-such-model-xyz' model is not supported when using Codex with a ChatGPT account."]);
     expect(c.warnings[0]).toContain("Model metadata for `no-such-model-xyz` not found");
     expect(c.turns).toBe(0);
+  });
+  test("warnings don't fail a completed run", () => {
+    const c = fixture("warning.jsonl");
+    expect(c.errors).toEqual([]);
+    expect(c.warnings[0]).toContain("service tier `bogus` is not advertised");
+    expect(c.text).toBe("ok");
   });
   test("non-JSON output is kept as fallback text", () => {
     const c = new EventCollector();

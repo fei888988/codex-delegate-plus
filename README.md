@@ -93,15 +93,19 @@ Talk to Claude normally:
 
 ### Model names and effort
 
-You can use exact slugs (`gpt-6-sol`) or loose names (`sol 6`, `sol6`, `gpt 6 luna`, `5.6 terra`).
+You can use exact slugs (`gpt-6-sol`) or loose names (`sol 6`, `sol6`, `gpt 6 luna`, `5.6 terra`, `sol 6.1`).
 
 - A version you name must match exactly, so `sol 6` never becomes `gpt-5.6-sol`.
-- Without a version, the newest family wins: `sol` resolves to `gpt-6-sol`.
+- Without a version, the newest family wins: `sol` resolves to `gpt-6.1-sol`, while `sol 6` stays on `gpt-6-sol`.
 - `gpt 6` matches Astra, Sol and Luna, so you get the candidates instead of a guess.
 - A slug the cache doesn't know yet (e.g. `gpt-7-nova`) is passed through as-is.
 - Set reasoning effort with `effort` or a suffix: `sol 6#max`. It's checked against the levels the
   model supports. If you leave it out, `model_reasoning_effort` from your `config.toml` applies.
-- If you don't name a model, `gpt-6-sol` is used. Follow-ups with `session_id` keep the session's model.
+- If you don't name a model, Codex uses the `model` from your `~/.codex/config.toml` (the plugin passes no `-m`). Follow-ups with `session_id` keep the session's model.
+
+### Fast mode
+
+`fast: true` runs on the `priority` service tier, which Codex calls "Fast". It's quicker but uses more of your usage allowance. `fast: false` forces the normal tier. If you omit it, the `service_tier` from your `config.toml` applies, so if fast is already on there, every delegated run is fast.
 
 ### Tools
 
@@ -115,7 +119,7 @@ You can use exact slugs (`gpt-6-sol`) or loose names (`sol 6`, `sol6`, `gpt 6 lu
 
 `delegate` and `delegate_async` take these arguments:
 
-- `prompt`, `model` and `effort`
+- `prompt`, `model`, `effort` and `fast`
 - `cwd` and `images` (screenshots, mockups)
 - `session_id` and `fork` to follow up in an earlier session
 - `sandbox` or `auto`, `title`, and `timeout_s`
@@ -143,9 +147,10 @@ conflict.
 |---|---|---|
 | `CODEX_BIN` | auto-detected | Path to the `codex` executable. |
 | `CODEX_HOME` | `~/.codex` | Where the model cache and sessions are read from. This is the same variable Codex uses. |
-| `CODEX_DELEGATE_DEFAULT_MODEL` | `gpt-6-sol` | Model used when `model` is omitted. Set it to `""` to use the model in your `config.toml`. |
+| `CODEX_DELEGATE_DEFAULT_MODEL` | *(from config.toml)* | Model used when `model` is omitted. When unset, the model in your `config.toml` is used. |
 | `CODEX_DELEGATE_READ_MODEL` | same as the default model | Model used when `model` is omitted and the run is read-only. |
 | `CODEX_DELEGATE_EFFORT` | *(from config.toml)* | Default reasoning effort. |
+| `CODEX_DELEGATE_FAST` | *(from config.toml)* | `true` or `false`: the default for `fast`. |
 | `CODEX_DELEGATE_SANDBOX` | `workspace-write` | Default sandbox. |
 | `CODEX_DELEGATE_AUTO` | `true` | Default for `auto`. |
 | `CODEX_DELEGATE_TIMEOUT` | `1800` | Seconds before a run is killed. |

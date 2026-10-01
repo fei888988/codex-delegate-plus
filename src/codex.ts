@@ -5,6 +5,7 @@ export interface RunOptions {
   prompt: string;
   model?: string;
   effort?: string;
+  fast?: boolean;
   cwd?: string;
   images?: string[];
   sessionId?: string;
@@ -55,6 +56,8 @@ export function buildArgs(o: RunOptions): string[] {
   args.push("--json", "--skip-git-repo-check", "-c", `approval_policy=${toml("never")}`);
   if (o.model) args.push("-m", o.model);
   if (o.effort) args.push("-c", `model_reasoning_effort=${toml(o.effort)}`);
+  // "priority" is the Fast tier; "default" is the normal one ("flex" is rejected by the API).
+  if (o.fast !== undefined) args.push("-c", `service_tier=${toml(o.fast ? "priority" : "default")}`);
   for (const img of o.images ?? []) args.push("-i", img);
   // "--" so prompts starting with "-" are not parsed as flags
   args.push("--", o.prompt);

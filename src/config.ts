@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 
@@ -46,16 +46,36 @@ function sandbox(v: string | undefined): Sandbox {
   return (SANDBOXES as readonly string[]).includes(v ?? "") ? (v as Sandbox) : "workspace-write";
 }
 
-const defaultModel = model(process.env.CODEX_DELEGATE_DEFAULT_MODEL, "gpt-6-sol");
+function optionalBool(v: string | undefined): boolean | undefined {
+  if (v === undefined || v.trim() === "") return undefined;
+  return bool(v, false);
+}
+
+const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
+
+/** Top-level `model = "…"` in config.toml (before the first [table]); only used for display. */
+export function configuredModel(path = join(codexHome, "config.toml")): string | undefined {
+  try {
+    const top = readFileSync(path, "utf8").split(/^\s*\[/m)[0] ?? "";
+    return top.match(/^\s*model\s*=\s*"([^"]+)"/m)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+// Unset → no -m flag, so codex uses the model from ~/.codex/config.toml.
+const defaultModel = model(process.env.CODEX_DELEGATE_DEFAULT_MODEL, undefined);
 
 export const config = {
   bin: resolveBin(),
-  codexHome: process.env.CODEX_HOME || join(homedir(), ".codex"),
+  codexHome,
   defaultModel,
   // Used when no model is given and the run is read-only (auto: false): reading, reviews, questions.
   readModel: model(process.env.CODEX_DELEGATE_READ_MODEL, defaultModel),
   // Unset → inherit model_reasoning_effort from ~/.codex/config.toml.
   effort: process.env.CODEX_DELEGATE_EFFORT?.trim() || undefined,
+  // Unset → inherit service_tier from config.toml. true = "priority" (Fast), false = "default".
+  fast: optionalBool(process.env.CODEX_DELEGATE_FAST),
   sandbox: sandbox(process.env.CODEX_DELEGATE_SANDBOX),
   auto: bool(process.env.CODEX_DELEGATE_AUTO, true),
   timeoutSec: int(process.env.CODEX_DELEGATE_TIMEOUT, 1800),

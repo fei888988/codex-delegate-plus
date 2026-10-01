@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
-import { config, type Sandbox } from "./config.ts";
+import { config, configuredModel, type Sandbox } from "./config.ts";
 import { runCodex, type RunResult } from "./codex.ts";
 import { resolveModelOrThrow } from "./models.ts";
 
@@ -9,6 +9,7 @@ export interface DelegateInput {
   prompt: string;
   model?: string;
   effort?: string;
+  fast?: boolean;
   cwd?: string;
   images?: string[];
   session_id?: string;
@@ -22,6 +23,7 @@ export interface DelegateInput {
 export interface DelegateOutcome {
   model?: string;
   effort?: string;
+  fast?: boolean;
   sandbox: Sandbox;
   resumed: boolean;
   cwd: string;
@@ -53,6 +55,7 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal): Prom
     if (r.effort && !input.effort) effort = r.effort;
     if (!r.known) notes.push(`'${r.model}' is not in codex's model cache; passed through as-is`);
   }
+  const fast = input.fast ?? config.fast;
   const images = input.images?.map((f) => (isAbsolute(f) ? f : resolve(cwd, f)));
 
   const before = gitStatus(cwd);
@@ -60,6 +63,7 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal): Prom
     prompt: input.prompt,
     model,
     effort,
+    fast,
     cwd,
     images,
     sessionId: input.session_id,
@@ -70,7 +74,7 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal): Prom
   });
   const after = before && gitStatus(cwd);
   const changedFiles = after ? [...after].filter((l) => !before!.has(l)) : undefined;
-  return { model, effort, sandbox, resumed: !!input.session_id, cwd, notes, result, changedFiles };
+  return { model, effort, fast, sandbox, resumed: !!input.session_id, cwd, notes, result, changedFiles };
 }
 
 function truncate(s: string, max: number): string {
@@ -82,7 +86,7 @@ export function formatOutcome(o: DelegateOutcome): string {
   const r = o.result;
   const lines = [
     `status: ${r.ok ? "ok" : "error"}`,
-    `model: ${o.model ?? (o.resumed ? "(same as session)" : "(codex default)")}${o.effort ? `, effort: ${o.effort}` : ""}, sandbox: ${o.sandbox}`,
+    `model: ${o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`)}${o.effort ? `, effort: ${o.effort}` : ""}${o.fast !== undefined ? `, fast: ${o.fast}` : ""}, sandbox: ${o.sandbox}`,
     `session_id: ${r.sessionId ?? "(none)"}`,
     `cwd: ${o.cwd}`,
     `duration: ${(r.durationMs / 1000).toFixed(1)}s, turns: ${r.turns}, tokens in/cached/out: ${r.tokens.input}/${r.tokens.cachedInput}/${r.tokens.output}`,

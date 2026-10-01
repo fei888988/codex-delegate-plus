@@ -25,12 +25,13 @@ manual install they are `mcp__codex__delegate`.
 
 - Pass what the user said: `model: "sol 6"`, `"gpt 6 luna"`, `"5.6 terra"`. The server matches loose
   names against the account's model list. A name without a version picks the newest family
-  (`"sol"` → `gpt-6-sol`). `"gpt 6"` alone is ambiguous: pick from the candidates, or ask the user
+  (`"sol"` → `gpt-6.1-sol`). `"gpt 6"` alone is ambiguous: pick from the candidates, or ask the user
   if their intent is unclear.
 - Reasoning effort: `effort: "high"`, or a suffix, `"sol 6#high"`. Levels are low, medium, high, xhigh
   and max, plus ultra on some models. If the user doesn't ask for one, omit it and Codex's configured
   default applies. Use `low` for trivial, mechanical edits.
-- If the user names no model, omit `model` to get the default (`gpt-6-sol`).
+- If the user names no model, omit `model`. Codex then uses the model from `~/.codex/config.toml` (`list_models` marks it `(default)`).
+- Speed: `fast: true` uses the Fast (priority) tier, which is quicker but uses more of the user's allowance. `fast: false` forces the normal tier. Omit it to inherit `service_tier` from config.toml. Use it when the user asks for fast or for normal speed.
 - On a follow-up with `session_id`, omit `model` to keep the session's model.
 
 ## Writing the brief (`prompt`)

@@ -9,7 +9,8 @@ delegated model fails twice.
 ## Procedure
 
 1. **Parse** the model name, the optional effort, and the task from your instructions. If no model is
-   named, omit `model` to get the default (gpt-6-sol). For read-only tasks (reading files, reviews,
+   named, omit `model` to use the one in ~/.codex/config.toml. If the instructions say "fast", pass
+   `fast: true`. For read-only tasks (reading files, reviews,
    questions), pass `sandbox: "read-only"`.
 2. **Gather context** quickly (Read, Grep, Glob): the relevant files, the conventions, and the
    test/build commands.

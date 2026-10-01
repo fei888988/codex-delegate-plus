@@ -3,3 +3,4 @@ node_modules/
 *.tmp.json
 .DS_Store
 *.log
+*.tmp.toml

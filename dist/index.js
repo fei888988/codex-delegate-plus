@@ -21487,7 +21487,7 @@ class StdioServerTransport {
 import { resolve as resolve3 } from "path";
 
 // src/config.ts
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { delimiter, join } from "path";
 var FALLBACK_DIRS = [
@@ -21528,13 +21528,28 @@ var SANDBOXES = ["read-only", "workspace-write", "danger-full-access"];
 function sandbox(v) {
   return SANDBOXES.includes(v ?? "") ? v : "workspace-write";
 }
-var defaultModel = model(process.env.CODEX_DELEGATE_DEFAULT_MODEL, "gpt-6-sol");
+function optionalBool(v) {
+  if (v === undefined || v.trim() === "")
+    return;
+  return bool(v, false);
+}
+var codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
+function configuredModel(path = join(codexHome, "config.toml")) {
+  try {
+    const top = readFileSync(path, "utf8").split(/^\s*\[/m)[0] ?? "";
+    return top.match(/^\s*model\s*=\s*"([^"]+)"/m)?.[1];
+  } catch {
+    return;
+  }
+}
+var defaultModel = model(process.env.CODEX_DELEGATE_DEFAULT_MODEL, undefined);
 var config2 = {
   bin: resolveBin(),
-  codexHome: process.env.CODEX_HOME || join(homedir(), ".codex"),
+  codexHome,
   defaultModel,
   readModel: model(process.env.CODEX_DELEGATE_READ_MODEL, defaultModel),
   effort: process.env.CODEX_DELEGATE_EFFORT?.trim() || undefined,
+  fast: optionalBool(process.env.CODEX_DELEGATE_FAST),
   sandbox: sandbox(process.env.CODEX_DELEGATE_SANDBOX),
   auto: bool(process.env.CODEX_DELEGATE_AUTO, true),
   timeoutSec: int2(process.env.CODEX_DELEGATE_TIMEOUT, 1800),
@@ -21564,6 +21579,8 @@ function buildArgs(o) {
     args.push("-m", o.model);
   if (o.effort)
     args.push("-c", `model_reasoning_effort=${toml(o.effort)}`);
+  if (o.fast !== undefined)
+    args.push("-c", `service_tier=${toml(o.fast ? "priority" : "default")}`);
   for (const img of o.images ?? [])
     args.push("-i", img);
   args.push("--", o.prompt);
@@ -21741,12 +21758,12 @@ function runCodex(o) {
 }
 
 // src/models.ts
-import { readFileSync } from "fs";
+import { readFileSync as readFileSync2 } from "fs";
 import { join as join2 } from "path";
 function listModels(path = join2(config2.codexHome, "models_cache.json")) {
   let data;
   try {
-    data = JSON.parse(readFileSync(path, "utf8"));
+    data = JSON.parse(readFileSync2(path, "utf8"));
   } catch {
     return [];
   }
@@ -21839,12 +21856,14 @@ async function delegate(input, signal) {
     if (!r.known)
       notes.push(`'${r.model}' is not in codex's model cache; passed through as-is`);
   }
+  const fast = input.fast ?? config2.fast;
   const images = input.images?.map((f) => isAbsolute(f) ? f : resolve(cwd, f));
   const before = gitStatus(cwd);
   const result = await runCodex({
     prompt: input.prompt,
     model,
     effort,
+    fast,
     cwd,
     images,
     sessionId: input.session_id,
@@ -21855,7 +21874,7 @@ async function delegate(input, signal) {
   });
   const after = before && gitStatus(cwd);
   const changedFiles = after ? [...after].filter((l) => !before.has(l)) : undefined;
-  return { model, effort, sandbox, resumed: !!input.session_id, cwd, notes, result, changedFiles };
+  return { model, effort, fast, sandbox, resumed: !!input.session_id, cwd, notes, result, changedFiles };
 }
 function truncate(s, max) {
   if (s.length <= max)
@@ -21868,7 +21887,7 @@ function formatOutcome(o) {
   const r = o.result;
   const lines = [
     `status: ${r.ok ? "ok" : "error"}`,
-    `model: ${o.model ?? (o.resumed ? "(same as session)" : "(codex default)")}${o.effort ? `, effort: ${o.effort}` : ""}, sandbox: ${o.sandbox}`,
+    `model: ${o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`)}${o.effort ? `, effort: ${o.effort}` : ""}${o.fast !== undefined ? `, fast: ${o.fast}` : ""}, sandbox: ${o.sandbox}`,
     `session_id: ${r.sessionId ?? "(none)"}`,
     `cwd: ${o.cwd}`,
     `duration: ${(r.durationMs / 1000).toFixed(1)}s, turns: ${r.turns}, tokens in/cached/out: ${r.tokens.input}/${r.tokens.cachedInput}/${r.tokens.output}`
@@ -22012,7 +22031,7 @@ async function waitTask(task, waitSec) {
 // package.json
 var package_default = {
   name: "claude-codex-delegate",
-  version: "0.1.0",
+  version: "0.1.1",
   description: "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna\u2026) while staying the orchestrator.",
   type: "module",
   license: "MIT",
@@ -22044,8 +22063,9 @@ var server = new McpServer({ name: "codex-delegate", version: package_default.ve
 var text = (t, isError = false) => ({ content: [{ type: "text", text: t }], isError });
 var delegateShape = {
   prompt: string2().min(1).describe("Complete, self-contained task for the Codex model. It cannot see this conversation: include goal, relevant files/paths, constraints, and acceptance criteria."),
-  model: string2().optional().describe(`Codex model: exact slug (e.g. 'gpt-6-sol') or a loose name ('sol 6', 'gpt 6 luna', '5.6 terra'). Append '#effort' for reasoning effort ('sol 6#high'). Omit to use the default: ${config2.defaultModel ?? "codex's configured model"}. On a follow-up (session_id) omitting it keeps the session's model.`),
+  model: string2().optional().describe(`Codex model: exact slug (e.g. 'gpt-6-sol') or a loose name ('sol 6', 'gpt 6 luna', '5.6 terra'). Append '#effort' for reasoning effort ('sol 6#high'). Omit to use the default: ${config2.defaultModel ?? `the model in ~/.codex/config.toml${configuredModel() ? ` (${configuredModel()})` : ""}`}. On a follow-up (session_id) omitting it keeps the session's model.`),
   effort: string2().optional().describe(`Reasoning effort: low, medium, high, xhigh, max (ultra on some models). Default: ${config2.effort ?? "model_reasoning_effort from ~/.codex/config.toml"}.`),
+  fast: boolean2().optional().describe(`Fast service tier (priority): faster responses, higher usage. false forces the normal tier. Default: ${config2.fast ?? "service_tier from ~/.codex/config.toml"}.`),
   cwd: string2().optional().describe("Working directory for the task (absolute, or relative to the server's cwd). Defaults to the current project."),
   images: array(string2()).optional().describe("Image files to attach to the prompt (screenshots, mockups)."),
   session_id: string2().optional().describe("Continue an existing Codex session (returned by a previous call) for follow-ups."),
@@ -22068,7 +22088,8 @@ server.registerTool("list_models", {
     return text(`no model cache at ${config2.codexHome}/models_cache.json \u2014 run \`codex\` once to populate it. Model slugs are still passed through as given.`, true);
   if (filter)
     models = models.filter((m) => m.slug.toLowerCase().includes(filter.toLowerCase()));
-  const lines = models.map((m) => `${m.slug}${m.slug === config2.defaultModel ? " (default)" : ""}  efforts: ${m.efforts.join(", ")}`);
+  const dflt = config2.defaultModel ?? configuredModel();
+  const lines = models.map((m) => `${m.slug}${m.slug === dflt ? " (default)" : ""}  efforts: ${m.efforts.join(", ")}`);
   return text(lines.length ? lines.join(`
 `) : "(no models match)");
 });
