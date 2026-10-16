@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { createWriteStream, existsSync, readFileSync } from "node:fs";
 import { config, type Sandbox } from "./config.ts";
+import { stop, track } from "./procs.ts";
 
 export interface RunOptions {
   prompt: string;
@@ -13,6 +15,16 @@ export interface RunOptions {
   sandbox: Sandbox;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** `-o`: codex writes only its final message here. */
+  lastMessageFile?: string;
+  /** `--output-schema`: JSON Schema the final message must follow. */
+  outputSchemaFile?: string;
+  /** Raw `--json` event stream, kept for later inspection instead of being returned. */
+  logFile?: string;
+  /** Called once, as soon as codex reports the session (thread) id. */
+  onSession?: (id: string) => void;
+  /** Called with the codex process id right after it starts. */
+  onSpawn?: (pid: number) => void;
 }
 
 export interface ToolCall {
@@ -30,7 +42,9 @@ export interface FileChange {
 export interface RunResult {
   ok: boolean;
   sessionId?: string;
+  /** Final message (from `-o` when available, else the last agent message). */
   text: string;
+  logFile?: string;
   toolCalls: ToolCall[];
   fileChanges: FileChange[];
   tokens: { input: number; cachedInput: number; output: number; reasoning: number };
@@ -58,9 +72,12 @@ export function buildArgs(o: RunOptions): string[] {
   if (o.effort) args.push("-c", `model_reasoning_effort=${toml(o.effort)}`);
   // "priority" is the Fast tier; "default" is the normal one ("flex" is rejected by the API).
   if (o.fast !== undefined) args.push("-c", `service_tier=${toml(o.fast ? "priority" : "default")}`);
+  if (o.lastMessageFile) args.push("-o", o.lastMessageFile);
+  if (o.outputSchemaFile) args.push("--output-schema", o.outputSchemaFile);
   for (const img of o.images ?? []) args.push("-i", img);
-  // "--" so prompts starting with "-" are not parsed as flags
-  args.push("--", o.prompt);
+  // The prompt goes through stdin ("-"): no argv length limit (Windows caps a command line at ~32K)
+  // and the brief doesn't show up in process listings. "--" ends -i's list of files.
+  args.push("--", "-");
   return args;
 }
 
@@ -142,7 +159,10 @@ export class EventCollector {
         break;
       case "error":
         // Non-fatal notices (e.g. unknown model metadata); fatal ones arrive as `error`/`turn.failed` events.
-        if (typeof it.message === "string") this.warnings.push(it.message);
+        // Config-lint notices repeat on every run and say nothing about the task; they stay in the log.
+        if (typeof it.message === "string" && !this.warnings.includes(it.message) && !/unrecognized configuration settings/i.test(it.message)) {
+          this.warnings.push(it.message);
+        }
         break;
     }
   }
@@ -157,29 +177,59 @@ export class EventCollector {
   get text(): string {
     return this.texts.join("\n\n").trim() || this.raw.join("\n").trim();
   }
+
+  /** The last agent message: the answer, without the progress notes before it. */
+  get finalText(): string {
+    return this.texts.at(-1)?.trim() || this.raw.join("\n").trim();
+  }
+}
+
+function readFinal(file: string | undefined): string | undefined {
+  if (!file || !existsSync(file)) return undefined;
+  try {
+    return readFileSync(file, "utf8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function runCodex(o: RunOptions): Promise<RunResult> {
   const started = Date.now();
   const collector = new EventCollector();
   return new Promise((resolve) => {
-    const child = spawn(config.bin, buildArgs(o), {
+    const child = spawn(config.codex.cmd, [...config.codex.args, ...buildArgs(o)], {
       cwd: o.cwd,
       env: process.env,
-      // stdin must be closed, or codex waits on it ("Reading additional input from stdin...").
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      // Own process group on POSIX so the whole tree can be signalled (see procs.ts).
+      detached: process.platform !== "win32",
     });
+    track(child);
+    if (child.pid !== undefined) {
+      try {
+        o.onSpawn?.(child.pid);
+      } catch {}
+    }
+    // The brief is read from stdin; closing it is also what tells codex the prompt is complete.
+    child.stdin.on("error", () => {});
+    child.stdin.end(o.prompt);
+    const log = o.logFile ? createWriteStream(o.logFile) : undefined;
+    log?.on("error", () => {});
     let buf = "";
     let stderr = "";
     let timedOut = false;
     let settled = false;
-
-    const kill = () => {
-      if (child.exitCode === null) {
-        child.kill("SIGTERM");
-        setTimeout(() => child.exitCode === null && child.kill("SIGKILL"), 3000).unref();
-      }
+    let announced = false;
+    const announce = () => {
+      if (announced || !collector.sessionId) return;
+      announced = true;
+      try {
+        o.onSession?.(collector.sessionId);
+      } catch {}
     };
+
+    const kill = () => stop(child);
     const timer = o.timeoutMs
       ? setTimeout(() => {
           timedOut = true;
@@ -189,12 +239,14 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
     o.signal?.addEventListener("abort", kill, { once: true });
 
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      log?.write(chunk);
       buf += chunk;
       let i: number;
       while ((i = buf.indexOf("\n")) >= 0) {
         collector.push(buf.slice(0, i));
         buf = buf.slice(i + 1);
       }
+      announce();
     });
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
       stderr = (stderr + chunk).slice(-8000);
@@ -205,6 +257,8 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
       settled = true;
       if (timer) clearTimeout(timer);
       collector.push(buf);
+      if (stderr.trim()) log?.write(`\n# stderr (tail)\n${stderr}\n`);
+      log?.end();
       const errors = [...collector.errors];
       if (spawnError) errors.push(spawnError);
       if (timedOut) errors.push(`timed out after ${Math.round((o.timeoutMs ?? 0) / 1000)}s`);
@@ -220,7 +274,8 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
       resolve({
         ok: exitCode === 0 && !errors.length,
         sessionId: collector.sessionId,
-        text: collector.text,
+        text: readFinal(o.lastMessageFile) ?? collector.finalText,
+        logFile: o.logFile,
         toolCalls: collector.toolCalls,
         fileChanges: collector.fileChanges,
         tokens: collector.tokens,
@@ -232,7 +287,7 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
         durationMs: Date.now() - started,
       });
     };
-    child.on("error", (err) => finish(null, `failed to start '${config.bin}': ${err.message}`));
+    child.on("error", (err) => finish(null, `failed to start '${[config.codex.cmd, ...config.codex.args].join(" ")}': ${err.message}`));
     child.on("close", (code) => finish(code));
   });
 }

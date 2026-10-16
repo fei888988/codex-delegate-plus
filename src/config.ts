@@ -3,24 +3,50 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 
 // GUI apps like Claude Desktop often don't inherit the shell PATH, so also check common install dirs.
-const FALLBACK_DIRS = [
-  join(homedir(), ".bun", "bin"),
-  join(homedir(), ".local", "bin"),
-  join(homedir(), ".npm-global", "bin"),
-  join(homedir(), ".cargo", "bin"),
-  "/usr/local/bin",
-  "/opt/homebrew/bin",
-  "/usr/bin",
-];
-
-export function resolveBin(env = process.env): string {
-  if (env.CODEX_BIN) return env.CODEX_BIN;
-  const dirs = [...(env.PATH ?? "").split(delimiter).filter(Boolean), ...FALLBACK_DIRS];
-  for (const dir of dirs) {
-    const candidate = join(dir, "codex");
-    if (existsSync(candidate)) return candidate;
+function fallbackDirs(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
+  const home = homedir();
+  if (platform === "win32") {
+    return [env.APPDATA ? join(env.APPDATA, "npm") : "", join(home, ".bun", "bin"), join(home, ".cargo", "bin")].filter(Boolean);
   }
-  return "codex";
+  return [
+    join(home, ".bun", "bin"),
+    join(home, ".local", "bin"),
+    join(home, ".npm-global", "bin"),
+    join(home, ".cargo", "bin"),
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+    "/usr/bin",
+  ];
+}
+
+/** How to start codex: `cmd` plus any args that must come before codex's own (e.g. the codex.js entry). */
+export interface CodexCommand {
+  cmd: string;
+  args: string[];
+}
+
+/**
+ * On Windows `codex` on PATH is an npm `.cmd`/PowerShell shim. Spawning a `.cmd` needs a shell, which
+ * re-parses quotes, `%` and newlines in our arguments. Instead run the shim's target, codex.js, with
+ * this Node binary: no shell, and codex.js still sets up its env and spawns the native codex.exe.
+ */
+export function resolveCodex(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): CodexCommand {
+  const viaNode = (js: string): CodexCommand => ({ cmd: process.execPath, args: [js] });
+  if (env.CODEX_BIN) return /\.[cm]?js$/i.test(env.CODEX_BIN) ? viaNode(env.CODEX_BIN) : { cmd: env.CODEX_BIN, args: [] };
+  const path = env.PATH ?? env.Path ?? "";
+  const dirs = [...path.split(platform === "win32" ? ";" : delimiter).filter(Boolean), ...fallbackDirs(env, platform)];
+  for (const dir of dirs) {
+    if (platform === "win32") {
+      const js = join(dir, "node_modules", "@openai", "codex", "bin", "codex.js");
+      if (existsSync(js)) return viaNode(js);
+      const exe = join(dir, "codex.exe");
+      if (existsSync(exe)) return { cmd: exe, args: [] };
+    } else {
+      const candidate = join(dir, "codex");
+      if (existsSync(candidate)) return { cmd: candidate, args: [] };
+    }
+  }
+  return { cmd: platform === "win32" ? "codex.exe" : "codex", args: [] };
 }
 
 /** Unset → fallback; set to "" → undefined (use codex's own config default). */
@@ -65,20 +91,55 @@ export function configuredModel(path = join(codexHome, "config.toml")): string |
 
 // Unset → no -m flag, so codex uses the model from ~/.codex/config.toml.
 const defaultModel = model(process.env.CODEX_DELEGATE_DEFAULT_MODEL, undefined);
+// CODEX_DELEGATE_EFFORT applies to every run. Without it, delegated work gets its own defaults rather
+// than the (often low) interactive default in config.toml; set either variable to "" to inherit that.
+const effortAll = process.env.CODEX_DELEGATE_EFFORT;
+
+/** Reasoning efforts from cheapest to most expensive (not every model supports every level). */
+export const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+
+/** Comma-separated list; unset → low, medium, high; "" or "any" → no restriction. */
+export function allowedEfforts(v: string | undefined): string[] | undefined {
+  if (v === undefined) return ["low", "medium", "high"];
+  const list = v.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  if (!list.length || list.includes("any")) return undefined;
+  return EFFORT_ORDER.filter((e) => list.includes(e));
+}
+
+/**
+ * Fit an effort into the allowed range: above it → the highest allowed level, below it → the lowest.
+ * Unknown names are left alone (codex rejects them with a clear message).
+ */
+export function clampEffort(effort: string | undefined, allowed: string[] | undefined): string | undefined {
+  if (!effort || !allowed?.length || allowed.includes(effort)) return effort;
+  const rank = EFFORT_ORDER.indexOf(effort);
+  if (rank < 0) return effort;
+  const ranks = allowed.map((e) => EFFORT_ORDER.indexOf(e));
+  return rank > Math.max(...ranks) ? allowed.at(-1) : allowed[0];
+}
 
 export const config = {
-  bin: resolveBin(),
+  codex: resolveCodex(),
+  // Levels the lead may choose from; anything else is clamped into this range.
+  efforts: allowedEfforts(process.env.CODEX_DELEGATE_EFFORTS),
   codexHome,
   defaultModel,
   // Used when no model is given and the run is read-only (auto: false): reading, reviews, questions.
   readModel: model(process.env.CODEX_DELEGATE_READ_MODEL, defaultModel),
-  // Unset → inherit model_reasoning_effort from ~/.codex/config.toml.
-  effort: process.env.CODEX_DELEGATE_EFFORT?.trim() || undefined,
+  writeEffort: model(effortAll ?? process.env.CODEX_DELEGATE_WRITE_EFFORT, "high"),
+  readEffort: model(effortAll ?? process.env.CODEX_DELEGATE_READ_EFFORT, "medium"),
   // Unset → inherit service_tier from config.toml. true = "priority" (Fast), false = "default".
   fast: optionalBool(process.env.CODEX_DELEGATE_FAST),
   sandbox: sandbox(process.env.CODEX_DELEGATE_SANDBOX),
   auto: bool(process.env.CODEX_DELEGATE_AUTO, true),
+  // Ask codex for a JSON report (status/summary/verification/questions) on runs that may edit files.
+  structured: bool(process.env.CODEX_DELEGATE_STRUCTURED, true),
+  // Append the working agreement (investigate yourself, verify, ask instead of guessing) to every brief.
+  contract: bool(process.env.CODEX_DELEGATE_CONTRACT, true),
   timeoutSec: int(process.env.CODEX_DELEGATE_TIMEOUT, 1800),
-  maxOutputChars: int(process.env.CODEX_DELEGATE_MAX_OUTPUT, 40000),
+  checkTimeoutSec: int(process.env.CODEX_DELEGATE_CHECK_TIMEOUT, 600),
+  // What goes back into the caller's context. The full event log stays on disk.
+  maxOutputChars: int(process.env.CODEX_DELEGATE_MAX_OUTPUT, 6000),
+  runsDir: process.env.CODEX_DELEGATE_RUNS_DIR || join(homedir(), ".codex-delegate", "runs"),
   defaultCwd: process.env.CODEX_DELEGATE_CWD || process.cwd(),
 };

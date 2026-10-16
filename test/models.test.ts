@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
+import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, test } from "node:test";
 import { listModels, resolveModel, type ModelInfo } from "../src/models.ts";
 
 const all = ["low", "medium", "high", "xhigh", "max", "ultra"];
@@ -21,47 +24,53 @@ const pick = (q: string) => {
 
 describe("resolveModel", () => {
   test("exact slugs", () => {
-    expect(pick("gpt-6-sol")).toBe("gpt-6-sol");
-    expect(pick("GPT-5.6-Terra")).toBe("gpt-5.6-terra");
+    assert.equal(pick("gpt-6-sol"), "gpt-6-sol");
+    assert.equal(pick("GPT-5.6-Terra"), "gpt-5.6-terra");
   });
   test("loose names", () => {
-    expect(pick("sol 6")).toBe("gpt-6-sol");
-    expect(pick("Sol6")).toBe("gpt-6-sol");
-    expect(pick("gpt 6 sol")).toBe("gpt-6-sol");
-    expect(pick("use sol 6 in codex")).toBe("gpt-6-sol");
-    expect(pick("5.6 sol")).toBe("gpt-5.6-sol");
-    expect(pick("terra")).toBe("gpt-5.6-terra");
-    expect(pick("gpt 5.5")).toBe("gpt-5.5");
+    assert.equal(pick("sol 6"), "gpt-6-sol");
+    assert.equal(pick("Sol6"), "gpt-6-sol");
+    assert.equal(pick("gpt 6 sol"), "gpt-6-sol");
+    assert.equal(pick("use sol 6 in codex"), "gpt-6-sol");
+    assert.equal(pick("5.6 sol"), "gpt-5.6-sol");
+    assert.equal(pick("terra"), "gpt-5.6-terra");
+    assert.equal(pick("gpt 5.5"), "gpt-5.5");
   });
   test("without a version the newest family wins", () => {
-    expect(pick("sol")).toBe("gpt-6-sol");
-    expect(pick("luna")).toBe("gpt-6-luna");
+    assert.equal(pick("sol"), "gpt-6-sol");
+    assert.equal(pick("luna"), "gpt-6-luna");
   });
   test("a version never drifts to another family", () => {
-    expect(pick("5.6 astra")).toBe("ERR:no codex model matches '5.6 astra'|");
-    expect(pick("7 sol")).toStartWith("ERR:no codex model matches");
+    assert.equal(pick("5.6 astra"), "ERR:no codex model matches '5.6 astra'|");
+    assert.match(pick("7 sol"), /^ERR:no codex model matches/);
   });
   test("effort suffix", () => {
-    expect(pick("sol 6#max")).toBe("gpt-6-sol#max");
-    expect(pick("gpt-6-luna#ultra")).toStartWith("ERR:gpt-6-luna does not support effort 'ultra'");
+    assert.equal(pick("sol 6#max"), "gpt-6-sol#max");
+    assert.match(pick("gpt-6-luna#ultra"), /^ERR:gpt-6-luna does not support effort 'ultra'/);
   });
   test("ambiguous", () => {
-    expect(pick("gpt 6")).toBe("ERR:'gpt 6' is ambiguous|gpt-6-astra,gpt-6-luna,gpt-6-sol");
+    assert.equal(pick("gpt 6"), "ERR:'gpt 6' is ambiguous|gpt-6-astra,gpt-6-luna,gpt-6-sol");
   });
   test("unknown names pass through", () => {
-    expect(pick("gpt-7-nova")).toBe("gpt-7-nova (unknown)");
+    assert.equal(pick("gpt-7-nova"), "gpt-7-nova (unknown)");
   });
 });
 
 test("listModels skips hidden models and tolerates a missing cache", () => {
-  const tmp = `${import.meta.dir}/models_cache.tmp.json`;
-  Bun.write(tmp, JSON.stringify({ models: [
-    { slug: "gpt-6-sol", visibility: "list", supported_reasoning_levels: [{ effort: "low" }] },
-    { slug: "codex-auto-review", visibility: "hide" },
-  ] }));
-  return Bun.sleep(10).then(async () => {
-    expect(listModels(tmp)).toEqual([{ slug: "gpt-6-sol", efforts: ["low"] }]);
-    expect(listModels("/nonexistent/models_cache.json")).toEqual([]);
-    await Bun.file(tmp).delete();
-  });
+  const tmp = join(import.meta.dirname, "models_cache.tmp.json");
+  writeFileSync(
+    tmp,
+    JSON.stringify({
+      models: [
+        { slug: "gpt-6-sol", visibility: "list", supported_reasoning_levels: [{ effort: "low" }] },
+        { slug: "codex-auto-review", visibility: "hide" },
+      ],
+    }),
+  );
+  try {
+    assert.deepEqual(listModels(tmp), [{ slug: "gpt-6-sol", efforts: ["low"] }]);
+    assert.deepEqual(listModels("/nonexistent/models_cache.json"), []);
+  } finally {
+    rmSync(tmp);
+  }
 });

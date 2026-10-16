@@ -1,9 +1,14 @@
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
-import { config, configuredModel, type Sandbox } from "./config.ts";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { runChecks, type CheckResult } from "./checks.ts";
+import { clampEffort, config, configuredModel, type Sandbox } from "./config.ts";
 import { runCodex, type RunResult } from "./codex.ts";
+import { diffSnapshots, diffStat, snapshot, type FileStat } from "./git.ts";
 import { resolveModelOrThrow } from "./models.ts";
+import { clearPending, continuationPreamble, loadPending, savePending, type PendingRun } from "./pending.ts";
+import { parseReport, READ_CONTRACT, renderReport, REPORT_SCHEMA, WRITE_CONTRACT, type Report } from "./report.ts";
+import { version, type RunSummary } from "./run-summary.ts";
 
 export interface DelegateInput {
   prompt: string;
@@ -18,6 +23,12 @@ export interface DelegateInput {
   auto?: boolean;
   title?: string;
   timeout_s?: number;
+  /** Commands the server runs on the host after codex finishes (tests, build, lint). */
+  checks?: string[];
+  /** false = free-form final answer instead of the JSON report. */
+  structured?: boolean;
+  /** Start a new session even if an interrupted run in this cwd could be continued. */
+  fresh?: boolean;
 }
 
 export interface DelegateOutcome {
@@ -29,13 +40,23 @@ export interface DelegateOutcome {
   cwd: string;
   notes: string[];
   result: RunResult;
-  changedFiles?: string[];
+  report?: Report;
+  runDir?: string;
+  changes?: FileStat[];
+  checks?: CheckResult[];
+  /** The interrupted run this one continued. */
+  continued?: PendingRun;
 }
 
-function gitStatus(cwd: string): Set<string> | undefined {
-  const r = spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd, encoding: "utf8" });
-  if (r.status !== 0) return undefined;
-  return new Set(r.stdout.split("\n").filter(Boolean));
+function newRunDir(): string | undefined {
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
+  const dir = join(config.runsDir, `${stamp}-${randomUUID().slice(0, 6)}`);
+  try {
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function delegate(input: DelegateInput, signal?: AbortSignal): Promise<DelegateOutcome> {
@@ -43,69 +64,239 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal): Prom
   if (!existsSync(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const auto = input.auto ?? config.auto;
   const sandbox: Sandbox = input.sandbox ?? (auto ? config.sandbox : "read-only");
+  const readOnly = sandbox === "read-only";
   const notes: string[] = [];
+
+  // Two writers in one directory overwrite each other's edits and confuse the change report.
+  // A writer that was just cancelled (the user pressed Stop) is still winding down for a moment;
+  // the redirected call that follows waits for it instead of failing.
+  const lockKey = cwd.toLowerCase();
+  if (!readOnly) {
+    const holder = activeWriters.get(lockKey);
+    if (holder?.signal?.aborted) await Promise.race([holder.done, new Promise((r) => setTimeout(r, 30000))]);
+    if (activeWriters.has(lockKey)) {
+      throw new Error(`another delegated run is already editing ${cwd}; wait for it, or give this one its own git worktree (git worktree add) as cwd`);
+    }
+  }
+
+  // Continue a run in this directory that the user interrupted, unless told otherwise.
+  const pending = !readOnly && !input.fresh ? loadPending(cwd) : undefined;
+  const continued = pending && (!input.session_id || input.session_id === pending.sessionId) ? pending : undefined;
+  if (continued && !input.session_id) input = { ...input, session_id: continued.sessionId };
 
   // A follow-up keeps the session's model unless one is asked for explicitly.
   const query = input.model ?? (input.session_id ? undefined : auto ? config.defaultModel : config.readModel);
   let model: string | undefined;
-  let effort = input.effort ?? config.effort;
+  let effort = input.effort ?? (readOnly ? config.readEffort : config.writeEffort);
   if (query) {
     const r = resolveModelOrThrow(query);
     model = r.model;
     if (r.effort && !input.effort) effort = r.effort;
     if (!r.known) notes.push(`'${r.model}' is not in codex's model cache; passed through as-is`);
   }
+  const clamped = clampEffort(effort, config.efforts);
+  if (clamped !== effort) {
+    notes.push(`effort '${effort}' is outside the allowed range (${config.efforts!.join(", ")}); used '${clamped}'`);
+    effort = clamped;
+  }
   const fast = input.fast ?? config.fast;
   const images = input.images?.map((f) => (isAbsolute(f) ? f : resolve(cwd, f)));
+  const structured = !readOnly && (input.structured ?? config.structured);
 
-  const before = gitStatus(cwd);
-  const result = await runCodex({
-    prompt: input.prompt,
-    model,
-    effort,
-    fast,
-    cwd,
-    images,
-    sessionId: input.session_id,
-    fork: input.fork,
-    sandbox,
-    timeoutMs: (input.timeout_s ?? config.timeoutSec) * 1000,
-    signal,
-  });
-  const after = before && gitStatus(cwd);
-  const changedFiles = after ? [...after].filter((l) => !before!.has(l)) : undefined;
-  return { model, effort, fast, sandbox, resumed: !!input.session_id, cwd, notes, result, changedFiles };
+  let release = () => {};
+  if (!readOnly) {
+    const done = new Promise<void>((r) => (release = r));
+    activeWriters.set(lockKey, { signal, done });
+  }
+  try {
+    const run = { cwd, sandbox, readOnly, model, effort, fast, images, structured, notes, continued };
+    return await execute(input, run, signal);
+  } finally {
+    if (!readOnly) {
+      activeWriters.delete(lockKey);
+      release();
+    }
+  }
 }
 
-function truncate(s: string, max: number): string {
+interface Resolved {
+  cwd: string;
+  sandbox: Sandbox;
+  readOnly: boolean;
+  model?: string;
+  effort?: string;
+  fast?: boolean;
+  images?: string[];
+  structured: boolean;
+  notes: string[];
+  continued?: PendingRun;
+}
+
+async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal): Promise<DelegateOutcome> {
+  const { cwd, sandbox, readOnly, model, effort, fast, images, structured, notes, continued } = r;
+  const runDir = newRunDir();
+  const meta: RunSummary = {
+    id: runDir ? basename(runDir) : "", startedAt: Date.now(), state: "running",
+    title: input.title, cwd, model, effort, fast, sandbox, resumed: !!input.session_id,
+    sessionId: input.session_id, continuedFrom: continued?.sessionId,
+    prompt: input.prompt.slice(0, 2000), version,
+  };
+  const writeMeta = () => {
+    try {
+      if (runDir) writeFileSync(join(runDir, "meta.json"), JSON.stringify(meta));
+    } catch {}
+  };
+  writeMeta();
+  try {
+    let prompt = (continued ? continuationPreamble(continued) : "") + input.prompt;
+    if (config.contract) prompt += readOnly ? READ_CONTRACT : WRITE_CONTRACT;
+    let outputSchemaFile: string | undefined;
+    if (runDir) {
+      writeFileSync(join(runDir, "prompt.md"), prompt);
+      if (structured) {
+        outputSchemaFile = join(runDir, "report.schema.json");
+        writeFileSync(outputSchemaFile, JSON.stringify(REPORT_SCHEMA, null, 2));
+      }
+    }
+
+    // Editing runs leave a record so a Stop can be followed by a redirect (see pending.ts).
+    const rec: PendingRun | undefined = readOnly
+      ? undefined
+      : {
+          cwd,
+          sessionId: input.fork ? undefined : input.session_id,
+          state: "running",
+          pid: process.pid,
+          startedAt: Date.now(),
+          model,
+          effort,
+          sandbox,
+          title: input.title,
+          prompt: input.prompt.slice(0, 500),
+          runDir,
+        };
+    if (rec) savePending(rec);
+
+    const before = snapshot(cwd);
+    const result = await runCodex({
+      onSpawn: (pid) => {
+        if (rec) savePending({ ...rec, codexPid: (rec.codexPid = pid) });
+      },
+      onSession: (id) => {
+        meta.sessionId = id;
+        writeMeta();
+        if (rec && rec.sessionId !== id) savePending({ ...rec, sessionId: (rec.sessionId = id) });
+      },
+      prompt,
+      model,
+      effort,
+      fast,
+      cwd,
+      images,
+      sessionId: input.session_id,
+      fork: input.fork,
+      sandbox,
+      timeoutMs: (input.timeout_s ?? config.timeoutSec) * 1000,
+      signal,
+      lastMessageFile: runDir && join(runDir, "last-message.txt"),
+      outputSchemaFile,
+      logFile: runDir && join(runDir, "events.jsonl"),
+    });
+    const after = before && snapshot(cwd);
+    const changes = before && after ? diffStat(cwd, diffSnapshots(before, after)) : undefined;
+    if (rec) {
+      if (signal?.aborted && result.sessionId) {
+        // Merge in what the continued run had already touched, so the next preamble lists it all.
+        const changed = [...new Set([...(continued?.changed ?? []), ...(changes ?? []).map((c) => c.path)])];
+        savePending({ ...rec, sessionId: result.sessionId, state: "interrupted", endedAt: Date.now(), changed });
+      } else {
+        clearPending(cwd, rec);
+      }
+    }
+    const report = structured ? parseReport(result.text) : undefined;
+    if (structured && !report && result.ok) notes.push("codex did not return the JSON report; showing its raw final message");
+
+    let checks: CheckResult[] | undefined;
+    if (input.checks?.length && !signal?.aborted) {
+      checks = await runChecks(input.checks, cwd, config.checkTimeoutSec * 1000, signal);
+    }
+    Object.assign(meta, {
+      state: signal?.aborted ? "interrupted" : result.ok ? "ok" : "error",
+      sessionId: result.sessionId ?? meta.sessionId, tokens: result.tokens, turns: result.turns,
+      reportStatus: report?.status, summary: report?.summary, report, changes,
+      checks: checks?.map(({ tail, ...check }) => check), notes: [...notes, ...result.warnings],
+      error: result.error, toolCalls: result.toolCalls.length,
+    });
+    return { model, effort, fast, sandbox, resumed: !!input.session_id, cwd, notes, result, report, runDir, changes, checks, continued };
+  } catch (error) {
+    meta.state = signal?.aborted ? "interrupted" : "error";
+    meta.error = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    meta.endedAt = Date.now();
+    meta.durationMs = meta.endedAt - meta.startedAt;
+    writeMeta();
+  }
+}
+
+const activeWriters = new Map<string, { signal?: AbortSignal; done: Promise<void> }>();
+
+function truncate(s: string, max: number, where?: string): string {
   if (s.length <= max) return s;
-  return `${s.slice(0, max)}\n\n…[truncated ${s.length - max} chars — continue the session to ask for the rest]`;
+  return `${s.slice(0, max)}\n…[truncated ${s.length - max} chars${where ? `; full text in ${where}` : ""}]`;
+}
+
+const MAX_LISTED_FILES = 40;
+
+function renderChanges(cwd: string, changes: FileStat[]): string {
+  if (!changes.length) return "git changes: none";
+  const rows = changes.slice(0, MAX_LISTED_FILES).map((c) => {
+    const n = c.binary ? "binary" : c.added !== undefined ? `+${c.added} -${c.removed ?? 0}` : "";
+    return `  ${c.xy.replace(/ /g, ".")} ${c.path}${n ? `  ${n}` : ""}`;
+  });
+  if (changes.length > MAX_LISTED_FILES) rows.push(`  … ${changes.length - MAX_LISTED_FILES} more`);
+  return `git changes (this run; review with git diff -- <path>):\n${rows.join("\n")}`;
+}
+
+function renderChecks(checks: CheckResult[]): string {
+  const lines = ["host checks (run by the server after codex):"];
+  for (const c of checks) {
+    const secs = (c.durationMs / 1000).toFixed(1);
+    if (c.ok) {
+      lines.push(`  PASS ${c.command} (${secs}s)${c.lastLine ? ` | ${c.lastLine}` : ""}`);
+    } else {
+      lines.push(`  FAIL ${c.command} (${c.timedOut ? "timed out" : `exit ${c.exitCode}`}, ${secs}s)`);
+      if (c.tail) lines.push(c.tail.split("\n").map((l) => `    ${l}`).join("\n"));
+    }
+  }
+  return lines.join("\n");
 }
 
 export function formatOutcome(o: DelegateOutcome): string {
   const r = o.result;
+  const model = o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`);
   const lines = [
     `status: ${r.ok ? "ok" : "error"}`,
-    `model: ${o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`)}${o.effort ? `, effort: ${o.effort}` : ""}${o.fast !== undefined ? `, fast: ${o.fast}` : ""}, sandbox: ${o.sandbox}`,
+    `model: ${model}${o.effort ? `#${o.effort}` : ""}${o.fast !== undefined ? `, fast: ${o.fast}` : ""}, sandbox: ${o.sandbox}`,
     `session_id: ${r.sessionId ?? "(none)"}`,
-    `cwd: ${o.cwd}`,
-    `duration: ${(r.durationMs / 1000).toFixed(1)}s, turns: ${r.turns}, tokens in/cached/out: ${r.tokens.input}/${r.tokens.cachedInput}/${r.tokens.output}`,
+    `duration: ${(r.durationMs / 1000).toFixed(0)}s, codex tokens in/cached/out: ${r.tokens.input}/${r.tokens.cachedInput}/${r.tokens.output}`,
   ];
+  if (o.continued) {
+    lines.push(`continued: the interrupted run in this cwd (session ${o.continued.sessionId}); codex kept its context and partial edits and was told your new message wins. Pass fresh: true to start over instead.`);
+  }
   for (const n of [...o.notes, ...r.warnings]) lines.push(`note: ${n}`);
-  if (r.error) lines.push(`error: ${r.error}`);
-  if (r.toolCalls.length) {
-    const counts = new Map<string, number>();
-    for (const t of r.toolCalls) counts.set(t.tool, (counts.get(t.tool) ?? 0) + 1);
-    lines.push(`tools used: ${[...counts].map(([k, v]) => `${k}×${v}`).join(", ")}`);
+  if (r.error) lines.push(`error: ${truncate(r.error, 1500)}`);
+  if (o.report) lines.push(renderReport(o.report));
+  if (o.changes) lines.push(renderChanges(o.cwd, o.changes));
+  else if (r.fileChanges.length) {
+    const seen = [...new Set(r.fileChanges.map((c) => relative(o.cwd, c.path) || c.path))];
+    lines.push(`files edited by codex:\n${seen.map((p) => `  ${p}`).join("\n")}`);
   }
-  if (r.fileChanges.length) {
-    const seen = new Map<string, string>();
-    for (const c of r.fileChanges) seen.set(relative(o.cwd, c.path) || c.path, c.kind);
-    lines.push(`files edited by codex:\n${[...seen].map(([p, k]) => `  ${k.padEnd(6)} ${p}`).join("\n")}`);
+  if (o.checks?.length) lines.push(renderChecks(o.checks));
+  if (!o.report) {
+    const where = o.runDir && join(o.runDir, "last-message.txt");
+    lines.push("--- response ---", truncate(r.text || "(no text output)", config.maxOutputChars, where));
   }
-  if (o.changedFiles) {
-    lines.push(o.changedFiles.length ? `git changes:\n${o.changedFiles.map((f) => `  ${f}`).join("\n")}` : "git changes: none");
-  }
-  lines.push("", "--- response ---", truncate(r.text || "(no text output)", config.maxOutputChars));
+  if (o.runDir) lines.push(`run log: ${o.runDir}`);
   return lines.join("\n");
 }

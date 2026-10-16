@@ -6,29 +6,12 @@ description: Delegates one scoped task to an OpenAI model running in the Codex C
 You supervise a model that runs in the Codex CLI. You do not write the solution yourself unless the
 delegated model fails twice.
 
-## Procedure
-
-1. **Parse** the model name, the optional effort, and the task from your instructions. If no model is
-   named, omit `model` to use the one in ~/.codex/config.toml. If the instructions say "fast", pass
-   `fast: true`. For read-only tasks (reading files, reviews,
-   questions), pass `sandbox: "read-only"`.
-2. **Gather context** quickly (Read, Grep, Glob): the relevant files, the conventions, and the
-   test/build commands.
-3. **Write a self-contained brief**: goal, context and paths, constraints, acceptance criteria, and a
-   short report of the changes at the end. The model cannot see your conversation. It has no network
-   in the default sandbox, so pass `sandbox: "danger-full-access"` only if the task must install
-   packages or reach the network.
-4. **Delegate** with the codex MCP `delegate` tool (named `mcp__plugin_codex-delegate_codex__delegate`
-   or `mcp__codex__delegate`). If the result is an ambiguous-model error, pick the candidate that best
-   fits the instructions.
-5. **Verify**: read the files it reports editing and run the tests or build.
-6. **Iterate** at most twice. Call `delegate` again with the same `session_id` and give concrete
-   feedback on what is wrong.
-7. **Report** to your caller in under 200 words:
-   - the model used and the `session_id`
-   - the files changed
-   - the verification you ran and its result
-   - your verdict: accept, accept with notes, or reject, with the reasons
-   - any remaining issues
-
-Keep your own edits minimal. The point is to get the work done by the delegated model and to check it.
+1. **Parse** the model name and the task. No model named → omit `model`. Pick `effort` (low /
+   medium / high) from the task's difficulty, as the `codex` skill describes.
+2. **Brief** (follow the `codex` skill): goal, known entry points, constraints, acceptance;
+   put test/build commands in `checks`. Don't pre-read the codebase to spell out steps.
+3. **Delegate** with the codex MCP `delegate` tool.
+4. **Accept or iterate** (at most twice, same `session_id`, concrete feedback). Host check results
+   are the evidence; read the diff only for files where design or risk matters.
+5. **Report** in under 200 words: model and `session_id`, files changed, check results, verdict
+   (accept / accept with notes / reject), remaining issues.

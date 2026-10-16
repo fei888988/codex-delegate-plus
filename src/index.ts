@@ -7,9 +7,11 @@ import { config, configuredModel, SANDBOXES } from "./config.ts";
 import { delegate, formatOutcome } from "./delegate.ts";
 import { listModels } from "./models.ts";
 import { listSessions } from "./sessions.ts";
-import { getTask, listTasks, startTask, waitTask, type Task } from "./tasks.ts";
+import { getTask, listTasks, startTask, storedTask, waitTask, type Task } from "./tasks.ts";
+import { installExitCleanup } from "./procs.ts";
 import pkg from "../package.json" with { type: "json" };
 
+installExitCleanup();
 const server = new McpServer({ name: "codex-delegate", version: pkg.version });
 
 const text = (t: string, isError = false) => ({ content: [{ type: "text" as const, text: t }], isError });
@@ -25,12 +27,16 @@ const delegateShape = {
     .string()
     .optional()
     .describe(
-      `Codex model: exact slug (e.g. 'gpt-6-sol') or a loose name ('sol 6', 'gpt 6 luna', '5.6 terra'). Append '#effort' for reasoning effort ('sol 6#high'). Omit to use the default: ${config.defaultModel ?? `the model in ~/.codex/config.toml${configuredModel() ? ` (${configuredModel()})` : ""}`}. On a follow-up (session_id) omitting it keeps the session's model.`,
+      `Codex model: exact slug (e.g. 'gpt-6-sol') or a loose name ('sol 6', 'gpt 6 luna', '5.6 terra'). Omit to use the default: ${config.defaultModel ?? `the model in ~/.codex/config.toml${configuredModel() ? ` (${configuredModel()})` : ""}`}. On a follow-up (session_id) omitting it keeps the session's model.`,
     ),
-  effort: z
-    .string()
-    .optional()
-    .describe(`Reasoning effort: low, medium, high, xhigh, max (ultra on some models). Default: ${config.effort ?? "model_reasoning_effort from ~/.codex/config.toml"}.`),
+  // Required: the lead judges the task's difficulty every time instead of defaulting to the costliest level.
+  effort: (config.efforts ? z.enum(config.efforts as [string, ...string[]]) : z.string()).describe(
+    `Reasoning effort, chosen by you from the task's difficulty${config.efforts ? ` (allowed: ${config.efforts.join(", ")})` : ""}. ` +
+      "low: mechanical and fully specified (rename, config/doc tweak, apply a given fix, a lookup question). " +
+      "medium: ordinary feature or bug fix with a clear spec, a few files, existing patterns to follow; most reviews and questions. " +
+      "high: unclear root cause, cross-module design, concurrency/security/data-migration risk, many interacting edge cases, or a previous attempt failed. " +
+      "Unsure between two levels → the higher one. Escalate on a follow-up (same session_id) if checks fail; a follow-up may use a different level.",
+  ),
   fast: z
     .boolean()
     .optional()
@@ -51,6 +57,20 @@ const delegateShape = {
     .describe(`Shorthand: false = read-only sandbox, for reading files, reviews and questions. Default: ${config.auto}. An explicit sandbox wins.`),
   title: z.string().optional().describe("Short label shown in task_list."),
   timeout_s: z.number().int().positive().optional().describe(`Kill the run after this many seconds. Default: ${config.timeoutSec}.`),
+  checks: z
+    .array(z.string())
+    .optional()
+    .describe(
+      `Shell commands (tests, build, lint) the server runs on the host in cwd after codex finishes, through ${process.platform === "win32" ? "cmd.exe (Windows: no bash syntax)" : "/bin/sh"}. Results come back as PASS/FAIL with the output tail on failure, so you don't need to re-run them yourself.`,
+    ),
+  structured: z
+    .boolean()
+    .optional()
+    .describe(`Ask codex to finish with a JSON report (status done/partial/blocked/needs_decision, summary, changes, verification, risks, questions). Default: ${config.structured} for runs that may edit files; read-only runs always answer in prose.`),
+  fresh: z
+    .boolean()
+    .optional()
+    .describe("Start a new Codex session even if an interrupted run in this cwd would otherwise be continued (the user wants to drop it, or the new task is unrelated)."),
 };
 
 server.registerTool(
@@ -78,7 +98,7 @@ server.registerTool(
   {
     title: "Delegate a task to a Codex model",
     description:
-      "Run a task with an OpenAI model through the Codex CLI (`codex exec`) and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it can implement code, not just answer. Returns its final response, session_id (for follow-ups), token usage, the files it edited and git changes. You remain the orchestrator: review its changes afterwards. For long tasks or running several in parallel, use delegate_async.",
+      "Run a task with an OpenAI model through the Codex CLI (`codex exec`) and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass it as written rather than restating it. Put test/build commands in `checks`. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.",
     inputSchema: delegateShape,
   },
   async (input, extra) => {
@@ -140,7 +160,12 @@ server.registerTool(
   },
   async ({ task_id, wait_s }) => {
     const t = getTask(task_id);
-    if (!t) return text(`unknown task_id '${task_id}'`, true);
+    if (!t) {
+      const s = storedTask(task_id);
+      if (!s) return text(`unknown task_id '${task_id}'`, true);
+      if (s.status === "interrupted") return text(`task: ${s.id} (interrupted)\nthe server that ran it exited before it finished; re-run it (check git status first).`, true);
+      return text(`task: ${s.id} (${s.status})\n${s.text ?? ""}`, s.status !== "done");
+    }
     await waitTask(t, wait_s ?? 0);
     if (t.status === "running") return text(`${taskSummary(t)}\nstill running — call again later or with a larger wait_s.`);
     if (t.outcome) return text(`task: ${t.id} (${t.status})\n${formatOutcome(t.outcome)}`, t.status !== "done");

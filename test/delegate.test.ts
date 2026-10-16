@@ -1,0 +1,141 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, before, test } from "node:test";
+
+// config.ts reads the environment at import time, so set it up before loading the modules.
+const runs = mkdtempSync(join(tmpdir(), "cd-runs-"));
+process.env.CODEX_BIN = join(import.meta.dirname, "fixtures", "fake-codex.mjs");
+process.env.CODEX_DELEGATE_RUNS_DIR = runs;
+const { delegate, formatOutcome } = await import("../src/delegate.ts");
+const { startTask, storedTask, waitTask } = await import("../src/tasks.ts");
+
+let repo: string;
+before(() => {
+  repo = mkdtempSync(join(tmpdir(), "cd-repo 中文-"));
+  const git = (...a: string[]) => spawnSync("git", a, { cwd: repo });
+  git("init", "-q");
+  writeFileSync(join(repo, "work.txt"), "start\n");
+  git("add", ".");
+  git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init");
+});
+after(() => {
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(runs, { recursive: true, force: true });
+});
+
+test("delegate end to end: stdin brief, JSON report, git changes, host checks, run log", async () => {
+  const brief = "目标：改 work.txt\n第二行 with \"quotes\" and %PATH% and & | < >";
+  const node = JSON.stringify(process.execPath);
+  const o = await delegate({ cwd: repo, prompt: brief, checks: [`${node} -e "console.log('all good')"`, `${node} -e "process.exit(4)"`] });
+  const text = formatOutcome(o);
+  assert.equal(o.result.ok, true, text);
+  assert.equal(o.result.sessionId, "fake-session-1");
+  assert.equal(o.report?.status, "done");
+  assert.match(text, /codex status: done/);
+  assert.match(text, /\.M work\.txt {2}\+1 -0/);
+  assert.match(text, /PASS .* \| all good/);
+  assert.match(text, /FAIL .*exit 4/);
+  assert.doesNotMatch(text, /progress note/, "only the final message is returned");
+  // The brief (plus the working agreement) went through stdin, not argv.
+  const argv = JSON.parse(readFileSync(join(repo, "argv.json"), "utf8"));
+  assert.equal(argv.at(-1), "-");
+  assert(!argv.some((a: string) => a.includes("目标")));
+  assert.equal(o.effort, "high", "write runs default to high effort");
+  const prompt = readFileSync(join(o.runDir!, "prompt.md"), "utf8");
+  assert(prompt.startsWith(brief) && prompt.includes("Working agreement"));
+  assert(existsSync(join(o.runDir!, "events.jsonl")));
+});
+
+test("read-only runs get prose, medium effort and no JSON schema", async () => {
+  const o = await delegate({ cwd: repo, prompt: "what is in work.txt?", sandbox: "read-only" });
+  assert.equal(o.report, undefined);
+  assert.equal(o.effort, "medium");
+  assert.match(formatOutcome(o), /--- response ---\nplain answer for: what is in work\.txt\?/);
+});
+
+test("a second writer in the same directory is refused; readers are not", async () => {
+  const first = delegate({ cwd: repo, prompt: "slow delay=1500" });
+  await new Promise((r) => setTimeout(r, 200));
+  await assert.rejects(delegate({ cwd: repo, prompt: "second" }), /already editing/);
+  const reader = await delegate({ cwd: repo, prompt: "peek", sandbox: "read-only" });
+  assert.equal(reader.result.ok, true);
+  assert.equal((await first).result.ok, true);
+  assert.equal((await delegate({ cwd: repo, prompt: "after" })).result.ok, true, "lock is released");
+});
+
+test("async task results survive on disk", async () => {
+  const t = startTask({ cwd: repo, prompt: "async", title: "bg" });
+  assert.equal(storedTask(t.id)?.status, "interrupted", "a running task on disk reads as interrupted to another server");
+  await waitTask(t, 30);
+  const s = storedTask(t.id);
+  assert.equal(s?.status, "done");
+  assert.match(s?.text ?? "", /codex status: done/);
+});
+
+const argvOf = () => JSON.parse(readFileSync(join(repo, "argv.json"), "utf8")) as string[];
+const promptOf = () => readFileSync(join(repo, "prompt.txt"), "utf8");
+
+test("Stop, then a new direction: the next call continues the interrupted session", async () => {
+  const ac = new AbortController();
+  const first = delegate({ cwd: repo, prompt: "build CSV export delay=60000" }, ac.signal);
+  for (let i = 0; i < 100 && !existsSync(join(repo, "prompt.txt")); i++) await new Promise((r) => setTimeout(r, 50));
+  await new Promise((r) => setTimeout(r, 300));
+  ac.abort();
+  // The redirect arrives while the cancelled run is still winding down: it waits, it isn't refused.
+  const second = await delegate({ cwd: repo, prompt: "use JSON instead of CSV" });
+  assert.equal((await first).result.ok, false);
+  assert.equal(second.result.ok, true, formatOutcome(second));
+  assert.equal(second.continued?.sessionId, "fake-session-1");
+  assert.deepEqual(argvOf().slice(1, 3), ["resume", "fake-session-1"]);
+  assert.match(promptOf(), /^\[The user stopped your previous turn[\s\S]*the new message wins[\s\S]*use JSON instead of CSV/);
+  assert.match(formatOutcome(second), /^continued: the interrupted run/m);
+  // Consumed: the call after that is a normal new session.
+  const third = await delegate({ cwd: repo, prompt: "unrelated" });
+  assert.equal(third.continued, undefined);
+  assert.equal(argvOf()[1], "-s");
+});
+
+test("fresh: true drops the interrupted run; explicit other session_id leaves it alone", async () => {
+  const ac = new AbortController();
+  const first = delegate({ cwd: repo, prompt: "slow delay=60000" }, ac.signal);
+  await new Promise((r) => setTimeout(r, 800));
+  ac.abort();
+  await first;
+  const other = await delegate({ cwd: repo, prompt: "follow-up elsewhere", session_id: "other-session" });
+  assert.equal(other.continued, undefined);
+  const fresh = await delegate({ cwd: repo, prompt: "start over", fresh: true });
+  assert.equal(fresh.continued, undefined);
+  assert.equal(argvOf()[1], "-s");
+  assert.doesNotMatch(promptOf(), /The user stopped/);
+  assert.equal((await delegate({ cwd: repo, prompt: "next" })).continued, undefined, "fresh run cleared the record");
+});
+
+test("a run whose server was killed (record left 'running', pid gone) is continued too", async () => {
+  const { savePending } = await import("../src/pending.ts");
+  savePending({ cwd: repo, sessionId: "orphan-session", state: "running", pid: 2 ** 22 + 12345, startedAt: Date.now(), sandbox: "workspace-write", prompt: "old" });
+  const o = await delegate({ cwd: repo, prompt: "new direction" });
+  assert.equal(o.continued?.sessionId, "orphan-session");
+  assert.deepEqual(argvOf().slice(1, 3), ["resume", "orphan-session"]);
+});
+
+test("read-only runs neither leave nor consume an interrupted record", async () => {
+  const ac = new AbortController();
+  const first = delegate({ cwd: repo, prompt: "slow delay=60000" }, ac.signal);
+  await new Promise((r) => setTimeout(r, 800));
+  ac.abort();
+  await first;
+  const reader = await delegate({ cwd: repo, prompt: "peek", sandbox: "read-only" });
+  assert.equal(reader.continued, undefined);
+  const writer = await delegate({ cwd: repo, prompt: "go on" });
+  assert.equal(writer.continued?.sessionId, "fake-session-1");
+});
+
+test("an effort above the allowed range (e.g. a '#xhigh' suffix) is clamped to high, with a note", async () => {
+  const o = await delegate({ cwd: repo, prompt: "hard one", model: "gpt-6.1-sol#xhigh", fresh: true });
+  assert.equal(o.effort, "high");
+  assert.match(formatOutcome(o), /note: effort 'xhigh' is outside the allowed range \(low, medium, high\); used 'high'/);
+  assert(argvOf().includes('model_reasoning_effort="high"'));
+});

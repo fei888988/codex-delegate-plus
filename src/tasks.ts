@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { delegate, type DelegateInput, type DelegateOutcome } from "./delegate.ts";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { config } from "./config.ts";
+import { delegate, formatOutcome, type DelegateInput, type DelegateOutcome } from "./delegate.ts";
 
 export type TaskStatus = "running" | "done" | "error" | "cancelled";
 
@@ -17,6 +20,41 @@ export interface Task {
 
 const MAX_FINISHED = 100;
 const tasks = new Map<string, Task>();
+
+/** Finished results are also written to disk, so task_result still works after a server restart. */
+export interface StoredTask {
+  id: string;
+  status: TaskStatus | "interrupted";
+  startedAt: number;
+  finishedAt?: number;
+  title?: string;
+  text?: string;
+}
+
+const tasksDir = () => join(config.runsDir, "tasks");
+const taskFile = (id: string) => join(tasksDir(), `${id.replace(/[^\w-]/g, "")}.json`);
+
+function store(t: Task) {
+  try {
+    mkdirSync(tasksDir(), { recursive: true });
+    const text = t.outcome ? formatOutcome(t.outcome) : t.error && `error: ${t.error}`;
+    const rec: StoredTask = { id: t.id, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, title: t.input.title, text };
+    writeFileSync(taskFile(t.id), JSON.stringify(rec));
+  } catch {}
+}
+
+export function storedTask(id: string): StoredTask | undefined {
+  const f = taskFile(id);
+  if (!existsSync(f)) return undefined;
+  try {
+    const rec = JSON.parse(readFileSync(f, "utf8")) as StoredTask;
+    // Still "running" on disk but unknown to this process: the server that ran it has exited.
+    if (rec.status === "running") rec.status = "interrupted";
+    return rec;
+  } catch {
+    return undefined;
+  }
+}
 
 function prune() {
   const finished = [...tasks.values()].filter((t) => t.status !== "running").sort((a, b) => a.startedAt - b.startedAt);
@@ -37,9 +75,11 @@ export function startTask(input: DelegateInput): Task {
     },
   ).finally(() => {
     task.finishedAt = Date.now();
+    store(task);
     prune();
   });
   tasks.set(task.id, task);
+  store(task);
   return task;
 }
 
