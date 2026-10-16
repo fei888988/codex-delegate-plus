@@ -103,6 +103,19 @@ edits intact, tells Codex the new message wins, and the result starts with `cont
 - `fresh: true` only if the user wants to drop the interrupted work and start clean. Then say what to
   revert.
 
+## 6. Improve this skill and the project after the run
+
+When review found a problem the brief or this skill should have prevented:
+
+- **Generic** (it would recur in any project): change this skill by a few lines. Do it only for a
+  real pattern, not a one-off (sandbox hiccup, flaky network, a model glitch). Keep the skill short:
+  merge or replace rules instead of only appending. Edit the plugin source, copy the file into the
+  active plugin cache, commit, and tell the user what changed.
+- **Project-specific**: add it as "must keep X, because Y" to the project's `AGENTS.md`, which Codex
+  reads on every run (or the nearest nested `AGENTS.md` for that module), and tell the user. Use
+  Claude's memory only for what Codex doesn't need.
+- Never record passwords, tokens, cookies, auth files or login links.
+
 ## Parallel work
 
 One `delegate_async` per subtask, then `task_result` with a large `wait_s` for each. Runs that edit
