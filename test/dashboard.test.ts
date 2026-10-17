@@ -11,6 +11,7 @@ const runs = join(root, "runs");
 mkdirSync(runs);
 process.env.CODEX_BIN = join(import.meta.dirname, "fixtures", "fake-codex.mjs");
 process.env.CODEX_DELEGATE_RUNS_DIR = runs;
+process.env.CODEX_DELEGATE_POLICY = join(root, "policy.json");
 const { delegate } = await import("../src/delegate.ts");
 const { createDashboardServer, readRun } = await import("../src/dashboard.ts");
 const { WRITE_CONTRACT, READ_CONTRACT } = await import("../src/report.ts");
@@ -185,6 +186,54 @@ test("dashboard endpoints are read-only, compact lists, full details, and reject
     assert.equal(home.status, existsSync(frontend) ? 200 : 404);
     if (home.status === 200) assert.equal(home.body, readFileSync(frontend, "utf8"));
     else assert.match(home.headers["content-type"], /text\/plain/);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((e) => e ? reject(e) : resolve()));
+  }
+});
+
+test("policy API: GET returns the policy with defaults; PUT validates, saves, and only from the page itself", async () => {
+  const file = join(root, "policy-api.json");
+  const server = createDashboardServer({ policyFile: file });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address !== "string");
+  const host = `127.0.0.1:${address.port}`;
+  const send = (method: string, body?: string, headers: Record<string, string> = {}) => new Promise<{ status: number; body: any }>((resolve, reject) => {
+    const req = request({ hostname: "127.0.0.1", port: address.port, path: "/api/policy", method, headers }, (res) => {
+      let text = "";
+      res.setEncoding("utf8").on("data", (chunk) => text += chunk);
+      res.on("end", () => resolve({ status: res.statusCode!, body: JSON.parse(text) }));
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+  const json = { "Content-Type": "application/json", Origin: `http://${host}` };
+  const { DEFAULT_POLICY } = await import("../src/policy.ts");
+  try {
+    const first = await send("GET");
+    assert.equal(first.status, 200);
+    assert.deepEqual(first.body.policy, DEFAULT_POLICY);
+    assert.deepEqual(first.body.defaults, DEFAULT_POLICY);
+    assert.equal(first.body.file, file);
+    assert(first.body.efforts.includes("max"));
+
+    const next = { ...DEFAULT_POLICY, guidance: "省着用", tiers: [{ id: "only", effort: "medium", use: "everything" }] };
+    const saved = await send("PUT", JSON.stringify(next), json);
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal(saved.body.policy.guidance, "省着用");
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).tiers, next.tiers);
+
+    const bad = await send("PUT", JSON.stringify({ ...next, tiers: [] }), json);
+    assert.equal(bad.status, 400);
+    assert.match(bad.body.error, /1 to 12 tiers/);
+    assert.equal((await send("PUT", "{ nope", json)).status, 400);
+    assert.equal((await send("PUT", JSON.stringify(next), { "Content-Type": "text/plain" })).status, 403, "simple cross-site request");
+    assert.equal((await send("PUT", JSON.stringify(next), { ...json, Origin: "http://evil.example" })).status, 403);
+    assert.equal((await send("PUT", JSON.stringify(next), { ...json, Host: "evil.example" })).status, 403, "DNS rebinding");
+    assert.equal((await send("PUT", "x".repeat(70 * 1024), json)).status, 400, "body size cap");
+    assert.equal((await send("DELETE")).status, 405);
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).guidance, "省着用", "rejected writes left the file alone");
   } finally {
     await new Promise<void>((resolve, reject) => server.close((e) => e ? reject(e) : resolve()));
   }

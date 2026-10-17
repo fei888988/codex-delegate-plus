@@ -1,8 +1,10 @@
 import { readFile, readdir, stat, lstat } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config } from "./config.ts";
+import { config, configuredModel, EFFORT_ORDER } from "./config.ts";
+import { listModels } from "./models.ts";
+import { DEFAULT_POLICY, loadPolicy, savePolicy, validatePolicy } from "./policy.ts";
 import type { PendingRun } from "./pending.ts";
 import type { StoredTask } from "./tasks.ts";
 import { parseReport, READ_CONTRACT, WRITE_CONTRACT } from "./report.ts";
@@ -81,23 +83,65 @@ async function records<T>(dir: string): Promise<T[]> {
   return values.filter((v): v is Awaited<T> => v !== undefined);
 }
 
-export function createDashboardServer(options: { runsDir?: string } = {}) {
+const MAX_BODY = 64 * 1024;
+
+async function body(req: IncomingMessage): Promise<string> {
+  let size = 0;
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_BODY) throw new Error("too large");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+/**
+ * Writes are only accepted from the dashboard page itself: a loopback Host (blocks DNS rebinding),
+ * a matching Origin when the browser sends one, and a JSON content type, which a cross-site form or
+ * no-cors fetch can't send without a preflight that this server never answers.
+ */
+function sameOrigin(req: IncomingMessage): boolean {
+  const host = req.headers.host ?? "";
+  if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(host)) return false;
+  const origin = req.headers.origin;
+  if (origin !== undefined && origin !== `http://${host}`) return false;
+  return /^application\/json\b/i.test(req.headers["content-type"] ?? "");
+}
+
+export function createDashboardServer(options: { runsDir?: string; policyFile?: string } = {}) {
   const runsDir = options.runsDir ?? config.runsDir;
+  const policyFile = options.policyFile ?? config.policyFile;
   return createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     const json = (status: number, value: unknown) => {
       res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(value));
     };
-    if (req.method !== "GET") {
-      res.setHeader("Allow", "GET");
+    // Inspect the raw path: URL normalization would erase traversal segments before validation.
+    const path = (req.url ?? "/").split("?")[0]!;
+    const allow = path === "/api/policy" ? "GET, PUT" : "GET";
+    if (!allow.split(", ").includes(req.method ?? "")) {
+      res.setHeader("Allow", allow);
       json(405, { error: "Method not allowed" });
       return;
     }
     try {
-      // Inspect the raw path: URL normalization would erase traversal segments before validation.
-      const path = (req.url ?? "/").split("?")[0]!;
-      if (path === "/") {
+      if (path === "/api/policy") {
+        if (req.method === "PUT") {
+          if (!sameOrigin(req)) { json(403, { error: "Forbidden" }); return; }
+          let parsed: unknown;
+          try { parsed = JSON.parse(await body(req)); } catch { json(400, { error: "Body must be a JSON policy of at most 64 KB" }); return; }
+          const r = validatePolicy(parsed);
+          if (!r.ok) { json(400, { error: r.error }); return; }
+          savePolicy(r.policy, policyFile);
+        }
+        const { policy, error } = loadPolicy(policyFile);
+        json(200, {
+          policy, error, defaults: DEFAULT_POLICY, file: policyFile, models: listModels(), efforts: EFFORT_ORDER,
+          defaultModel: config.defaultModel ?? configuredModel(),
+        });
+      } else if (path === "/") {
         try {
           const html = await readFile(indexFile);
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });

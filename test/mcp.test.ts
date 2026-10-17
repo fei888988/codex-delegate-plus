@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -10,6 +10,7 @@ let server: ChildProcessWithoutNullStreams;
 let dir: string;
 const pending = new Map<number, (msg: any) => void>();
 let nextId = 1;
+const notifications: string[] = [];
 
 function call(method: string, params: object = {}): Promise<any> {
   const id = nextId++;
@@ -31,7 +32,7 @@ before(async () => {
   spawnSync("git", ["init", "-q"], { cwd: dir });
   server = spawn(process.execPath, [join(import.meta.dirname, "..", "src", "index.ts")], {
     cwd: dir,
-    env: { ...process.env, CODEX_BIN: join(import.meta.dirname, "fixtures", "fake-codex.mjs"), CODEX_DELEGATE_RUNS_DIR: join(dir, "runs") },
+    env: { ...process.env, CODEX_BIN: join(import.meta.dirname, "fixtures", "fake-codex.mjs"), CODEX_DELEGATE_RUNS_DIR: join(dir, "runs"), CODEX_DELEGATE_POLICY: join(dir, "policy.json") },
   });
   let buf = "";
   server.stdout.setEncoding("utf8").on("data", (d: string) => {
@@ -41,6 +42,7 @@ before(async () => {
       const msg = JSON.parse(buf.slice(0, i));
       buf = buf.slice(i + 1);
       if (msg.id !== undefined && pending.has(msg.id)) pending.get(msg.id)!(msg);
+      else if (msg.method) notifications.push(msg.method);
     }
   });
   await call("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } });
@@ -58,16 +60,43 @@ test("tools are listed and delegate defaults cwd to the server's cwd", async () 
   const list = await call("tools/list");
   const names = list.result.tools.map((t: any) => t.name);
   for (const n of ["delegate", "delegate_async", "task_result", "task_cancel", "list_models"]) assert(names.includes(n), n);
-  // The lead must pick an effort, and only from low/medium/high.
+  // The lead must pick a cost tier from the policy (defaults: luna-xhigh, low, medium, high).
   const schema = list.result.tools.find((t: any) => t.name === "delegate").inputSchema;
   assert(schema.required.includes("effort"));
-  assert.deepEqual(schema.properties.effort.enum, ["low", "medium", "high"]);
+  assert.deepEqual(schema.properties.effort.enum, ["luna-xhigh", "low", "medium", "high"]);
+  assert.match(list.result.tools.find((t: any) => t.name === "delegate").description, /Cost policy:/);
   const bad = await call("tools/call", { name: "delegate", arguments: { prompt: "x", effort: "xhigh" } });
   assert.equal(bad.result?.isError ?? !!bad.error, true, "xhigh rejected by the schema");
   const r = await call("tools/call", { name: "delegate", arguments: { prompt: "quick", effort: "low" } });
   assert.equal(r.result.isError, false, r.result.content[0].text);
   assert.match(r.result.content[0].text, /codex status: done/);
   assert(existsSync(join(dir, "work.txt")), "ran in the server's cwd");
+});
+
+test("saving the policy file updates the tool definitions and notifies the client", async () => {
+  const tiers = [{ id: "cheap", model: "gpt-6-luna", effort: "low", use: "small things" }, { id: "big", effort: "high", use: "hard things" }];
+  const delegateTool = async () => (await call("tools/list")).result.tools.find((t: any) => t.name === "delegate");
+  // The server polls the file every 2s; wait for the tool to change rather than a fixed time.
+  const waitFor = async (ids: string[]) => {
+    for (let i = 0; i < 80; i++) {
+      const tool = await delegateTool();
+      if (JSON.stringify(tool.inputSchema.properties.effort.enum) === JSON.stringify(ids)) return tool;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.fail(`effort enum never became ${ids}`);
+  };
+  const seen = notifications.length;
+  writeFileSync(join(dir, "policy.json"), JSON.stringify({ guidance: "CUSTOM GUIDANCE", tiers }));
+  try {
+    const tool = await waitFor(["cheap", "big"]);
+    assert(notifications.slice(seen).includes("notifications/tools/list_changed"));
+    assert.match(tool.inputSchema.properties.effort.description, /- cheap \(gpt-6-luna#low\): small things/);
+    assert.match(tool.description, /CUSTOM GUIDANCE$/);
+  } finally {
+    // Later tests use the default tiers.
+    rmSync(join(dir, "policy.json"), { force: true });
+    await waitFor(["luna-xhigh", "low", "medium", "high"]);
+  }
 });
 
 test("cancelling a tool call (the Stop button) kills the codex process", async () => {
@@ -97,7 +126,7 @@ test("cancelling a tool call (the Stop button) kills the codex process", async (
 async function busyServer() {
   const other = spawn(process.execPath, [join(import.meta.dirname, "..", "src", "index.ts")], {
     cwd: dir,
-    env: { ...process.env, CODEX_BIN: join(import.meta.dirname, "fixtures", "fake-codex.mjs"), CODEX_DELEGATE_RUNS_DIR: join(dir, "runs") },
+    env: { ...process.env, CODEX_BIN: join(import.meta.dirname, "fixtures", "fake-codex.mjs"), CODEX_DELEGATE_RUNS_DIR: join(dir, "runs"), CODEX_DELEGATE_POLICY: join(dir, "policy.json") },
   });
   const send = (m: object) => other.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...m })}\n`);
   send({ id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t2", version: "1" } } });

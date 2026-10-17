@@ -1,6 +1,6 @@
 ---
 name: codex
-description: Claude leads, a Codex model (GPT-6.1 Sol by default) does the work. Delegate implementation, debugging, tests or analysis to the Codex CLI while Claude briefs, picks the reasoning effort (low/medium/high) from the task's difficulty, and accepts the result. Use when the user invokes /codex, or says things like "让 codex 做", "交给 sol", "use sol 6.1 to implement X", "have codex do it, you review", "get a second opinion from codex".
+description: Claude leads, a Codex model (GPT-6.1 Sol by default) does the work. Delegate implementation, debugging, tests or analysis to the Codex CLI while Claude briefs, picks the cheapest cost tier (model + reasoning effort) that will get the task right, and accepts the result. Use when the user invokes /codex, or says things like "让 codex 做", "交给 sol", "use sol 6.1 to implement X", "have codex do it, you review", "get a second opinion from codex".
 argument-hint: "[model] -- <task>  (e.g. sol 6.1 -- add input validation to the signup form)"
 ---
 
@@ -25,21 +25,22 @@ Tools: `delegate` (preferred: one call, no polling); `delegate_async` + `task_re
 Delegate anything that needs investigation, multi-file changes or test runs. If you can already see
 a change and make it in one or two edits, do it yourself, unless the user explicitly asked for Codex.
 
-## 2. Choose the effort (required, low / medium / high only)
+## 2. Choose the cost tier (`effort`, required)
 
-Judge from the task itself, not from how long the brief is:
+`effort` names a tier of the user's delegation policy. Each tier fixes a model and a reasoning
+effort. The tool description lists the tiers cheapest first, says when to use each, and carries
+the user's cost guidance. Those come from the dashboard and override this section where they
+differ. Defaults: `luna-xhigh` (gpt-6-luna#xhigh) → `low` (gpt-6.1-sol#low) →
+`medium` (gpt-6.1-sol#medium) → `high` (gpt-6.1-sol#high).
 
-| effort | when | examples |
-|---|---|---|
-| `low` | Mechanical and fully specified; no design choice left | rename, bump a version, apply a given patch, fix a lint error, a lookup question |
-| `medium` | Ordinary feature or bug fix with a clear spec, a few files, existing patterns to follow | add a CLI flag like the existing ones, fix a bug with a known cause, add tests for a module, most reviews |
-| `high` | Real reasoning needed | unclear root cause, cross-module design, concurrency/security/money/data migration, many interacting edge cases, a previous attempt failed |
-
-- Unsure between two levels: pick the higher one. A failed retry costs more than the difference.
-- Escalate on failure: if checks still FAIL after a follow-up, continue the **same `session_id`** one
-  level higher. Never go above `high`; the server clamps anything else (`xhigh`, `max`) to `high`.
-- Each call picks its own level. A small follow-up fix to a `high` run can be `medium`.
-- In your final report, say which level you used and why, in one phrase.
+- Cost matters, and quality isn't up for trade. Take the cheapest tier that will get it right. When
+  unsure, take the cheaper one, unless the task is in the risky class the top tier names
+  (security, money, concurrency, data migration, unclear root cause). There a failed attempt costs
+  more than the difference.
+- Escalate on evidence: after a check FAIL or a wrong result, continue the **same `session_id`** one
+  tier up. Tiers pin their model, so escalating from `luna-xhigh` moves the session to gpt-6.1-sol.
+- Each call picks its own tier. A small follow-up fix to a `high` run can drop back down.
+- In your final report, give the tier you used and the reason in one phrase.
 
 ## 3. Write a lean brief (`prompt`)
 
@@ -78,8 +79,8 @@ self-reported verification, risks, questions, per-file `+/-` counts and the host
 
 - **needs_decision / questions**: decide (ask the user only if it's truly theirs), then continue the
   same `session_id` with the answer.
-- **Check FAIL or wrong behaviour**: continue the same session with the concrete failure, escalating
-  the effort as above. Fix it yourself only if that's clearly smaller.
+- **Check FAIL or wrong behaviour**: continue the same session with the concrete failure, one tier
+  up as above. Fix it yourself only if that's clearly smaller.
 - **Read the removals first**: in the diff, go through removed and weakened code before the
   additions: deleted branches, narrowed conditions or time windows, dropped arguments and flags,
   disabled recovery paths. Silent regressions hide there, because the old behaviour often had no
@@ -90,7 +91,7 @@ self-reported verification, risks, questions, per-file `+/-` counts and the host
 - High-risk change: get an independent review with a fresh read-only `delegate`: "review the
   uncommitted diff for bugs against these requirements: …".
 
-Report briefly: model and effort, what changed, check results, your verdict.
+Report briefly: tier (model#effort), what changed, check results, your verdict.
 
 ## 5. The user pressed Stop and changed direction
 

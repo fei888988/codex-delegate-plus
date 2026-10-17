@@ -125,10 +125,22 @@ You can use exact slugs (`gpt-6-sol`) or loose names (`sol 6`, `sol6`, `gpt 6 lu
 - Without a version, the newest family wins: `sol` resolves to `gpt-6.1-sol`, while `sol 6` stays on `gpt-6-sol`.
 - `gpt 6` matches Astra, Sol and Luna, so you get the candidates instead of a guess.
 - A slug the cache doesn't know yet (e.g. `gpt-7-nova`) is passed through as-is.
-- Reasoning effort is a required `delegate` argument: Claude picks `low`, `medium` or `high` from the
-  task's difficulty (rubric in the tool description and the `codex` skill). Anything outside the
-  allowed range, including a `#xhigh` model suffix, is clamped into it. Widen or narrow the range with
-  `CODEX_DELEGATE_EFFORTS` (e.g. `low,medium,high,xhigh`; `any` = no limit).
+- `effort` is a required `delegate` argument that names a **cost tier** of the delegation policy.
+  Each tier fixes a model and reasoning effort. The defaults, cheapest first, are `luna-xhigh`
+  (gpt-6-luna#xhigh), `low` (gpt-6.1-sol#low), `medium` (gpt-6.1-sol#medium) and
+  `high` (gpt-6.1-sol#high). Claude picks the cheapest
+  tier that will get the task right and goes up a tier on the same session after a failure. An
+  explicit `model` overrides the tier's model. A plain effort that isn't a tier (for example a
+  `#xhigh` model suffix) is clamped into `CODEX_DELEGATE_EFFORTS`.
+
+### Delegation policy (dashboard → 调度策略)
+
+`~/.codex-delegate/policy.json` (`CODEX_DELEGATE_POLICY`) holds the tiers (id, model, effort, when to
+use each), the guidance prompt added to the `delegate` tool description for Claude, the prompt
+appended to every Codex brief, and an optional model allowlist. Edit it in the dashboard. Each
+`delegate` call reads it, and a running MCP server re-sends its tool definitions about 2s after
+the file changes. An invalid file falls back to the defaults and the reason shows up as a note.
+The dashboard accepts `PUT /api/policy` only from its own page on a loopback host.
 - If you don't name a model, Codex uses the `model` from your `~/.codex/config.toml` (the plugin passes no `-m`). Follow-ups with `session_id` keep the session's model.
 
 ### Fast mode
@@ -179,7 +191,8 @@ conflict.
 | `CODEX_HOME` | `~/.codex` | Where the model cache and sessions are read from. This is the same variable Codex uses. |
 | `CODEX_DELEGATE_DEFAULT_MODEL` | *(from config.toml)* | Model used when `model` is omitted. When unset, the model in your `config.toml` is used. |
 | `CODEX_DELEGATE_READ_MODEL` | same as the default model | Model used when `model` is omitted and the run is read-only. |
-| `CODEX_DELEGATE_EFFORTS` | `low,medium,high` | Efforts Claude may choose; others are clamped into this range. `any` = no limit. |
+| `CODEX_DELEGATE_POLICY` | `~/.codex-delegate/policy.json` | Delegation policy (tiers, guidance prompts, model allowlist). |
+| `CODEX_DELEGATE_EFFORTS` | `low,medium,high` | Range for plain efforts that aren't policy tiers; others are clamped into it. `any` = no limit. |
 | `CODEX_DELEGATE_EFFORT` | *(unset)* | Fallback effort for library/API callers that omit it; overrides the two below. |
 | `CODEX_DELEGATE_WRITE_EFFORT` | `high` | Effort for runs that may edit files. |
 | `CODEX_DELEGATE_READ_EFFORT` | `medium` | Effort for read-only runs. |

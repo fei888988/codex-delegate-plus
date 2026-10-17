@@ -9,6 +9,7 @@ import { after, before, test } from "node:test";
 const runs = mkdtempSync(join(tmpdir(), "cd-runs-"));
 process.env.CODEX_BIN = join(import.meta.dirname, "fixtures", "fake-codex.mjs");
 process.env.CODEX_DELEGATE_RUNS_DIR = runs;
+process.env.CODEX_DELEGATE_POLICY = join(runs, "policy.json");
 const { delegate, formatOutcome } = await import("../src/delegate.ts");
 const { startTask, storedTask, waitTask } = await import("../src/tasks.ts");
 
@@ -138,4 +139,39 @@ test("an effort above the allowed range (e.g. a '#xhigh' suffix) is clamped to h
   assert.equal(o.effort, "high");
   assert.match(formatOutcome(o), /note: effort 'xhigh' is outside the allowed range \(low, medium, high\); used 'high'/);
   assert(argvOf().includes('model_reasoning_effort="high"'));
+});
+
+test("a policy tier sets model and effort, beats a plain effort clamp, and adds the codex guidance", async () => {
+  const o = await delegate({ cwd: repo, prompt: "add a flag", effort: "luna-xhigh", fresh: true });
+  assert.equal(o.tier, "luna-xhigh");
+  assert.equal(o.model, "gpt-6-luna");
+  assert.equal(o.effort, "xhigh", "tier efforts are not clamped to low..high");
+  assert.deepEqual(argvOf().slice(argvOf().indexOf("-m"), argvOf().indexOf("-m") + 2), ["-m", "gpt-6-luna"]);
+  assert(argvOf().includes('model_reasoning_effort="xhigh"'));
+  assert.match(formatOutcome(o), /^model: gpt-6-luna#xhigh \(tier luna-xhigh\)/m);
+  assert.match(promptOf(), /Working agreement[\s\S]*Cost \(added by the delegating tool\): work economically/);
+  // Escalating a follow-up to the next tier moves the session from luna to sol.
+  const up = await delegate({ cwd: repo, prompt: "still failing", effort: "high", session_id: o.result.sessionId });
+  assert.equal(up.tier, "high");
+  assert.equal(up.effort, "high");
+  assert.equal(up.model, "gpt-6.1-sol");
+});
+
+test("the policy file is read per call: custom tiers, guidance and the model allowlist", async () => {
+  const { savePolicy, DEFAULT_POLICY } = await import("../src/policy.ts");
+  const file = process.env.CODEX_DELEGATE_POLICY!;
+  try {
+    savePolicy({ ...DEFAULT_POLICY, codexGuidance: "SPEND LITTLE", models: ["gpt-6-luna"], tiers: [{ id: "cheap", model: "gpt-6-luna", effort: "low", use: "all" }] }, file);
+    const o = await delegate({ cwd: repo, prompt: "x", effort: "cheap", fresh: true });
+    assert.equal(o.model, "gpt-6-luna");
+    assert.equal(o.effort, "low");
+    assert.match(promptOf(), /SPEND LITTLE$/);
+    await assert.rejects(delegate({ cwd: repo, prompt: "x", effort: "cheap", model: "gpt-6.1-sol", fresh: true }), /not allowed by the delegation policy/);
+    writeFileSync(file, "{ broken");
+    const fallback = await delegate({ cwd: repo, prompt: "x", effort: "luna-xhigh", fresh: true });
+    assert.equal(fallback.tier, "luna-xhigh");
+    assert.match(formatOutcome(fallback), /note: .*not valid JSON.*using the default policy/);
+  } finally {
+    rmSync(file, { force: true });
+  }
 });

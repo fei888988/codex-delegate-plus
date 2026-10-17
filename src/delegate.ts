@@ -6,6 +6,7 @@ import { clampEffort, config, configuredModel, type Sandbox } from "./config.ts"
 import { runCodex, type RunResult } from "./codex.ts";
 import { diffSnapshots, diffStat, snapshot, type FileStat } from "./git.ts";
 import { resolveModelOrThrow } from "./models.ts";
+import { findTier, loadPolicy } from "./policy.ts";
 import { clearPending, continuationPreamble, loadPending, savePending, type PendingRun } from "./pending.ts";
 import { parseReport, READ_CONTRACT, renderReport, REPORT_SCHEMA, WRITE_CONTRACT, type Report } from "./report.ts";
 import { version, type RunSummary } from "./run-summary.ts";
@@ -34,6 +35,8 @@ export interface DelegateInput {
 export interface DelegateOutcome {
   model?: string;
   effort?: string;
+  /** Policy tier the effort came from. */
+  tier?: string;
   fast?: boolean;
   sandbox: Sandbox;
   resumed: boolean;
@@ -84,17 +87,27 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal): Prom
   const continued = pending && (!input.session_id || input.session_id === pending.sessionId) ? pending : undefined;
   if (continued && !input.session_id) input = { ...input, session_id: continued.sessionId };
 
-  // A follow-up keeps the session's model unless one is asked for explicitly.
-  const query = input.model ?? (input.session_id ? undefined : auto ? config.defaultModel : config.readModel);
+  // `effort` names a tier of the cost policy (model + effort); a plain effort name still works.
+  const { policy, error: policyError } = loadPolicy();
+  if (policyError) notes.push(policyError);
+  const tier = findTier(policy, input.effort);
+
+  // A tier pins its model, so escalating a follow-up to a tier on another model switches models.
+  // Without one, a follow-up keeps the session's model unless one is asked for explicitly.
+  const query = input.model ?? tier?.model ?? (input.session_id ? undefined : auto ? config.defaultModel : config.readModel);
   let model: string | undefined;
-  let effort = input.effort ?? (readOnly ? config.readEffort : config.writeEffort);
+  let effort = tier?.effort ?? input.effort ?? (readOnly ? config.readEffort : config.writeEffort);
   if (query) {
     const r = resolveModelOrThrow(query);
     model = r.model;
     if (r.effort && !input.effort) effort = r.effort;
     if (!r.known) notes.push(`'${r.model}' is not in codex's model cache; passed through as-is`);
   }
-  const clamped = clampEffort(effort, config.efforts);
+  if (model && policy.models.length && !policy.models.includes(model)) {
+    throw new Error(`model '${model}' is not allowed by the delegation policy (allowed: ${policy.models.join(", ")}); pick a tier instead`);
+  }
+  // Tier efforts are the user's own choice; anything else is fitted into the allowed range.
+  const clamped = tier ? effort : clampEffort(effort, config.efforts);
   if (clamped !== effort) {
     notes.push(`effort '${effort}' is outside the allowed range (${config.efforts!.join(", ")}); used '${clamped}'`);
     effort = clamped;
@@ -109,7 +122,7 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal): Prom
     activeWriters.set(lockKey, { signal, done });
   }
   try {
-    const run = { cwd, sandbox, readOnly, model, effort, fast, images, structured, notes, continued };
+    const run = { cwd, sandbox, readOnly, model, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, fast, images, structured, notes, continued };
     return await execute(input, run, signal);
   } finally {
     if (!readOnly) {
@@ -125,6 +138,8 @@ interface Resolved {
   readOnly: boolean;
   model?: string;
   effort?: string;
+  tier?: string;
+  codexGuidance: string;
   fast?: boolean;
   images?: string[];
   structured: boolean;
@@ -133,11 +148,11 @@ interface Resolved {
 }
 
 async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal): Promise<DelegateOutcome> {
-  const { cwd, sandbox, readOnly, model, effort, fast, images, structured, notes, continued } = r;
+  const { cwd, sandbox, readOnly, model, effort, tier, codexGuidance, fast, images, structured, notes, continued } = r;
   const runDir = newRunDir();
   const meta: RunSummary = {
     id: runDir ? basename(runDir) : "", startedAt: Date.now(), state: "running",
-    title: input.title, cwd, model, effort, fast, sandbox, resumed: !!input.session_id,
+    title: input.title, cwd, model, effort, tier, fast, sandbox, resumed: !!input.session_id,
     sessionId: input.session_id, continuedFrom: continued?.sessionId,
     prompt: input.prompt.slice(0, 2000), version,
   };
@@ -150,6 +165,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal):
   try {
     let prompt = (continued ? continuationPreamble(continued) : "") + input.prompt;
     if (config.contract) prompt += readOnly ? READ_CONTRACT : WRITE_CONTRACT;
+    if (codexGuidance) prompt += `\n\n${codexGuidance}`;
     let outputSchemaFile: string | undefined;
     if (runDir) {
       writeFileSync(join(runDir, "prompt.md"), prompt);
@@ -227,7 +243,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal):
       checks: checks?.map(({ tail, ...check }) => check), notes: [...notes, ...result.warnings],
       error: result.error, toolCalls: result.toolCalls.length,
     });
-    return { model, effort, fast, sandbox, resumed: !!input.session_id, cwd, notes, result, report, runDir, changes, checks, continued };
+    return { model, effort, tier, fast, sandbox, resumed: !!input.session_id, cwd, notes, result, report, runDir, changes, checks, continued };
   } catch (error) {
     meta.state = signal?.aborted ? "interrupted" : "error";
     meta.error = error instanceof Error ? error.message : String(error);
@@ -277,7 +293,7 @@ export function formatOutcome(o: DelegateOutcome): string {
   const model = o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`);
   const lines = [
     `status: ${r.ok ? "ok" : "error"}`,
-    `model: ${model}${o.effort ? `#${o.effort}` : ""}${o.fast !== undefined ? `, fast: ${o.fast}` : ""}, sandbox: ${o.sandbox}`,
+    `model: ${model}${o.effort ? `#${o.effort}` : ""}${o.tier ? ` (tier ${o.tier})` : ""}${o.fast !== undefined ? `, fast: ${o.fast}` : ""}, sandbox: ${o.sandbox}`,
     `session_id: ${r.sessionId ?? "(none)"}`,
     `duration: ${(r.durationMs / 1000).toFixed(0)}s, codex tokens in/cached/out: ${r.tokens.input}/${r.tokens.cachedInput}/${r.tokens.output}`,
   ];

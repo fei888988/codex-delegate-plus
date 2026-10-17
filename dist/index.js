@@ -102,7 +102,7 @@ var require_code = __commonJS({
     }
     exports._ = _;
     var plus = new _Code("+");
-    function str(strs, ...args) {
+    function str2(strs, ...args) {
       const expr = [safeStringify(strs[0])];
       let i = 0;
       while (i < args.length) {
@@ -113,7 +113,7 @@ var require_code = __commonJS({
       optimize(expr);
       return new _Code(expr);
     }
-    exports.str = str;
+    exports.str = str2;
     function addCodeArg(code, arg) {
       if (arg instanceof _Code)
         code.push(...arg._items);
@@ -156,7 +156,7 @@ var require_code = __commonJS({
       return;
     }
     function strConcat(c1, c2) {
-      return c2.emptyStr() ? c1 : c1.emptyStr() ? c2 : str`${c1}${c2}`;
+      return c2.emptyStr() ? c1 : c1.emptyStr() ? c2 : str2`${c1}${c2}`;
     }
     exports.strConcat = strConcat;
     function interpolate(x) {
@@ -1118,22 +1118,22 @@ var require_util = __commonJS({
       return (0, codegen_1._)`${topSchemaRef}${schemaPath}${(0, codegen_1.getProperty)(keyword)}`;
     }
     exports.schemaRefOrVal = schemaRefOrVal;
-    function unescapeFragment(str) {
-      return unescapeJsonPointer(decodeURIComponent(str));
+    function unescapeFragment(str2) {
+      return unescapeJsonPointer(decodeURIComponent(str2));
     }
     exports.unescapeFragment = unescapeFragment;
-    function escapeFragment(str) {
-      return encodeURIComponent(escapeJsonPointer(str));
+    function escapeFragment(str2) {
+      return encodeURIComponent(escapeJsonPointer(str2));
     }
     exports.escapeFragment = escapeFragment;
-    function escapeJsonPointer(str) {
-      if (typeof str == "number")
-        return `${str}`;
-      return str.replace(/~/g, "~0").replace(/\//g, "~1");
+    function escapeJsonPointer(str2) {
+      if (typeof str2 == "number")
+        return `${str2}`;
+      return str2.replace(/~/g, "~0").replace(/\//g, "~1");
     }
     exports.escapeJsonPointer = escapeJsonPointer;
-    function unescapeJsonPointer(str) {
-      return str.replace(/~1/g, "/").replace(/~0/g, "~");
+    function unescapeJsonPointer(str2) {
+      return str2.replace(/~1/g, "/").replace(/~0/g, "~");
     }
     exports.unescapeJsonPointer = unescapeJsonPointer;
     function eachItem(xs, f) {
@@ -2158,8 +2158,8 @@ var require_json_schema_traverse = __commonJS({
         post(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
       }
     }
-    function escapeJsonPtr(str) {
-      return str.replace(/~/g, "~0").replace(/\//g, "~1");
+    function escapeJsonPtr(str2) {
+      return str2.replace(/~/g, "~0").replace(/\//g, "~1");
     }
   }
 });
@@ -3256,10 +3256,10 @@ var require_utils = __commonJS({
         isIPV6: true
       };
     }
-    function findToken(str, token) {
+    function findToken(str2, token) {
       let ind = 0;
-      for (let i = 0; i < str.length; i++) {
-        if (str[i] === token) ind++;
+      for (let i = 0; i < str2.length; i++) {
+        if (str2[i] === token) ind++;
       }
       return ind;
     }
@@ -4273,7 +4273,7 @@ var require_core = __commonJS({
     var util_1 = require_util();
     var $dataRefSchema = require_data();
     var uri_1 = require_uri();
-    var defaultRegExp = (str, flags) => new RegExp(str, flags);
+    var defaultRegExp = (str2, flags) => new RegExp(str2, flags);
     defaultRegExp.code = "new RegExp";
     var META_IGNORE_OPTIONS = ["removeAdditional", "useDefaults", "coerceTypes"];
     var EXT_SCOPE_NAMES = /* @__PURE__ */ new Set([
@@ -5068,16 +5068,16 @@ var require_ucs2length = __commonJS({
   "node_modules/ajv/dist/runtime/ucs2length.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
-    function ucs2length(str) {
-      const len = str.length;
+    function ucs2length(str2) {
+      const len = str2.length;
       let length = 0;
       let pos = 0;
       let value;
       while (pos < len) {
         length++;
-        value = str.charCodeAt(pos++);
+        value = str2.charCodeAt(pos++);
         if (value >= 55296 && value <= 56319 && pos < len) {
-          value = str.charCodeAt(pos);
+          value = str2.charCodeAt(pos);
           if ((value & 64512) === 56320)
             pos++;
         }
@@ -6960,8 +6960,8 @@ var require_formats = __commonJS({
     }
     var DATE = /^(\d\d\d\d)-(\d\d)-(\d\d)$/;
     var DAYS = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    function date5(str) {
-      const matches = DATE.exec(str);
+    function date5(str2) {
+      const matches = DATE.exec(str2);
       if (!matches)
         return false;
       const year = +matches[1];
@@ -6980,8 +6980,8 @@ var require_formats = __commonJS({
     }
     var TIME = /^(\d\d):(\d\d):(\d\d(?:\.\d+)?)(z|([+-])(\d\d)(?::?(\d\d))?)?$/i;
     function getTime(strictTimeZone) {
-      return function time3(str) {
-        const matches = TIME.exec(str);
+      return function time3(str2) {
+        const matches = TIME.exec(str2);
         if (!matches)
           return false;
         const hr = +matches[1];
@@ -7027,8 +7027,8 @@ var require_formats = __commonJS({
     var DATE_TIME_SEPARATOR = /t|\s/i;
     function getDateTime(strictTimeZone) {
       const time3 = getTime(strictTimeZone);
-      return function date_time(str) {
-        const dateTime = str.split(DATE_TIME_SEPARATOR);
+      return function date_time(str2) {
+        const dateTime = str2.split(DATE_TIME_SEPARATOR);
         return dateTime.length === 2 && date5(dateTime[0]) && time3(dateTime[1]);
       };
     }
@@ -7053,13 +7053,13 @@ var require_formats = __commonJS({
     }
     var NOT_URI_FRAGMENT = /\/|:/;
     var URI = /^(?:[a-z][a-z0-9+\-.]*:)(?:\/?\/(?:(?:[a-z0-9\-._~!$&'()*+,;=:]|%[0-9a-f]{2})*@)?(?:\[(?:(?:(?:(?:[0-9a-f]{1,4}:){6}|::(?:[0-9a-f]{1,4}:){5}|(?:[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){4}|(?:(?:[0-9a-f]{1,4}:){0,1}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){3}|(?:(?:[0-9a-f]{1,4}:){0,2}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){2}|(?:(?:[0-9a-f]{1,4}:){0,3}[0-9a-f]{1,4})?::[0-9a-f]{1,4}:|(?:(?:[0-9a-f]{1,4}:){0,4}[0-9a-f]{1,4})?::)(?:[0-9a-f]{1,4}:[0-9a-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?))|(?:(?:[0-9a-f]{1,4}:){0,5}[0-9a-f]{1,4})?::[0-9a-f]{1,4}|(?:(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})?::)|[Vv][0-9a-f]+\.[a-z0-9\-._~!$&'()*+,;=:]+)\]|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)|(?:[a-z0-9\-._~!$&'()*+,;=]|%[0-9a-f]{2})*)(?::\d*)?(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*|\/(?:(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)(?:\?(?:[a-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?(?:#(?:[a-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?$/i;
-    function uri(str) {
-      return NOT_URI_FRAGMENT.test(str) && URI.test(str);
+    function uri(str2) {
+      return NOT_URI_FRAGMENT.test(str2) && URI.test(str2);
     }
     var BYTE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/gm;
-    function byte(str) {
+    function byte(str2) {
       BYTE.lastIndex = 0;
-      return BYTE.test(str);
+      return BYTE.test(str2);
     }
     var MIN_INT32 = -(2 ** 31);
     var MAX_INT32 = 2 ** 31 - 1;
@@ -7073,11 +7073,11 @@ var require_formats = __commonJS({
       return true;
     }
     var Z_ANCHOR = /[^\\]\\Z/;
-    function regex(str) {
-      if (Z_ANCHOR.test(str))
+    function regex(str2) {
+      if (Z_ANCHOR.test(str2))
         return false;
       try {
-        new RegExp(str);
+        new RegExp(str2);
         return true;
       } catch (e) {
         return false;
@@ -11666,14 +11666,14 @@ function promiseAllObject(promisesObj) {
 }
 function randomString(length = 10) {
   const chars = "abcdefghijklmnopqrstuvwxyz";
-  let str = "";
+  let str2 = "";
   for (let i = 0; i < length; i++) {
-    str += chars[Math.floor(Math.random() * chars.length)];
+    str2 += chars[Math.floor(Math.random() * chars.length)];
   }
-  return str;
+  return str2;
 }
-function esc(str) {
-  return JSON.stringify(str);
+function esc(str2) {
+  return JSON.stringify(str2);
 }
 function slugify(input2) {
   return input2.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -11787,8 +11787,8 @@ var primitiveTypes = /* @__PURE__ */ new Set([
   "symbol",
   "undefined"
 ]);
-function escapeRegex(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function escapeRegex(str2) {
+  return str2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 function clone(inst, def, params) {
   const cl = new inst._zod.constr(def ?? inst._zod.def);
@@ -12042,13 +12042,13 @@ function getSizableOrigin(input2) {
   return "unknown";
 }
 var highSurrogate = /[\uD800-\uDBFF]/;
-function codePointLength(str) {
-  const units = str.length;
-  if (!highSurrogate.test(str))
+function codePointLength(str2) {
+  const units = str2.length;
+  if (!highSurrogate.test(str2))
     return units;
   let count = units;
   for (let i = 0; i < units - 1; i++) {
-    if ((str.charCodeAt(i) & 64512) === 55296 && (str.charCodeAt(i + 1) & 64512) === 56320) {
+    if ((str2.charCodeAt(i) & 64512) === 55296 && (str2.charCodeAt(i + 1) & 64512) === 56320) {
       count--;
       i++;
     }
@@ -36586,12 +36586,14 @@ var config2 = {
   // What goes back into the caller's context. The full event log stays on disk.
   maxOutputChars: int2(process.env.CODEX_DELEGATE_MAX_OUTPUT, 6e3),
   runsDir: process.env.CODEX_DELEGATE_RUNS_DIR || join(homedir(), ".codex-delegate", "runs"),
+  // Cost tiers and guidance prompts, edited from the dashboard (see policy.ts).
+  policyFile: process.env.CODEX_DELEGATE_POLICY || join(homedir(), ".codex-delegate", "policy.json"),
   defaultCwd: process.env.CODEX_DELEGATE_CWD || process.cwd()
 };
 
 // src/delegate.ts
 import { randomUUID } from "node:crypto";
-import { existsSync as existsSync4, mkdirSync as mkdirSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { basename, isAbsolute, join as join5, relative, resolve } from "node:path";
 
 // src/checks.ts
@@ -37057,9 +37059,84 @@ function resolveModelOrThrow(query) {
   throw new Error(`${r.reason}.${r.candidates.length ? ` Did you mean one of: ${r.candidates.join(", ")}?` : ""} Use list_models to see all models.`);
 }
 
+// src/policy.ts
+import { mkdirSync, readFileSync as readFileSync5, renameSync, writeFileSync } from "node:fs";
+var DEFAULT_POLICY = {
+  guidance: "Cost policy: Codex usage is billed per token, and the higher tiers cost several times more. Pick the cheapest tier that will get this task right; quality is not negotiable, so cheap means fewer wasted tokens, not a sloppier result. Unsure between two tiers: take the cheaper one, unless the task is in the risky class named by the top tier, where a failed attempt costs more than the difference. Escalate on evidence: after a check FAIL or a wrong result, continue the same session_id one tier up. Keep briefs tight and pass only the checks that prove the change. Frontend design stays with you: page layout, visual style, CSS, component look and feel, and UI copy are yours to do, not Codex's (its design taste is weak); backend, data plumbing and tests behind a UI can still be delegated. When Codex can't work: if a delegate call fails for an environment reason (quota or rate limit, auth, network, codex crash, a timeout or abort with no usable result; not the user pressing Stop), retry once only if the error looks transient. If it still fails, don't quietly take the delegated work over yourself. Estimate what is left that you meant to give Codex: if it is small (a few edits you can already see), finish it and say Codex was unavailable; if it is substantial, stop and ask the user, with the error and the remaining work, whether to wait or fix Codex and continue, have you do it yourself (give a rough size), or do something else.",
+  codexGuidance: "Cost (added by the delegating tool): work economically. Search before opening whole files and read only what you need, prefer a targeted test over re-running the full suite on every step, and stop once the acceptance criteria are met. Never skip the verification needed to be sure the change is correct.",
+  tiers: [
+    { id: "luna-xhigh", model: "gpt-6-luna", effort: "xhigh", use: "Mechanical, fully specified tasks with no meaningful ambiguity or design decisions: renaming, version bumps, applying a provided patch, straightforward lint fixes, or simple factual lookups. The solution should be directly executable without investigating alternatives." },
+    { id: "low", model: "gpt-6.1-sol", effort: "low", use: "Straightforward, well-scoped tasks requiring minor judgment but no novel design: small changes following established patterns, simple bugs with identifiable causes, localized refactoring, or basic tests. Implementation choices should be obvious from existing code or conventions." },
+    { id: "medium", model: "gpt-6.1-sol", effort: "medium", use: "Ordinary feature development or bug fixes requiring reasoning across a few related files, where the implementation is not fully specified. Limited autonomous design decisions are allowed for non-critical, low-risk functionality, including choosing between reasonable local approaches and handling routine edge cases." },
+    { id: "high", model: "gpt-6.1-sol", effort: "high", use: "Complex or high-risk tasks involving unclear root causes, cross-module architecture or design tradeoffs, concurrency, security, financial correctness, data migration, or many interacting edge cases. Requires deep investigation, careful validation, or substantial independent reasoning. Also includes Level 3 tasks that failed due to insufficient reasoning rather than external or environmental issues." }
+  ],
+  models: ["gpt-6.1-sol", "gpt-6-luna"]
+};
+var TIER_ID = /^[a-z0-9][a-z0-9_-]{0,23}$/;
+var SLUG = /^[\w.-]{1,64}$/;
+var MAX_TEXT = 4e3;
+var str = (v) => typeof v === "string" ? v.trim() : void 0;
+function validatePolicy(input2, models = listModels()) {
+  if (!input2 || typeof input2 !== "object" || Array.isArray(input2)) return { ok: false, error: "policy must be a JSON object" };
+  const raw = { ...DEFAULT_POLICY, ...input2 };
+  const guidance = str(raw.guidance);
+  const codexGuidance = str(raw.codexGuidance);
+  if (guidance === void 0 || guidance.length > MAX_TEXT) return { ok: false, error: `guidance must be text of at most ${MAX_TEXT} characters` };
+  if (codexGuidance === void 0 || codexGuidance.length > MAX_TEXT) return { ok: false, error: `codexGuidance must be text of at most ${MAX_TEXT} characters` };
+  if (!Array.isArray(raw.models) || raw.models.length > 32) return { ok: false, error: "models must be a list of at most 32 model slugs" };
+  const allowed = [];
+  for (const m of raw.models) {
+    const slug = str(m);
+    if (!slug || !SLUG.test(slug)) return { ok: false, error: `invalid model slug '${String(m)}'` };
+    if (!allowed.includes(slug)) allowed.push(slug);
+  }
+  if (!Array.isArray(raw.tiers) || !raw.tiers.length || raw.tiers.length > 12) return { ok: false, error: "tiers must be a list of 1 to 12 tiers" };
+  const tiers = [];
+  for (const t of raw.tiers) {
+    const id = str(t?.id)?.toLowerCase() ?? "";
+    if (!TIER_ID.test(id)) return { ok: false, error: `tier id '${id}' must be 1-24 of a-z, 0-9, '-', '_'` };
+    if (tiers.some((x) => x.id === id)) return { ok: false, error: `duplicate tier id '${id}'` };
+    const model2 = str(t.model) || void 0;
+    if (model2 && !SLUG.test(model2)) return { ok: false, error: `tier '${id}': invalid model slug '${model2}'` };
+    const effort = str(t.effort)?.toLowerCase() ?? "";
+    if (!EFFORT_ORDER.includes(effort)) return { ok: false, error: `tier '${id}': unknown effort '${effort}' (known: ${EFFORT_ORDER.join(", ")})` };
+    const use = str(t.use) ?? "";
+    if (!use || use.length > 500) return { ok: false, error: `tier '${id}': 'use' must be 1-500 characters` };
+    const effective = model2 ?? config2.defaultModel ?? configuredModel();
+    if (model2 && allowed.length && !allowed.includes(model2)) return { ok: false, error: `tier '${id}': model '${model2}' is not in the allowed models` };
+    const info = models.find((m) => m.slug === effective);
+    if (info?.efforts.length && !info.efforts.includes(effort)) {
+      return { ok: false, error: `tier '${id}': ${info.slug} does not support effort '${effort}' (supported: ${info.efforts.join(", ")})` };
+    }
+    tiers.push({ id, ...model2 ? { model: model2 } : {}, effort, use });
+  }
+  return { ok: true, policy: { guidance, codexGuidance, tiers, models: allowed } };
+}
+function loadPolicy(file2 = config2.policyFile) {
+  let text2;
+  try {
+    text2 = readFileSync5(file2, "utf8");
+  } catch {
+    return { policy: DEFAULT_POLICY };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text2);
+  } catch (e) {
+    return { policy: DEFAULT_POLICY, error: `${file2} is not valid JSON (${e instanceof Error ? e.message : e}); using the default policy` };
+  }
+  const r = validatePolicy(parsed, []);
+  return r.ok ? { policy: r.policy } : { policy: DEFAULT_POLICY, error: `${file2}: ${r.error}; using the default policy` };
+}
+var findTier = (policy, id) => id ? policy.tiers.find((t) => t.id === id.toLowerCase()) : void 0;
+function tierLabel(t) {
+  const dflt = config2.defaultModel ?? configuredModel();
+  return `${t.model ?? (dflt ? dflt : "codex default")}#${t.effort}`;
+}
+
 // src/pending.ts
 import { createHash as createHash2 } from "node:crypto";
-import { existsSync as existsSync3, mkdirSync, readFileSync as readFileSync5, rmSync, writeFileSync } from "node:fs";
+import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync6, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { join as join4 } from "node:path";
 var MAX_AGE_MS = 24 * 3600 * 1e3;
 var dir = () => join4(config2.runsDir, "pending");
@@ -37075,8 +37152,8 @@ function alive(pid) {
 }
 function savePending(rec) {
   try {
-    mkdirSync(dir(), { recursive: true });
-    writeFileSync(fileFor(rec.cwd), JSON.stringify(rec, null, 2));
+    mkdirSync2(dir(), { recursive: true });
+    writeFileSync2(fileFor(rec.cwd), JSON.stringify(rec, null, 2));
   } catch {
   }
 }
@@ -37085,7 +37162,7 @@ function clearPending(cwd, owner) {
   try {
     if (owner) {
       if (!existsSync3(f)) return;
-      const cur = JSON.parse(readFileSync5(f, "utf8"));
+      const cur = JSON.parse(readFileSync6(f, "utf8"));
       if (cur.pid !== owner.pid || cur.startedAt !== owner.startedAt) return;
     }
     rmSync(f, { force: true });
@@ -37097,7 +37174,7 @@ function loadPending(cwd) {
   if (!existsSync3(f)) return void 0;
   let rec;
   try {
-    rec = JSON.parse(readFileSync5(f, "utf8"));
+    rec = JSON.parse(readFileSync6(f, "utf8"));
   } catch {
     return void 0;
   }
@@ -37195,7 +37272,7 @@ function renderReport(r) {
 // package.json
 var package_default = {
   name: "claude-codex-delegate",
-  version: "0.3.1",
+  version: "0.4.1",
   description: "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna\u2026) while staying the orchestrator.",
   type: "module",
   license: "MIT",
@@ -37232,7 +37309,7 @@ function newRunDir() {
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
   const dir2 = join5(config2.runsDir, `${stamp}-${randomUUID().slice(0, 6)}`);
   try {
-    mkdirSync2(dir2, { recursive: true });
+    mkdirSync3(dir2, { recursive: true });
     return dir2;
   } catch {
     return void 0;
@@ -37256,16 +37333,22 @@ async function delegate(input2, signal) {
   const pending = !readOnly && !input2.fresh ? loadPending(cwd) : void 0;
   const continued = pending && (!input2.session_id || input2.session_id === pending.sessionId) ? pending : void 0;
   if (continued && !input2.session_id) input2 = { ...input2, session_id: continued.sessionId };
-  const query = input2.model ?? (input2.session_id ? void 0 : auto ? config2.defaultModel : config2.readModel);
+  const { policy, error: policyError } = loadPolicy();
+  if (policyError) notes.push(policyError);
+  const tier = findTier(policy, input2.effort);
+  const query = input2.model ?? tier?.model ?? (input2.session_id ? void 0 : auto ? config2.defaultModel : config2.readModel);
   let model2;
-  let effort = input2.effort ?? (readOnly ? config2.readEffort : config2.writeEffort);
+  let effort = tier?.effort ?? input2.effort ?? (readOnly ? config2.readEffort : config2.writeEffort);
   if (query) {
     const r = resolveModelOrThrow(query);
     model2 = r.model;
     if (r.effort && !input2.effort) effort = r.effort;
     if (!r.known) notes.push(`'${r.model}' is not in codex's model cache; passed through as-is`);
   }
-  const clamped = clampEffort(effort, config2.efforts);
+  if (model2 && policy.models.length && !policy.models.includes(model2)) {
+    throw new Error(`model '${model2}' is not allowed by the delegation policy (allowed: ${policy.models.join(", ")}); pick a tier instead`);
+  }
+  const clamped = tier ? effort : clampEffort(effort, config2.efforts);
   if (clamped !== effort) {
     notes.push(`effort '${effort}' is outside the allowed range (${config2.efforts.join(", ")}); used '${clamped}'`);
     effort = clamped;
@@ -37280,7 +37363,7 @@ async function delegate(input2, signal) {
     activeWriters.set(lockKey, { signal, done });
   }
   try {
-    const run = { cwd, sandbox: sandbox2, readOnly, model: model2, effort, fast, images, structured, notes, continued };
+    const run = { cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, fast, images, structured, notes, continued };
     return await execute(input2, run, signal);
   } finally {
     if (!readOnly) {
@@ -37290,7 +37373,7 @@ async function delegate(input2, signal) {
   }
 }
 async function execute(input2, r, signal) {
-  const { cwd, sandbox: sandbox2, readOnly, model: model2, effort, fast, images, structured, notes, continued } = r;
+  const { cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier, codexGuidance, fast, images, structured, notes, continued } = r;
   const runDir = newRunDir();
   const meta3 = {
     id: runDir ? basename(runDir) : "",
@@ -37300,6 +37383,7 @@ async function execute(input2, r, signal) {
     cwd,
     model: model2,
     effort,
+    tier,
     fast,
     sandbox: sandbox2,
     resumed: !!input2.session_id,
@@ -37310,7 +37394,7 @@ async function execute(input2, r, signal) {
   };
   const writeMeta = () => {
     try {
-      if (runDir) writeFileSync2(join5(runDir, "meta.json"), JSON.stringify(meta3));
+      if (runDir) writeFileSync3(join5(runDir, "meta.json"), JSON.stringify(meta3));
     } catch {
     }
   };
@@ -37318,12 +37402,15 @@ async function execute(input2, r, signal) {
   try {
     let prompt = (continued ? continuationPreamble(continued) : "") + input2.prompt;
     if (config2.contract) prompt += readOnly ? READ_CONTRACT : WRITE_CONTRACT;
+    if (codexGuidance) prompt += `
+
+${codexGuidance}`;
     let outputSchemaFile;
     if (runDir) {
-      writeFileSync2(join5(runDir, "prompt.md"), prompt);
+      writeFileSync3(join5(runDir, "prompt.md"), prompt);
       if (structured) {
         outputSchemaFile = join5(runDir, "report.schema.json");
-        writeFileSync2(outputSchemaFile, JSON.stringify(REPORT_SCHEMA, null, 2));
+        writeFileSync3(outputSchemaFile, JSON.stringify(REPORT_SCHEMA, null, 2));
       }
     }
     const rec = readOnly ? void 0 : {
@@ -37395,7 +37482,7 @@ async function execute(input2, r, signal) {
       error: result.error,
       toolCalls: result.toolCalls.length
     });
-    return { model: model2, effort, fast, sandbox: sandbox2, resumed: !!input2.session_id, cwd, notes, result, report, runDir, changes, checks, continued };
+    return { model: model2, effort, tier, fast, sandbox: sandbox2, resumed: !!input2.session_id, cwd, notes, result, report, runDir, changes, checks, continued };
   } catch (error62) {
     meta3.state = signal?.aborted ? "interrupted" : "error";
     meta3.error = error62 instanceof Error ? error62.message : String(error62);
@@ -37441,7 +37528,7 @@ function formatOutcome(o) {
   const model2 = o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`);
   const lines = [
     `status: ${r.ok ? "ok" : "error"}`,
-    `model: ${model2}${o.effort ? `#${o.effort}` : ""}${o.fast !== void 0 ? `, fast: ${o.fast}` : ""}, sandbox: ${o.sandbox}`,
+    `model: ${model2}${o.effort ? `#${o.effort}` : ""}${o.tier ? ` (tier ${o.tier})` : ""}${o.fast !== void 0 ? `, fast: ${o.fast}` : ""}, sandbox: ${o.sandbox}`,
     `session_id: ${r.sessionId ?? "(none)"}`,
     `duration: ${(r.durationMs / 1e3).toFixed(0)}s, codex tokens in/cached/out: ${r.tokens.input}/${r.tokens.cachedInput}/${r.tokens.output}`
   ];
@@ -37465,6 +37552,9 @@ ${seen.map((p) => `  ${p}`).join("\n")}`);
   if (o.runDir) lines.push(`run log: ${o.runDir}`);
   return lines.join("\n");
 }
+
+// src/index.ts
+import { watchFile } from "node:fs";
 
 // src/sessions.ts
 import { closeSync, openSync, readdirSync, readSync, statSync as statSync2 } from "node:fs";
@@ -37530,7 +37620,7 @@ function listSessions(cwd, limit, root = join6(config2.codexHome, "sessions")) {
 
 // src/tasks.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
-import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync6, writeFileSync as writeFileSync3 } from "node:fs";
+import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync4 } from "node:fs";
 import { join as join7 } from "node:path";
 var MAX_FINISHED = 100;
 var tasks = /* @__PURE__ */ new Map();
@@ -37538,10 +37628,10 @@ var tasksDir = () => join7(config2.runsDir, "tasks");
 var taskFile = (id) => join7(tasksDir(), `${id.replace(/[^\w-]/g, "")}.json`);
 function store(t) {
   try {
-    mkdirSync3(tasksDir(), { recursive: true });
+    mkdirSync4(tasksDir(), { recursive: true });
     const text2 = t.outcome ? formatOutcome(t.outcome) : t.error && `error: ${t.error}`;
     const rec = { id: t.id, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, title: t.input.title, text: text2 };
-    writeFileSync3(taskFile(t.id), JSON.stringify(rec));
+    writeFileSync4(taskFile(t.id), JSON.stringify(rec));
   } catch {
   }
 }
@@ -37549,7 +37639,7 @@ function storedTask(id) {
   const f = taskFile(id);
   if (!existsSync5(f)) return void 0;
   try {
-    const rec = JSON.parse(readFileSync6(f, "utf8"));
+    const rec = JSON.parse(readFileSync7(f, "utf8"));
     if (rec.status === "running") rec.status = "interrupted";
     return rec;
   } catch {
@@ -37598,6 +37688,17 @@ async function waitTask(task, waitSec) {
 installExitCleanup();
 var server = new McpServer({ name: "codex-delegate", version: package_default.version });
 var text = (t, isError = false) => ({ content: [{ type: "text", text: t }], isError });
+function effortParam(policy) {
+  const ids = policy.tiers.map((t) => t.id);
+  return external_exports.enum(ids).describe(
+    "Cost tier for this run, chosen by you from the task's difficulty; it sets the model and reasoning effort (an explicit `model` overrides the tier's model). Tiers, cheapest first:\n" + policy.tiers.map((t) => `- ${t.id} (${tierLabel(t)}): ${t.use}`).join("\n") + "\nA follow-up (same session_id) may use a different tier."
+  );
+}
+var DELEGATE_DESCRIPTION = "Run a task with an OpenAI model through the Codex CLI (`codex exec`) and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass it as written rather than restating it. Put test/build commands in `checks`. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.";
+var ASYNC_DESCRIPTION = "Same as delegate, but returns a task_id immediately while the Codex model works in the background. Use for long tasks or to run several in parallel; then call task_result to collect output. Parallel tasks editing the same directory can conflict \u2014 give each its own cwd/worktree or non-overlapping files.";
+var withGuidance = (d, policy) => policy.guidance ? `${d}
+
+${policy.guidance}` : d;
 var delegateShape = {
   prompt: external_exports.string().min(1).describe(
     "Complete, self-contained task for the Codex model. It cannot see this conversation: include goal, relevant files/paths, constraints, and acceptance criteria."
@@ -37605,10 +37706,7 @@ var delegateShape = {
   model: external_exports.string().optional().describe(
     `Codex model: exact slug (e.g. 'gpt-6-sol') or a loose name ('sol 6', 'gpt 6 luna', '5.6 terra'). Omit to use the default: ${config2.defaultModel ?? `the model in ~/.codex/config.toml${configuredModel() ? ` (${configuredModel()})` : ""}`}. On a follow-up (session_id) omitting it keeps the session's model.`
   ),
-  // Required: the lead judges the task's difficulty every time instead of defaulting to the costliest level.
-  effort: (config2.efforts ? external_exports.enum(config2.efforts) : external_exports.string()).describe(
-    `Reasoning effort, chosen by you from the task's difficulty${config2.efforts ? ` (allowed: ${config2.efforts.join(", ")})` : ""}. low: mechanical and fully specified (rename, config/doc tweak, apply a given fix, a lookup question). medium: ordinary feature or bug fix with a clear spec, a few files, existing patterns to follow; most reviews and questions. high: unclear root cause, cross-module design, concurrency/security/data-migration risk, many interacting edge cases, or a previous attempt failed. Unsure between two levels \u2192 the higher one. Escalate on a follow-up (same session_id) if checks fail; a follow-up may use a different level.`
-  ),
+  effort: effortParam(loadPolicy().policy),
   fast: external_exports.boolean().optional().describe(`Fast service tier (priority): faster responses, higher usage. false forces the normal tier. Default: ${config2.fast ?? "service_tier from ~/.codex/config.toml"}.`),
   cwd: external_exports.string().optional().describe("Working directory for the task (absolute, or relative to the server's cwd). Defaults to the current project."),
   images: external_exports.array(external_exports.string()).optional().describe("Image files to attach to the prompt (screenshots, mockups)."),
@@ -37645,11 +37743,11 @@ server.registerTool(
     return text(lines.length ? lines.join("\n") : "(no models match)");
   }
 );
-server.registerTool(
+var delegateTool = server.registerTool(
   "delegate",
   {
     title: "Delegate a task to a Codex model",
-    description: "Run a task with an OpenAI model through the Codex CLI (`codex exec`) and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass it as written rather than restating it. Put test/build commands in `checks`. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.",
+    description: withGuidance(DELEGATE_DESCRIPTION, loadPolicy().policy),
     inputSchema: delegateShape
   },
   async (input2, extra) => {
@@ -37678,11 +37776,11 @@ function taskSummary(t) {
   const model2 = t.outcome?.model ?? t.input.model ?? "(default)";
   return `${t.id}  ${t.status.padEnd(9)} ${secs}s  ${model2}  ${t.input.title ?? t.input.prompt.slice(0, 60).replace(/\s+/g, " ")}`;
 }
-server.registerTool(
+var asyncTool = server.registerTool(
   "delegate_async",
   {
     title: "Start a Codex task in the background",
-    description: "Same as delegate, but returns a task_id immediately while the Codex model works in the background. Use for long tasks or to run several in parallel; then call task_result to collect output. Parallel tasks editing the same directory can conflict \u2014 give each its own cwd/worktree or non-overlapping files.",
+    description: withGuidance(ASYNC_DESCRIPTION, loadPolicy().policy),
     inputSchema: delegateShape
   },
   async (input2) => {
@@ -37770,4 +37868,11 @@ server.registerTool(
     );
   }
 );
+watchFile(config2.policyFile, { interval: 2e3, persistent: false }, () => {
+  const { policy, error: error62 } = loadPolicy();
+  if (error62) console.error(`codex-delegate: ${error62}`);
+  const paramsSchema = { ...delegateShape, effort: effortParam(policy) };
+  delegateTool.update({ description: withGuidance(DELEGATE_DESCRIPTION, policy), paramsSchema });
+  asyncTool.update({ description: withGuidance(ASYNC_DESCRIPTION, policy), paramsSchema });
+});
 await server.connect(new StdioServerTransport());

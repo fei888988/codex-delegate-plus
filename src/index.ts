@@ -6,6 +6,8 @@ import { z } from "zod";
 import { config, configuredModel, SANDBOXES } from "./config.ts";
 import { delegate, formatOutcome } from "./delegate.ts";
 import { listModels } from "./models.ts";
+import { loadPolicy, tierLabel, type Policy } from "./policy.ts";
+import { watchFile } from "node:fs";
 import { listSessions } from "./sessions.ts";
 import { getTask, listTasks, startTask, storedTask, waitTask, type Task } from "./tasks.ts";
 import { installExitCleanup } from "./procs.ts";
@@ -15,6 +17,25 @@ installExitCleanup();
 const server = new McpServer({ name: "codex-delegate", version: pkg.version });
 
 const text = (t: string, isError = false) => ({ content: [{ type: "text" as const, text: t }], isError });
+
+/**
+ * `effort` names a tier of the cost policy (policy.ts): each tier fixes a model and an effort. The
+ * enum, the tier list and the guidance follow the policy file, which the dashboard edits.
+ */
+function effortParam(policy: Policy) {
+  const ids = policy.tiers.map((t) => t.id) as [string, ...string[]];
+  return z.enum(ids).describe(
+    "Cost tier for this run, chosen by you from the task's difficulty; it sets the model and reasoning effort (an explicit `model` overrides the tier's model). Tiers, cheapest first:\n" +
+      policy.tiers.map((t) => `- ${t.id} (${tierLabel(t)}): ${t.use}`).join("\n") +
+      "\nA follow-up (same session_id) may use a different tier.",
+  );
+}
+
+const DELEGATE_DESCRIPTION =
+  "Run a task with an OpenAI model through the Codex CLI (`codex exec`) and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass it as written rather than restating it. Put test/build commands in `checks`. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.";
+const ASYNC_DESCRIPTION =
+  "Same as delegate, but returns a task_id immediately while the Codex model works in the background. Use for long tasks or to run several in parallel; then call task_result to collect output. Parallel tasks editing the same directory can conflict — give each its own cwd/worktree or non-overlapping files.";
+const withGuidance = (d: string, policy: Policy) => (policy.guidance ? `${d}\n\n${policy.guidance}` : d);
 
 const delegateShape = {
   prompt: z
@@ -29,14 +50,7 @@ const delegateShape = {
     .describe(
       `Codex model: exact slug (e.g. 'gpt-6-sol') or a loose name ('sol 6', 'gpt 6 luna', '5.6 terra'). Omit to use the default: ${config.defaultModel ?? `the model in ~/.codex/config.toml${configuredModel() ? ` (${configuredModel()})` : ""}`}. On a follow-up (session_id) omitting it keeps the session's model.`,
     ),
-  // Required: the lead judges the task's difficulty every time instead of defaulting to the costliest level.
-  effort: (config.efforts ? z.enum(config.efforts as [string, ...string[]]) : z.string()).describe(
-    `Reasoning effort, chosen by you from the task's difficulty${config.efforts ? ` (allowed: ${config.efforts.join(", ")})` : ""}. ` +
-      "low: mechanical and fully specified (rename, config/doc tweak, apply a given fix, a lookup question). " +
-      "medium: ordinary feature or bug fix with a clear spec, a few files, existing patterns to follow; most reviews and questions. " +
-      "high: unclear root cause, cross-module design, concurrency/security/data-migration risk, many interacting edge cases, or a previous attempt failed. " +
-      "Unsure between two levels → the higher one. Escalate on a follow-up (same session_id) if checks fail; a follow-up may use a different level.",
-  ),
+  effort: effortParam(loadPolicy().policy),
   fast: z
     .boolean()
     .optional()
@@ -93,12 +107,11 @@ server.registerTool(
   },
 );
 
-server.registerTool(
+const delegateTool = server.registerTool(
   "delegate",
   {
     title: "Delegate a task to a Codex model",
-    description:
-      "Run a task with an OpenAI model through the Codex CLI (`codex exec`) and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass it as written rather than restating it. Put test/build commands in `checks`. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.",
+    description: withGuidance(DELEGATE_DESCRIPTION, loadPolicy().policy),
     inputSchema: delegateShape,
   },
   async (input, extra) => {
@@ -133,12 +146,11 @@ function taskSummary(t: Task): string {
   return `${t.id}  ${t.status.padEnd(9)} ${secs}s  ${model}  ${t.input.title ?? t.input.prompt.slice(0, 60).replace(/\s+/g, " ")}`;
 }
 
-server.registerTool(
+const asyncTool = server.registerTool(
   "delegate_async",
   {
     title: "Start a Codex task in the background",
-    description:
-      "Same as delegate, but returns a task_id immediately while the Codex model works in the background. Use for long tasks or to run several in parallel; then call task_result to collect output. Parallel tasks editing the same directory can conflict — give each its own cwd/worktree or non-overlapping files.",
+    description: withGuidance(ASYNC_DESCRIPTION, loadPolicy().policy),
     inputSchema: delegateShape,
   },
   async (input) => {
@@ -226,5 +238,15 @@ server.registerTool(
     );
   },
 );
+
+// The dashboard rewrites the policy file; refresh the tool definitions so the client sees the new
+// tiers and guidance (Claude Code re-reads them on list_changed; other clients on the next session).
+watchFile(config.policyFile, { interval: 2000, persistent: false }, () => {
+  const { policy, error } = loadPolicy();
+  if (error) console.error(`codex-delegate: ${error}`);
+  const paramsSchema = { ...delegateShape, effort: effortParam(policy) };
+  delegateTool.update({ description: withGuidance(DELEGATE_DESCRIPTION, policy), paramsSchema });
+  asyncTool.update({ description: withGuidance(ASYNC_DESCRIPTION, policy), paramsSchema });
+});
 
 await server.connect(new StdioServerTransport());

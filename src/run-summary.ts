@@ -16,6 +16,8 @@ export interface RunSummary {
   cwd?: string;
   model?: string;
   effort?: string;
+  /** Policy tier the model/effort came from. */
+  tier?: string;
   fast?: boolean;
   sandbox?: Sandbox;
   resumed?: boolean;

@@ -141,5 +141,7 @@ export const config = {
   // What goes back into the caller's context. The full event log stays on disk.
   maxOutputChars: int(process.env.CODEX_DELEGATE_MAX_OUTPUT, 6000),
   runsDir: process.env.CODEX_DELEGATE_RUNS_DIR || join(homedir(), ".codex-delegate", "runs"),
+  // Cost tiers and guidance prompts, edited from the dashboard (see policy.ts).
+  policyFile: process.env.CODEX_DELEGATE_POLICY || join(homedir(), ".codex-delegate", "policy.json"),
   defaultCwd: process.env.CODEX_DELEGATE_CWD || process.cwd(),
 };
