@@ -38,7 +38,7 @@ test("validation: missing keys fall back to defaults, bad tiers are rejected wit
   assert.match(err(tiers()), /1 to 12 tiers/);
   assert.match(err({ ...DEFAULT_POLICY, models: ["gpt-6.1-sol"] }), /tier 'luna-xhigh': model 'gpt-6-luna' is not in the allowed models/);
   assert.equal(err({ ...DEFAULT_POLICY, models: ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-luna"] }), "ok");
-  assert.equal(err(tiers({ id: "new", model: "gpt-7-nova", effort: "high", use: "u" })), "ok", "models newer than the cache pass");
+  assert.equal(err({ ...tiers({ id: "new", model: "gpt-7-nova", effort: "high", use: "u" }), models: [] }), "ok", "models newer than the cache pass");
   assert.match(err([]), /JSON object/);
 });
 

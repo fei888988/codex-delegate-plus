@@ -36530,6 +36530,9 @@ function int2(v, dflt) {
   const n = Number.parseInt(v ?? "", 10);
   return Number.isFinite(n) && n > 0 ? n : dflt;
 }
+function idleSeconds(v, dflt) {
+  return v?.trim() === "0" ? 0 : int2(v, dflt);
+}
 var SANDBOXES = ["read-only", "workspace-write", "danger-full-access"];
 function sandbox(v) {
   return SANDBOXES.includes(v ?? "") ? v : "workspace-write";
@@ -36583,6 +36586,9 @@ var config2 = {
   contract: bool(process.env.CODEX_DELEGATE_CONTRACT, true),
   timeoutSec: int2(process.env.CODEX_DELEGATE_TIMEOUT, 1800),
   checkTimeoutSec: int2(process.env.CODEX_DELEGATE_CHECK_TIMEOUT, 600),
+  idleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_IDLE_TIMEOUT, 600),
+  commandIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT, 1200),
+  checkIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_CHECK_IDLE_TIMEOUT, 300),
   // What goes back into the caller's context. The full event log stays on disk.
   maxOutputChars: int2(process.env.CODEX_DELEGATE_MAX_OUTPUT, 6e3),
   runsDir: process.env.CODEX_DELEGATE_RUNS_DIR || join(homedir(), ".codex-delegate", "runs"),
@@ -36601,11 +36607,75 @@ import { spawn } from "node:child_process";
 
 // src/procs.ts
 import { spawnSync } from "node:child_process";
+
+// src/windows-process-tree.ts
+function windowsProcessTreeScript(cpuPid = 0) {
+  return `
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class DelegateProcesses {
+ [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Auto)] public struct Entry {
+  public uint size, usage, pid; public IntPtr heap; public uint module, threads, parent; public int priority; public uint flags;
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)] public string name;
+ }
+ [DllImport("kernel32.dll")] public static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+ [DllImport("kernel32.dll", CharSet=CharSet.Auto)] public static extern bool Process32First(IntPtr h, ref Entry e);
+ [DllImport("kernel32.dll", CharSet=CharSet.Auto)] public static extern bool Process32Next(IntPtr h, ref Entry e);
+ [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+ public static void Print(uint root) {
+  var h=CreateToolhelp32Snapshot(2,0);
+  var rows=new System.Collections.Generic.List<Entry>();
+  try { var e=new Entry(); e.size=(uint)Marshal.SizeOf(e);
+   if(Process32First(h,ref e)) do { rows.Add(e); } while(Process32Next(h,ref e));
+  } finally { CloseHandle(h); }
+  var ids=new System.Collections.Generic.HashSet<uint>(); ids.Add(root);
+  bool changed=true;
+  while(root!=0 && changed) { changed=false; foreach(var e in rows) if(ids.Contains(e.parent) && ids.Add(e.pid)) changed=true; }
+  foreach(var e in rows) if(root==0 || ids.Contains(e.pid)) {
+    double cpu=0;
+    if(root!=0) try { using(var p=System.Diagnostics.Process.GetProcessById((int)e.pid)) cpu=p.TotalProcessorTime.TotalMilliseconds; } catch {}
+    Console.WriteLine(e.pid+" "+e.parent+" "+cpu.ToString(System.Globalization.CultureInfo.InvariantCulture));
+  }
+ }
+}
+'@
+[DelegateProcesses]::Print(${Number.isInteger(cpuPid) && cpuPid > 0 ? cpuPid : 0})
+`;
+}
+
+// src/procs.ts
 var live = /* @__PURE__ */ new Set();
+function killWindowsTree(pid) {
+  const killed = spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 5e3 });
+  if (killed.status === 0) return;
+  const snapshot2 = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", windowsProcessTreeScript()],
+    { encoding: "utf8", windowsHide: true, timeout: 5e3 }
+  );
+  const rows = (snapshot2.stdout ?? "").trim().split(/\r?\n/).map((line) => line.trim().split(/\s+/).map(Number));
+  const ids = /* @__PURE__ */ new Set([pid]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [child, parent] of rows) if (child && parent && ids.has(parent) && !ids.has(child)) {
+      ids.add(child);
+      changed = true;
+    }
+  }
+  for (const id of [...ids].reverse()) {
+    try {
+      process.kill(id, "SIGKILL");
+    } catch {
+    }
+  }
+}
 function killTree(child, force = false) {
   if (child.pid === void 0 || child.exitCode !== null || child.signalCode !== null) return;
   if (process.platform === "win32") {
-    spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    killWindowsTree(child.pid);
+    child.kill("SIGKILL");
     return;
   }
   try {
@@ -36623,10 +36693,19 @@ function stop(child, graceMs = 3e3) {
   if (process.platform !== "win32") setTimeout(() => killTree(child, true), graceMs).unref();
 }
 function killOrphan(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
   if (process.platform === "win32") {
-    const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true });
-    if (!/^"(node|codex)\.exe"/im.test(r.stdout ?? "")) return;
-    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+    const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true, timeout: 5e3 });
+    if (!/^"(node|codex)\.exe"/im.test(r.stdout ?? "")) {
+      const name = spawnSync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-Process -Id ${pid} -ErrorAction Stop).ProcessName`
+      ], { encoding: "utf8", windowsHide: true, timeout: 5e3 });
+      if (!/^(node|codex)$/i.test(name.stdout?.trim() ?? "")) return;
+    }
+    killWindowsTree(pid);
     return;
   }
   try {
@@ -36651,52 +36730,185 @@ function installExitCleanup() {
   }
 }
 
+// src/watchdog.ts
+import { execFile } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
+function capture(cmd, args, signal) {
+  return new Promise((resolve4) => {
+    execFile(
+      cmd,
+      args,
+      { windowsHide: true, timeout: 4e3, maxBuffer: 8 * 1024 * 1024, signal },
+      (err, stdout) => resolve4(err ? "" : stdout)
+    );
+  });
+}
+async function cpuTree(pid, signal) {
+  const rows = [];
+  if (process.platform === "win32") {
+    const out = await capture("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsProcessTreeScript(pid)], signal);
+    for (const line of out.trim().split(/\r?\n/)) {
+      const [id, parent, cpu] = line.trim().split(/\s+/).map(Number);
+      if (id !== void 0 && parent !== void 0 && Number.isFinite(cpu)) rows.push({ pid: id, parent, cpu });
+    }
+  } else {
+    const out = await capture("ps", ["-A", "-o", "pid=,ppid=,time="], signal);
+    for (const line of out.trim().split("\n")) {
+      const m = /^\s*(\d+)\s+(\d+)\s+(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)\s*$/.exec(line);
+      if (m) rows.push({ pid: +m[1], parent: +m[2], cpu: ((+m[3] || 0) * 86400 + (+m[4] || 0) * 3600 + +m[5] * 60 + +m[6]) * 1e3 });
+    }
+  }
+  const tree = /* @__PURE__ */ new Map();
+  const ids = /* @__PURE__ */ new Set([pid]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const r of rows) if (ids.has(r.parent) && !ids.has(r.pid)) {
+      ids.add(r.pid);
+      changed = true;
+    }
+  }
+  for (const r of rows) if (ids.has(r.pid)) tree.set(r.pid, r.cpu);
+  return tree;
+}
+var sampleTreeCpu = async (pid, signal) => {
+  try {
+    const before = await cpuTree(pid, signal);
+    await delay(5e3, void 0, { signal });
+    const after = await cpuTree(pid, signal);
+    return [...after].some(([id, cpu]) => cpu - (before.get(id) ?? 0) > 20);
+  } catch {
+    return false;
+  }
+};
+function idleWatchdog(pid, window, stalled, sample = sampleTreeCpu) {
+  let timer;
+  let generation = 0;
+  let disposed = false;
+  let extended2 = false;
+  let sampling;
+  const arm = (extra) => {
+    clearTimeout(timer);
+    const w = window();
+    if (disposed || !w || w.timeoutMs <= 0) return;
+    timer = setTimeout(async () => {
+      const version4 = generation;
+      const controller = sampling = new AbortController();
+      let busy = false;
+      try {
+        if (pid !== void 0) busy = await sample(pid, controller.signal);
+      } catch {
+      }
+      if (disposed || version4 !== generation) return;
+      const current = window();
+      if (!current || current.key !== w.key) {
+        arm();
+        return;
+      }
+      if (busy && !extended2) {
+        extended2 = true;
+        arm(current.timeoutMs);
+      } else stalled();
+    }, extra ?? Math.max(1, w.since + w.timeoutMs - Date.now()));
+    timer.unref();
+  };
+  arm();
+  return {
+    touch() {
+      generation++;
+      extended2 = false;
+      sampling?.abort();
+      arm();
+    },
+    dispose() {
+      disposed = true;
+      generation++;
+      sampling?.abort();
+      clearTimeout(timer);
+    }
+  };
+}
+
 // src/checks.ts
 var TAIL_CHARS = 2500;
-function runCheck(command, cwd, timeoutMs, signal) {
+function runCheck(command, cwd, timeoutMs, signal, options = {}) {
   const started = Date.now();
   return new Promise((resolve4) => {
     const child = spawn(command, { cwd, shell: true, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
     track(child);
     let out = "";
     let timedOut = false;
+    let stalled = false;
+    let settled = false;
+    let lastOutputAt;
+    const progress = (result) => {
+      try {
+        options.onProgress?.({ command, startedAt: started, lastOutputAt, result });
+      } catch {
+      }
+    };
+    progress();
+    const watchdog = idleWatchdog(child.pid, () => ({
+      key: "check",
+      since: lastOutputAt ?? started,
+      timeoutMs: options.idleTimeoutMs ?? config2.checkIdleTimeoutSec * 1e3
+    }), () => {
+      timedOut = stalled = true;
+      stop(child);
+    }, options.cpuSampler);
     const add = (chunk) => {
       out = (out + chunk.toString("utf8")).slice(-64 * 1024);
+      lastOutputAt = Date.now();
+      watchdog.touch();
+      progress();
     };
     child.stdout.on("data", add);
     child.stderr.on("data", add);
     const timer = setTimeout(() => {
+      watchdog.dispose();
       timedOut = true;
       stop(child);
     }, timeoutMs);
-    const onAbort = () => stop(child);
+    const onAbort = () => {
+      watchdog.dispose();
+      clearTimeout(timer);
+      stop(child);
+    };
     signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
     const done = (exitCode, err) => {
+      if (settled) return;
+      settled = true;
+      watchdog.dispose();
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       if (err) out += `
 ${err}`;
       const lines = out.split(/\r?\n/).map((l) => l.trimEnd()).filter((l) => l.trim());
-      const ok = exitCode === 0 && !timedOut;
-      resolve4({
+      const ok = exitCode === 0 && !timedOut && !signal?.aborted && !err;
+      const result = {
         command,
         ok,
         exitCode,
         timedOut,
+        stalled,
+        startedAt: started,
         durationMs: Date.now() - started,
         lastLine: (lines.at(-1) ?? "").slice(0, 200),
         tail: ok ? void 0 : out.slice(-TAIL_CHARS).trim()
-      });
+      };
+      progress(result);
+      resolve4(result);
     };
     child.on("error", (e) => done(null, e.message));
     child.on("close", (code) => done(code));
   });
 }
-async function runChecks(commands, cwd, timeoutMs, signal) {
+async function runChecks(commands, cwd, timeoutMs, signal, options = {}) {
   const results = [];
   for (const c of commands) {
     if (signal?.aborted) break;
-    results.push(await runCheck(c, cwd, timeoutMs, signal));
+    results.push(await runCheck(c, cwd, timeoutMs, signal, options));
   }
   return results;
 }
@@ -36704,6 +36916,14 @@ async function runChecks(commands, cwd, timeoutMs, signal) {
 // src/codex.ts
 import { spawn as spawn2 } from "node:child_process";
 import { createWriteStream, existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
+function classifyError(text2) {
+  if (/quota|usage limit|insufficient_quota|credits|billing|exceeded.*usage/i.test(text2)) return "quota";
+  if (/rate.?limit|429|too many requests/i.test(text2)) return "rate_limit";
+  if (/auth|401|403|api.?key|unauthorized|forbidden|log.?in/i.test(text2)) return "auth";
+  if (/network|connect|ECONN|ENOTFOUND|fetch failed|socket|stream disconnect|timed? ?out|\b50[234]\b/i.test(text2)) return "network";
+  if (/context|token limit|too many tokens|maximum.*tokens/i.test(text2)) return "context";
+  return "other";
+}
 var toml = (v) => JSON.stringify(v);
 function buildArgs(o) {
   const args = ["exec"];
@@ -36743,7 +36963,10 @@ var EventCollector = class {
   warnings = [];
   errors = [];
   raw = [];
+  lastEventAt = Date.now();
+  inflight = /* @__PURE__ */ new Map();
   push(line) {
+    this.lastEventAt = Date.now();
     const trimmed = line.trim();
     if (!trimmed) return;
     let e;
@@ -36754,10 +36977,19 @@ var EventCollector = class {
       return;
     }
     switch (e.type) {
+      case "item.started":
+        if (e.item?.id) this.inflight.set(e.item.id, {
+          id: e.item.id,
+          type: e.item.type,
+          command: e.item.command,
+          startedAt: this.lastEventAt
+        });
+        break;
       case "thread.started":
         this.sessionId ??= e.thread_id;
         break;
       case "item.completed":
+        this.inflight.delete(e.item?.id);
         this.item(e.item ?? {});
         break;
       case "turn.completed": {
@@ -36852,6 +37084,18 @@ function runCodex(o) {
     let stderr = "";
     let timedOut = false;
     let settled = false;
+    let stall;
+    const progress = () => {
+      try {
+        o.onProgress?.({
+          codexPid: child.pid,
+          lastEventAt: collector.lastEventAt,
+          inflight: collector.inflight.values().next().value
+        });
+      } catch {
+      }
+    };
+    progress();
     let announced = false;
     const announce = () => {
       if (announced || !collector.sessionId) return;
@@ -36861,19 +37105,57 @@ function runCodex(o) {
       } catch {
       }
     };
-    const kill = () => stop(child);
+    const kill = () => {
+      watchdog.dispose();
+      if (timer) clearTimeout(timer);
+      stop(child);
+    };
+    const idleWindow = () => {
+      const commands = [...collector.inflight.values()].filter((it) => it.type === "command_execution");
+      if (commands.length === 1) {
+        const it = commands[0];
+        return {
+          key: it.id,
+          since: Math.max(it.startedAt, collector.lastEventAt),
+          timeoutMs: o.idleTimeoutMs ?? config2.commandIdleTimeoutSec * 1e3
+        };
+      }
+      if (!commands.length) return {
+        key: "silent",
+        since: collector.lastEventAt,
+        timeoutMs: o.idleTimeoutMs ?? config2.idleTimeoutSec * 1e3
+      };
+      return void 0;
+    };
+    const watchdog = idleWatchdog(child.pid, idleWindow, () => {
+      const command = [...collector.inflight.values()].find((it) => it.type === "command_execution");
+      stall = {
+        kind: command ? "command" : "silent",
+        idleMs: Date.now() - collector.lastEventAt,
+        command: command?.command,
+        commandStartedAt: command?.startedAt
+      };
+      kill();
+    }, o.cpuSampler);
     const timer = o.timeoutMs ? setTimeout(() => {
       timedOut = true;
       kill();
     }, o.timeoutMs) : void 0;
     o.signal?.addEventListener("abort", kill, { once: true });
+    if (o.signal?.aborted) kill();
     child.stdout.setEncoding("utf8").on("data", (chunk) => {
       log?.write(chunk);
       buf += chunk;
       let i;
+      let sawLine = false;
       while ((i = buf.indexOf("\n")) >= 0) {
+        sawLine = true;
         collector.push(buf.slice(0, i));
         buf = buf.slice(i + 1);
+      }
+      if (sawLine) {
+        watchdog.touch();
+        progress();
       }
       announce();
     });
@@ -36883,8 +37165,12 @@ function runCodex(o) {
     const finish = (exitCode, spawnError) => {
       if (settled) return;
       settled = true;
+      watchdog.dispose();
+      o.signal?.removeEventListener("abort", kill);
       if (timer) clearTimeout(timer);
-      collector.push(buf);
+      if (buf) collector.push(buf);
+      progress();
+      announce();
       if (stderr.trim()) log?.write(`
 # stderr (tail)
 ${stderr}
@@ -36894,12 +37180,20 @@ ${stderr}
       if (spawnError) errors.push(spawnError);
       if (timedOut) errors.push(`timed out after ${Math.round((o.timeoutMs ?? 0) / 1e3)}s`);
       else if (o.signal?.aborted) errors.push("cancelled");
+      if (stall) errors.push(`stalled: no codex output for ${Math.round(stall.idleMs / 6e4)}m${stall.command ? ` while running: ${stall.command.slice(0, 200)}` : " (model silent)"}`);
       if (exitCode && !errors.length) {
         const tail = stderr.split("\n").filter((l) => l.trim() && !l.startsWith("Reading additional input")).slice(-5).join("\n");
         errors.push(tail || `exit code ${exitCode}`);
       }
+      const exitKind = timedOut ? "timeout" : stall ? "stalled" : o.signal?.aborted ? "cancelled" : spawnError ? "crashed" : collector.errors.length ? "api_error" : exitCode !== 0 || !collector.turns ? "crashed" : "completed";
+      if (exitKind === "crashed" && !errors.length) errors.push("codex exited without turn.completed");
+      const error62 = errors.join("; ") || void 0;
       resolve4({
-        ok: exitCode === 0 && !errors.length,
+        ok: exitKind === "completed",
+        exitKind,
+        errorKind: error62 ? classifyError(error62) : void 0,
+        stalled: !!stall,
+        stall,
         sessionId: collector.sessionId,
         text: readFinal(o.lastMessageFile) ?? collector.finalText,
         logFile: o.logFile,
@@ -36908,7 +37202,7 @@ ${stderr}
         tokens: collector.tokens,
         turns: collector.turns,
         warnings: collector.warnings,
-        error: errors.join("; ") || void 0,
+        error: error62,
         exitCode,
         timedOut,
         durationMs: Date.now() - started
@@ -37272,7 +37566,7 @@ function renderReport(r) {
 // package.json
 var package_default = {
   name: "claude-codex-delegate",
-  version: "0.4.1",
+  version: "0.5.1",
   description: "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna\u2026) while staying the orchestrator.",
   type: "module",
   license: "MIT",
@@ -37315,7 +37609,7 @@ function newRunDir() {
     return void 0;
   }
 }
-async function delegate(input2, signal) {
+async function delegate(input2, signal, onProgress) {
   const cwd = resolve(config2.defaultCwd, input2.cwd ?? ".");
   if (!existsSync4(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const auto = input2.auto ?? config2.auto;
@@ -37364,7 +37658,7 @@ async function delegate(input2, signal) {
   }
   try {
     const run = { cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, fast, images, structured, notes, continued };
-    return await execute(input2, run, signal);
+    return await execute(input2, run, signal, onProgress);
   } finally {
     if (!readOnly) {
       activeWriters.delete(lockKey);
@@ -37372,7 +37666,7 @@ async function delegate(input2, signal) {
     }
   }
 }
-async function execute(input2, r, signal) {
+async function execute(input2, r, signal, onProgress) {
   const { cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier, codexGuidance, fast, images, structured, notes, continued } = r;
   const runDir = newRunDir();
   const meta3 = {
@@ -37390,15 +37684,45 @@ async function execute(input2, r, signal) {
     sessionId: input2.session_id,
     continuedFrom: continued?.sessionId,
     prompt: input2.prompt.slice(0, 2e3),
-    version: version3
+    version: version3,
+    phase: "codex",
+    pid: process.pid,
+    heartbeatAt: Date.now(),
+    lastEventAt: Date.now(),
+    idleTimeoutSec: input2.idle_timeout_s ?? config2.idleTimeoutSec,
+    commandIdleTimeoutSec: input2.idle_timeout_s ?? config2.commandIdleTimeoutSec,
+    checkIdleTimeoutSec: config2.checkIdleTimeoutSec
   };
+  let lastWrite = 0;
+  let lastSnapshot = "";
+  let pendingWrite;
   const writeMeta = () => {
+    clearTimeout(pendingWrite);
+    pendingWrite = void 0;
+    const serialized = JSON.stringify(meta3);
+    if (serialized === lastSnapshot) return;
+    lastSnapshot = serialized;
+    lastWrite = Date.now();
     try {
-      if (runDir) writeFileSync3(join5(runDir, "meta.json"), JSON.stringify(meta3));
+      if (runDir) writeFileSync3(join5(runDir, "meta.json"), serialized);
     } catch {
     }
   };
+  const progress = () => {
+    try {
+      onProgress?.({ ...meta3 });
+    } catch {
+    }
+    if (Date.now() - lastWrite >= 2e3) writeMeta();
+    else pendingWrite ??= setTimeout(writeMeta, 2e3 - (Date.now() - lastWrite));
+  };
   writeMeta();
+  progress();
+  const heartbeat = setInterval(() => {
+    meta3.heartbeatAt = Date.now();
+    progress();
+  }, 15e3);
+  heartbeat.unref();
   try {
     let prompt = (continued ? continuationPreamble(continued) : "") + input2.prompt;
     if (config2.contract) prompt += readOnly ? READ_CONTRACT : WRITE_CONTRACT;
@@ -37430,12 +37754,23 @@ ${codexGuidance}`;
     const before = snapshot(cwd);
     const result = await runCodex({
       onSpawn: (pid) => {
+        meta3.codexPid = pid;
+        progress();
         if (rec) savePending({ ...rec, codexPid: rec.codexPid = pid });
       },
       onSession: (id) => {
         meta3.sessionId = id;
-        writeMeta();
+        progress();
         if (rec && rec.sessionId !== id) savePending({ ...rec, sessionId: rec.sessionId = id });
+      },
+      onProgress: (info) => {
+        const it = info.inflight;
+        Object.assign(meta3, {
+          codexPid: info.codexPid,
+          lastEventAt: info.lastEventAt,
+          inflight: it && { type: it.type, command: it.command, startedAt: it.startedAt }
+        });
+        progress();
       },
       prompt,
       model: model2,
@@ -37447,11 +37782,20 @@ ${codexGuidance}`;
       fork: input2.fork,
       sandbox: sandbox2,
       timeoutMs: (input2.timeout_s ?? config2.timeoutSec) * 1e3,
+      idleTimeoutMs: input2.idle_timeout_s === void 0 ? void 0 : input2.idle_timeout_s * 1e3,
       signal,
       lastMessageFile: runDir && join5(runDir, "last-message.txt"),
       outputSchemaFile,
       logFile: runDir && join5(runDir, "events.jsonl")
     });
+    Object.assign(meta3, {
+      exitKind: result.exitKind,
+      errorKind: result.errorKind,
+      stall: result.stall,
+      inflight: void 0,
+      error: result.error
+    });
+    progress();
     const after = before && snapshot(cwd);
     const changes = before && after ? diffStat(cwd, diffSnapshots(before, after)) : void 0;
     if (rec) {
@@ -37466,7 +37810,19 @@ ${codexGuidance}`;
     if (structured && !report && result.ok) notes.push("codex did not return the JSON report; showing its raw final message");
     let checks;
     if (input2.checks?.length && !signal?.aborted) {
-      checks = await runChecks(input2.checks, cwd, config2.checkTimeoutSec * 1e3, signal);
+      meta3.phase = "checks";
+      meta3.checksStartedAt = Date.now();
+      meta3.checks = [];
+      progress();
+      checks = await runChecks(input2.checks, cwd, config2.checkTimeoutSec * 1e3, signal, {
+        onProgress: ({ command, startedAt, lastOutputAt, result: result2 }) => {
+          const records = meta3.checks;
+          if (!records.length || records.at(-1).state !== "running") records.push({ command, startedAt, state: "running" });
+          const { tail, ...summary } = result2 ?? {};
+          Object.assign(records.at(-1), summary, { lastOutputAt, state: result2 ? "done" : "running" });
+          progress();
+        }
+      });
     }
     Object.assign(meta3, {
       state: signal?.aborted ? "interrupted" : result.ok ? "ok" : "error",
@@ -37477,7 +37833,6 @@ ${codexGuidance}`;
       summary: report?.summary,
       report,
       changes,
-      checks: checks?.map(({ tail, ...check2 }) => check2),
       notes: [...notes, ...result.warnings],
       error: result.error,
       toolCalls: result.toolCalls.length
@@ -37486,10 +37841,19 @@ ${codexGuidance}`;
   } catch (error62) {
     meta3.state = signal?.aborted ? "interrupted" : "error";
     meta3.error = error62 instanceof Error ? error62.message : String(error62);
+    meta3.exitKind ??= signal?.aborted ? "cancelled" : "crashed";
+    meta3.errorKind = classifyError(meta3.error);
     throw error62;
   } finally {
+    clearInterval(heartbeat);
+    meta3.phase = "done";
+    meta3.inflight = void 0;
     meta3.endedAt = Date.now();
     meta3.durationMs = meta3.endedAt - meta3.startedAt;
+    try {
+      onProgress?.({ ...meta3 });
+    } catch {
+    }
     writeMeta();
   }
 }
@@ -37523,15 +37887,28 @@ function renderChecks(checks) {
   }
   return lines.join("\n");
 }
+var REPORT_NEXT = {
+  needs_decision: "decide now: answer each QUESTION yourself from the brief, the code and the user's stated goals, then resume with session_id and your decisions; ask the user only when it is genuinely their call (product, risk, scope)",
+  partial: "resume with session_id to finish the remaining items, or take over only if they are small",
+  blocked: "codex could not proceed: read the reason; fix the environment or brief and resume, or ask the user if it needs them"
+};
 function formatOutcome(o) {
   const r = o.result;
   const model2 = o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`);
   const lines = [
-    `status: ${r.ok ? "ok" : "error"}`,
+    r.exitKind === "completed" ? "status: ok" : `status: error (${r.exitKind}${r.errorKind ? `/${r.errorKind}` : ""})`,
     `model: ${model2}${o.effort ? `#${o.effort}` : ""}${o.tier ? ` (tier ${o.tier})` : ""}${o.fast !== void 0 ? `, fast: ${o.fast}` : ""}, sandbox: ${o.sandbox}`,
     `session_id: ${r.sessionId ?? "(none)"}`,
     `duration: ${(r.durationMs / 1e3).toFixed(0)}s, codex tokens in/cached/out: ${r.tokens.input}/${r.tokens.cachedInput}/${r.tokens.output}`
   ];
+  if (r.exitKind !== "completed") {
+    const hint = r.errorKind === "quota" || r.errorKind === "auth" ? "environment problem: tell the user, don't take over" : r.exitKind === "stalled" ? `codex hung on ${r.stall?.command?.replace(/\s+/g, " ").slice(0, 200) ?? "a silent model turn"}; the session keeps context: resume with session_id and tell it the command hung (run it with a timeout / fix the hang)` : (r.exitKind === "crashed" || r.exitKind === "api_error") && (r.errorKind === "network" || r.errorKind === "rate_limit") ? "transient: retry once with the same session_id" : void 0;
+    if (hint) lines.splice(1, 0, `next: ${hint}`);
+  } else if (o.report && o.report.status !== "done") {
+    const n = o.report.questions?.length ?? 0;
+    lines[0] = `status: ${o.report.status} (codex finished but the work is not done)`;
+    lines.splice(1, 0, `next: ${REPORT_NEXT[o.report.status]}${o.report.status === "needs_decision" && n ? ` (${n} question${n > 1 ? "s" : ""} below)` : ""}`);
+  }
   if (o.continued) {
     lines.push(`continued: the interrupted run in this cwd (session ${o.continued.sessionId}); codex kept its context and partial edits and was told your new message wins. Pass fresh: true to start over instead.`);
   }
@@ -37653,7 +38030,9 @@ function prune() {
 function startTask(input2) {
   const controller = new AbortController();
   const task = { id: `task_${randomUUID2().slice(0, 8)}`, input: input2, status: "running", startedAt: Date.now(), controller };
-  task.promise = delegate(input2, controller.signal).then(
+  task.promise = delegate(input2, controller.signal, (info) => {
+    task.progress = info;
+  }).then(
     (outcome) => {
       task.outcome = outcome;
       task.status = controller.signal.aborted ? "cancelled" : outcome.result.ok ? "done" : "error";
@@ -37673,6 +38052,13 @@ function startTask(input2) {
 }
 function getTask(id) {
   return tasks.get(id);
+}
+function runningProgress(task) {
+  const p = task.progress;
+  const minutes = ((Date.now() - (p?.lastEventAt ?? task.startedAt)) / 6e4).toFixed(1);
+  const command = p?.inflight?.command ?? p?.checks?.find((c) => c.state === "running")?.command;
+  return `phase: ${p?.phase ?? "codex"}; last codex event: ${minutes}m ago${command ? `
+inflight: ${command.replace(/\s+/g, " ").slice(0, 200)}` : ""}`;
 }
 function listTasks() {
   return [...tasks.values()].sort((a, b) => b.startedAt - a.startedAt);
@@ -37694,7 +38080,7 @@ function effortParam(policy) {
     "Cost tier for this run, chosen by you from the task's difficulty; it sets the model and reasoning effort (an explicit `model` overrides the tier's model). Tiers, cheapest first:\n" + policy.tiers.map((t) => `- ${t.id} (${tierLabel(t)}): ${t.use}`).join("\n") + "\nA follow-up (same session_id) may use a different tier."
   );
 }
-var DELEGATE_DESCRIPTION = "Run a task with an OpenAI model through the Codex CLI (`codex exec`) and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass it as written rather than restating it. Put test/build commands in `checks`. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.";
+var DELEGATE_DESCRIPTION = "Run a task with an OpenAI model through the Codex CLI (`codex exec`) and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass it as written rather than restating it. Put test/build commands in `checks`. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id. A result whose first line is `status: needs_decision` (or partial/blocked) is not finished: make the decisions yourself and resume the same session_id with them in this turn; ask the user only for choices that are really theirs.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.";
 var ASYNC_DESCRIPTION = "Same as delegate, but returns a task_id immediately while the Codex model works in the background. Use for long tasks or to run several in parallel; then call task_result to collect output. Parallel tasks editing the same directory can conflict \u2014 give each its own cwd/worktree or non-overlapping files.";
 var withGuidance = (d, policy) => policy.guidance ? `${d}
 
@@ -37717,6 +38103,7 @@ var delegateShape = {
   ),
   auto: external_exports.boolean().optional().describe(`Shorthand: false = read-only sandbox, for reading files, reviews and questions. Default: ${config2.auto}. An explicit sandbox wins.`),
   title: external_exports.string().optional().describe("Short label shown in task_list."),
+  idle_timeout_s: external_exports.number().int().min(0).optional().describe("Override both codex idle timeouts in seconds; 0 disables idle detection."),
   timeout_s: external_exports.number().int().positive().optional().describe(`Kill the run after this many seconds. Default: ${config2.timeoutSec}.`),
   checks: external_exports.array(external_exports.string()).optional().describe(
     `Shell commands (tests, build, lint) the server runs on the host in cwd after codex finishes, through ${process.platform === "win32" ? "cmd.exe (Windows: no bash syntax)" : "/bin/sh"}. Results come back as PASS/FAIL with the output tail on failure, so you don't need to re-run them yourself.`
@@ -37774,7 +38161,9 @@ var delegateTool = server.registerTool(
 function taskSummary(t) {
   const secs = (((t.finishedAt ?? Date.now()) - t.startedAt) / 1e3).toFixed(0);
   const model2 = t.outcome?.model ?? t.input.model ?? "(default)";
-  return `${t.id}  ${t.status.padEnd(9)} ${secs}s  ${model2}  ${t.input.title ?? t.input.prompt.slice(0, 60).replace(/\s+/g, " ")}`;
+  const report = t.outcome?.report?.status;
+  const status = t.status === "done" && report && report !== "done" ? `${report} \u2190 needs you` : t.status;
+  return `${t.id}  ${status.padEnd(9)} ${secs}s  ${model2}  ${t.input.title ?? t.input.prompt.slice(0, 60).replace(/\s+/g, " ")}`;
 }
 var asyncTool = server.registerTool(
   "delegate_async",
@@ -37812,6 +38201,7 @@ ${s.text ?? ""}`, s.status !== "done");
     }
     await waitTask(t, wait_s ?? 0);
     if (t.status === "running") return text(`${taskSummary(t)}
+${runningProgress(t)}
 still running \u2014 call again later or with a larger wait_s.`);
     if (t.outcome) return text(`task: ${t.id} (${t.status})
 ${formatOutcome(t.outcome)}`, t.status !== "done");

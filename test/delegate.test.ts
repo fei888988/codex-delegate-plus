@@ -175,3 +175,14 @@ test("the policy file is read per call: custom tiers, guidance and the model all
     rmSync(file, { force: true });
   }
 });
+
+test("a needs_decision report leads the result with a status and a next step for the lead", async () => {
+  const o = await delegate({ cwd: repo, prompt: "decide something" });
+  const report = { status: "needs_decision" as const, summary: "two ways to do it", changes: [], verification: [], risks: [], questions: ["A or B?", "keep the flag?"] };
+  const text = formatOutcome({ ...o, report });
+  const [first, second] = text.split("\n");
+  assert.equal(first, "status: needs_decision (codex finished but the work is not done)");
+  assert.match(second!, /^next: decide now: .*resume with session_id.*\(2 questions below\)$/);
+  assert.match(text, /QUESTIONS \(need your decision\)/);
+  assert.match(formatOutcome(o), /^status: ok/);
+});

@@ -9,7 +9,7 @@ import { listModels } from "./models.ts";
 import { loadPolicy, tierLabel, type Policy } from "./policy.ts";
 import { watchFile } from "node:fs";
 import { listSessions } from "./sessions.ts";
-import { getTask, listTasks, startTask, storedTask, waitTask, type Task } from "./tasks.ts";
+import { getTask, runningProgress, listTasks, startTask, storedTask, waitTask, type Task } from "./tasks.ts";
 import { installExitCleanup } from "./procs.ts";
 import pkg from "../package.json" with { type: "json" };
 
@@ -32,7 +32,7 @@ function effortParam(policy: Policy) {
 }
 
 const DELEGATE_DESCRIPTION =
-  "Run a task with an OpenAI model through the Codex CLI (`codex exec`) and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass it as written rather than restating it. Put test/build commands in `checks`. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.";
+  "Run a task with an OpenAI model through the Codex CLI (`codex exec`) and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass it as written rather than restating it. Put test/build commands in `checks`. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id. A result whose first line is `status: needs_decision` (or partial/blocked) is not finished: make the decisions yourself and resume the same session_id with them in this turn; ask the user only for choices that are really theirs.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.";
 const ASYNC_DESCRIPTION =
   "Same as delegate, but returns a task_id immediately while the Codex model works in the background. Use for long tasks or to run several in parallel; then call task_result to collect output. Parallel tasks editing the same directory can conflict — give each its own cwd/worktree or non-overlapping files.";
 const withGuidance = (d: string, policy: Policy) => (policy.guidance ? `${d}\n\n${policy.guidance}` : d);
@@ -70,6 +70,7 @@ const delegateShape = {
     .optional()
     .describe(`Shorthand: false = read-only sandbox, for reading files, reviews and questions. Default: ${config.auto}. An explicit sandbox wins.`),
   title: z.string().optional().describe("Short label shown in task_list."),
+  idle_timeout_s: z.number().int().min(0).optional().describe("Override both codex idle timeouts in seconds; 0 disables idle detection."),
   timeout_s: z.number().int().positive().optional().describe(`Kill the run after this many seconds. Default: ${config.timeoutSec}.`),
   checks: z
     .array(z.string())
@@ -143,7 +144,10 @@ const delegateTool = server.registerTool(
 function taskSummary(t: Task): string {
   const secs = (((t.finishedAt ?? Date.now()) - t.startedAt) / 1000).toFixed(0);
   const model = t.outcome?.model ?? t.input.model ?? "(default)";
-  return `${t.id}  ${t.status.padEnd(9)} ${secs}s  ${model}  ${t.input.title ?? t.input.prompt.slice(0, 60).replace(/\s+/g, " ")}`;
+  // A finished task whose report isn't "done" (needs_decision, partial, blocked) is waiting on the lead.
+  const report = t.outcome?.report?.status;
+  const status = t.status === "done" && report && report !== "done" ? `${report} ← needs you` : t.status;
+  return `${t.id}  ${status.padEnd(9)} ${secs}s  ${model}  ${t.input.title ?? t.input.prompt.slice(0, 60).replace(/\s+/g, " ")}`;
 }
 
 const asyncTool = server.registerTool(
@@ -179,7 +183,7 @@ server.registerTool(
       return text(`task: ${s.id} (${s.status})\n${s.text ?? ""}`, s.status !== "done");
     }
     await waitTask(t, wait_s ?? 0);
-    if (t.status === "running") return text(`${taskSummary(t)}\nstill running — call again later or with a larger wait_s.`);
+    if (t.status === "running") return text(`${taskSummary(t)}\n${runningProgress(t)}\nstill running — call again later or with a larger wait_s.`);
     if (t.outcome) return text(`task: ${t.id} (${t.status})\n${formatOutcome(t.outcome)}`, t.status !== "done");
     return text(`task: ${t.id} (${t.status})\nerror: ${t.error}`, true);
   },

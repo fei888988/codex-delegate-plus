@@ -65,6 +65,10 @@ function int(v: string | undefined, dflt: number): number {
   return Number.isFinite(n) && n > 0 ? n : dflt;
 }
 
+function idleSeconds(v: string | undefined, dflt: number): number {
+  return v?.trim() === "0" ? 0 : int(v, dflt);
+}
+
 export const SANDBOXES = ["read-only", "workspace-write", "danger-full-access"] as const;
 export type Sandbox = (typeof SANDBOXES)[number];
 
@@ -138,6 +142,9 @@ export const config = {
   contract: bool(process.env.CODEX_DELEGATE_CONTRACT, true),
   timeoutSec: int(process.env.CODEX_DELEGATE_TIMEOUT, 1800),
   checkTimeoutSec: int(process.env.CODEX_DELEGATE_CHECK_TIMEOUT, 600),
+  idleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_IDLE_TIMEOUT, 600),
+  commandIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT, 1200),
+  checkIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_CHECK_IDLE_TIMEOUT, 300),
   // What goes back into the caller's context. The full event log stays on disk.
   maxOutputChars: int(process.env.CODEX_DELEGATE_MAX_OUTPUT, 6000),
   runsDir: process.env.CODEX_DELEGATE_RUNS_DIR || join(homedir(), ".codex-delegate", "runs"),

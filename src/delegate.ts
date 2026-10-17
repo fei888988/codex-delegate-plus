@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { runChecks, type CheckResult } from "./checks.ts";
 import { clampEffort, config, configuredModel, type Sandbox } from "./config.ts";
-import { runCodex, type RunResult } from "./codex.ts";
+import { classifyError, runCodex, type RunResult } from "./codex.ts";
 import { diffSnapshots, diffStat, snapshot, type FileStat } from "./git.ts";
 import { resolveModelOrThrow } from "./models.ts";
 import { findTier, loadPolicy } from "./policy.ts";
@@ -24,6 +24,7 @@ export interface DelegateInput {
   auto?: boolean;
   title?: string;
   timeout_s?: number;
+  idle_timeout_s?: number;
   /** Commands the server runs on the host after codex finishes (tests, build, lint). */
   checks?: string[];
   /** false = free-form final answer instead of the JSON report. */
@@ -62,7 +63,7 @@ function newRunDir(): string | undefined {
   }
 }
 
-export async function delegate(input: DelegateInput, signal?: AbortSignal): Promise<DelegateOutcome> {
+export async function delegate(input: DelegateInput, signal?: AbortSignal, onProgress?: (info: RunSummary) => void): Promise<DelegateOutcome> {
   const cwd = resolve(config.defaultCwd, input.cwd ?? ".");
   if (!existsSync(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const auto = input.auto ?? config.auto;
@@ -123,7 +124,7 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal): Prom
   }
   try {
     const run = { cwd, sandbox, readOnly, model, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, fast, images, structured, notes, continued };
-    return await execute(input, run, signal);
+    return await execute(input, run, signal, onProgress);
   } finally {
     if (!readOnly) {
       activeWriters.delete(lockKey);
@@ -147,7 +148,7 @@ interface Resolved {
   continued?: PendingRun;
 }
 
-async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal): Promise<DelegateOutcome> {
+async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, onProgress?: (info: RunSummary) => void): Promise<DelegateOutcome> {
   const { cwd, sandbox, readOnly, model, effort, tier, codexGuidance, fast, images, structured, notes, continued } = r;
   const runDir = newRunDir();
   const meta: RunSummary = {
@@ -155,13 +156,34 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal):
     title: input.title, cwd, model, effort, tier, fast, sandbox, resumed: !!input.session_id,
     sessionId: input.session_id, continuedFrom: continued?.sessionId,
     prompt: input.prompt.slice(0, 2000), version,
+    phase: "codex", pid: process.pid, heartbeatAt: Date.now(), lastEventAt: Date.now(),
+    idleTimeoutSec: input.idle_timeout_s ?? config.idleTimeoutSec,
+    commandIdleTimeoutSec: input.idle_timeout_s ?? config.commandIdleTimeoutSec,
+    checkIdleTimeoutSec: config.checkIdleTimeoutSec,
   };
+  let lastWrite = 0;
+  let lastSnapshot = "";
+  let pendingWrite: ReturnType<typeof setTimeout> | undefined;
   const writeMeta = () => {
+    clearTimeout(pendingWrite);
+    pendingWrite = undefined;
+    const serialized = JSON.stringify(meta);
+    if (serialized === lastSnapshot) return;
+    lastSnapshot = serialized;
+    lastWrite = Date.now();
     try {
-      if (runDir) writeFileSync(join(runDir, "meta.json"), JSON.stringify(meta));
+      if (runDir) writeFileSync(join(runDir, "meta.json"), serialized);
     } catch {}
   };
+  const progress = () => {
+    try { onProgress?.({ ...meta }); } catch {}
+    if (Date.now() - lastWrite >= 2000) writeMeta();
+    else pendingWrite ??= setTimeout(writeMeta, 2000 - (Date.now() - lastWrite));
+  };
   writeMeta();
+  progress();
+  const heartbeat = setInterval(() => { meta.heartbeatAt = Date.now(); progress(); }, 15000);
+  heartbeat.unref();
   try {
     let prompt = (continued ? continuationPreamble(continued) : "") + input.prompt;
     if (config.contract) prompt += readOnly ? READ_CONTRACT : WRITE_CONTRACT;
@@ -196,12 +218,20 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal):
     const before = snapshot(cwd);
     const result = await runCodex({
       onSpawn: (pid) => {
+        meta.codexPid = pid;
+        progress();
         if (rec) savePending({ ...rec, codexPid: (rec.codexPid = pid) });
       },
       onSession: (id) => {
         meta.sessionId = id;
-        writeMeta();
+        progress();
         if (rec && rec.sessionId !== id) savePending({ ...rec, sessionId: (rec.sessionId = id) });
+      },
+      onProgress: (info) => {
+        const it = info.inflight;
+        Object.assign(meta, { codexPid: info.codexPid, lastEventAt: info.lastEventAt,
+          inflight: it && { type: it.type, command: it.command, startedAt: it.startedAt } });
+        progress();
       },
       prompt,
       model,
@@ -213,11 +243,15 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal):
       fork: input.fork,
       sandbox,
       timeoutMs: (input.timeout_s ?? config.timeoutSec) * 1000,
+      idleTimeoutMs: input.idle_timeout_s === undefined ? undefined : input.idle_timeout_s * 1000,
       signal,
       lastMessageFile: runDir && join(runDir, "last-message.txt"),
       outputSchemaFile,
       logFile: runDir && join(runDir, "events.jsonl"),
     });
+    Object.assign(meta, { exitKind: result.exitKind, errorKind: result.errorKind, stall: result.stall,
+      inflight: undefined, error: result.error });
+    progress();
     const after = before && snapshot(cwd);
     const changes = before && after ? diffStat(cwd, diffSnapshots(before, after)) : undefined;
     if (rec) {
@@ -234,23 +268,42 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal):
 
     let checks: CheckResult[] | undefined;
     if (input.checks?.length && !signal?.aborted) {
-      checks = await runChecks(input.checks, cwd, config.checkTimeoutSec * 1000, signal);
+      meta.phase = "checks";
+      meta.checksStartedAt = Date.now();
+      meta.checks = [];
+      progress();
+      checks = await runChecks(input.checks, cwd, config.checkTimeoutSec * 1000, signal, {
+        onProgress: ({ command, startedAt, lastOutputAt, result }) => {
+          // Sequential checks: the active record is always the last one, even for duplicate commands.
+          const records = meta.checks!;
+          if (!records.length || records.at(-1)!.state !== "running") records.push({ command, startedAt, state: "running" });
+          const { tail, ...summary } = result ?? {};
+          Object.assign(records.at(-1)!, summary, { lastOutputAt, state: result ? "done" : "running" });
+          progress();
+        },
+      });
     }
     Object.assign(meta, {
       state: signal?.aborted ? "interrupted" : result.ok ? "ok" : "error",
       sessionId: result.sessionId ?? meta.sessionId, tokens: result.tokens, turns: result.turns,
       reportStatus: report?.status, summary: report?.summary, report, changes,
-      checks: checks?.map(({ tail, ...check }) => check), notes: [...notes, ...result.warnings],
+      notes: [...notes, ...result.warnings],
       error: result.error, toolCalls: result.toolCalls.length,
     });
     return { model, effort, tier, fast, sandbox, resumed: !!input.session_id, cwd, notes, result, report, runDir, changes, checks, continued };
   } catch (error) {
     meta.state = signal?.aborted ? "interrupted" : "error";
     meta.error = error instanceof Error ? error.message : String(error);
+    meta.exitKind ??= signal?.aborted ? "cancelled" : "crashed";
+    meta.errorKind = classifyError(meta.error);
     throw error;
   } finally {
+    clearInterval(heartbeat);
+    meta.phase = "done";
+    meta.inflight = undefined;
     meta.endedAt = Date.now();
     meta.durationMs = meta.endedAt - meta.startedAt;
+    try { onProgress?.({ ...meta }); } catch {}
     writeMeta();
   }
 }
@@ -288,15 +341,35 @@ function renderChecks(checks: CheckResult[]): string {
   return lines.join("\n");
 }
 
+const REPORT_NEXT: Record<Exclude<Report["status"], "done">, string> = {
+  needs_decision: "decide now: answer each QUESTION yourself from the brief, the code and the user's stated goals, then resume with session_id and your decisions; ask the user only when it is genuinely their call (product, risk, scope)",
+  partial: "resume with session_id to finish the remaining items, or take over only if they are small",
+  blocked: "codex could not proceed: read the reason; fix the environment or brief and resume, or ask the user if it needs them",
+};
+
 export function formatOutcome(o: DelegateOutcome): string {
   const r = o.result;
   const model = o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`);
   const lines = [
-    `status: ${r.ok ? "ok" : "error"}`,
+    r.exitKind === "completed" ? "status: ok" : `status: error (${r.exitKind}${r.errorKind ? `/${r.errorKind}` : ""})`,
     `model: ${model}${o.effort ? `#${o.effort}` : ""}${o.tier ? ` (tier ${o.tier})` : ""}${o.fast !== undefined ? `, fast: ${o.fast}` : ""}, sandbox: ${o.sandbox}`,
     `session_id: ${r.sessionId ?? "(none)"}`,
     `duration: ${(r.durationMs / 1000).toFixed(0)}s, codex tokens in/cached/out: ${r.tokens.input}/${r.tokens.cachedInput}/${r.tokens.output}`,
   ];
+  if (r.exitKind !== "completed") {
+    const hint = r.errorKind === "quota" || r.errorKind === "auth"
+      ? "environment problem: tell the user, don't take over"
+      : r.exitKind === "stalled"
+        ? `codex hung on ${r.stall?.command?.replace(/\s+/g, " ").slice(0, 200) ?? "a silent model turn"}; the session keeps context: resume with session_id and tell it the command hung (run it with a timeout / fix the hang)`
+        : (r.exitKind === "crashed" || r.exitKind === "api_error") && (r.errorKind === "network" || r.errorKind === "rate_limit")
+          ? "transient: retry once with the same session_id" : undefined;
+    if (hint) lines.splice(1, 0, `next: ${hint}`);
+  } else if (o.report && o.report.status !== "done") {
+    // The process finished fine but the work didn't: say so first, so a skimming lead doesn't take it as done.
+    const n = o.report.questions?.length ?? 0;
+    lines[0] = `status: ${o.report.status} (codex finished but the work is not done)`;
+    lines.splice(1, 0, `next: ${REPORT_NEXT[o.report.status]}${o.report.status === "needs_decision" && n ? ` (${n} question${n > 1 ? "s" : ""} below)` : ""}`);
+  }
   if (o.continued) {
     lines.push(`continued: the interrupted run in this cwd (session ${o.continued.sessionId}); codex kept its context and partial edits and was told your new message wins. Pass fresh: true to start over instead.`);
   }

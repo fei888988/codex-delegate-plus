@@ -9,9 +9,30 @@ import type { PendingRun } from "./pending.ts";
 import type { StoredTask } from "./tasks.ts";
 import { parseReport, READ_CONTRACT, WRITE_CONTRACT } from "./report.ts";
 import { version, type RunSummary } from "./run-summary.ts";
+import { readTimeline } from "./timeline.ts";
 
 const indexFile = fileURLToPath(new URL("../dashboard/index.html", import.meta.url));
 const validId = /^[\w-]+$/;
+
+export function pidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+export function deriveHealth(run: RunSummary, now = Date.now(), alive = pidAlive): NonNullable<RunSummary["health"]> {
+  if (run.state !== "running") return "ok";
+  if ((run.pid !== undefined && !alive(run.pid)) || (run.heartbeatAt !== undefined && now - run.heartbeatAt > 90000)) return "orphaned";
+  const check = run.phase === "checks" ? run.checks?.find((c) => c.state === "running") : undefined;
+  const last = check ? check.lastOutputAt ?? check.startedAt : run.lastEventAt ?? run.startedAt;
+  const age = now - last;
+  const limit = check ? run.checkIdleTimeoutSec ?? config.checkIdleTimeoutSec
+    : run.inflight?.type === "command_execution" ? run.commandIdleTimeoutSec ?? config.commandIdleTimeoutSec
+    : run.idleTimeoutSec ?? config.idleTimeoutSec;
+  if (limit > 0 && age > limit * 1000) return "stalled";
+  if (age < 120000) return "active";
+  return "quiet";
+}
 
 async function text(file: string): Promise<string> {
   try { return await readFile(file, "utf8"); } catch { return ""; }
@@ -37,11 +58,13 @@ export async function readRun(runsDir: string, id: string): Promise<RunSummary |
   if (meta && meta.id === id && typeof meta.startedAt === "number" && ["running", "ok", "error", "interrupted"].includes(meta.state)) {
     // A server that exits mid-run never writes the final state; once the log has been quiet for
     // longer than the run timeout, nothing is coming back.
-    if (meta.state === "running") {
+    if (meta.state === "running" && meta.pid === undefined && meta.heartbeatAt === undefined && meta.lastEventAt === undefined) {
       let last = meta.startedAt;
       try { last = Math.max(last, (await stat(join(dir, "events.jsonl"))).mtimeMs); } catch {}
       if (Date.now() - last > (config.timeoutSec + 120) * 1000) meta.state = "interrupted";
+      meta.lastEventAt = last;
     }
+    meta.health = deriveHealth(meta);
     return meta;
   }
 
@@ -74,6 +97,8 @@ export async function readRun(runsDir: string, id: string): Promise<RunSummary |
   }
   run.state = run.turns ? "ok" : endedAt !== undefined && Date.now() - endedAt < 120_000 ? "running" : "error";
   if (endedAt !== undefined) run.durationMs = Math.max(0, endedAt - startedAt);
+  run.lastEventAt = endedAt;
+  run.health = deriveHealth(run);
   return run;
 }
 
@@ -160,11 +185,21 @@ export function createDashboardServer(options: { runsDir?: string; policyFile?: 
           .map(({ report, ...run }) => ({ ...run, prompt: run.prompt?.slice(0, 300) }));
         json(200, { generatedAt: Date.now(), runsDir, version, runs, pending, tasks: tasks.map(({ text, ...task }) => task) });
       } else if (path.startsWith("/api/runs/")) {
+        const timeline = path.endsWith("/timeline");
         let id: string;
-        try { id = decodeURIComponent(path.slice("/api/runs/".length)); } catch { json(400, { error: "Invalid run id" }); return; }
+        try { id = decodeURIComponent(path.slice("/api/runs/".length, timeline ? -"/timeline".length : undefined)); } catch { json(400, { error: "Invalid run id" }); return; }
         if (!validId.test(id)) { json(400, { error: "Invalid run id" }); return; }
         const run = await readRun(runsDir, id);
         if (!run) { json(404, { error: "Run not found" }); return; }
+        if (timeline) {
+          const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "");
+          const value = query.get("after") ?? "0";
+          if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || query.getAll("after").length > 1) {
+            json(400, { error: "Invalid after sequence" }); return;
+          }
+          json(200, await readTimeline(runsDir, run, Number(value)));
+          return;
+        }
         const [promptFull, lastMessage] = await Promise.all([
           text(join(runsDir, id, "prompt.md")), text(join(runsDir, id, "last-message.txt")),
         ]);

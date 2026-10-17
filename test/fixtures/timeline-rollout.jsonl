@@ -1,0 +1,11 @@
+{"timestamp":"2026-10-17T05:00:00.000Z","ordinal":0,"type":"session_meta","payload":{"id":"test-session","base_instructions":"LONG PRIVATE BOILERPLATE"}}
+{"timestamp":"2026-10-17T05:00:01.000Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"LONG DEVELOPER BOILERPLATE"}]}}
+{"timestamp":"2026-10-17T05:00:02.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the tests"}]}}
+{"timestamp":"2026-10-17T05:00:03.000Z","type":"response_item","payload":{"type":"reasoning","summary":[{"text":"inspect first"}]}}
+{"timestamp":"2026-10-17T05:00:04.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"python -m unittest\"}","call_id":"call-1"}}
+{"timestamp":"2026-10-17T05:00:09.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":[{"type":"input_text","text":"Ran 3 tests"},{"type":"input_text","text":"OK"}]}}
+{"timestamp":"2026-10-17T05:00:10.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":42,"output_tokens":7}}}}
+{"timestamp":"2026-10-17T05:00:11.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fixed"}]}}
+{"timestamp":"2026-10-17T05:00:12.000Z","type":"event_msg","payload":{"type":"exec_command_end","call_id":"shell-1","command":["python","-m","unittest"],"exit_code":0,"duration":{"secs":2,"nanos":500000000},"aggregated_output":"OK"}}
+{"timestamp":"2026-10-17T05:00:13.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch","call_id":"patch-1"}}
+{"timestamp":"2026-10-17T05:00:14.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"patch-1","output":"Success"}}

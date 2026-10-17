@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.ts";
 import { delegate, formatOutcome, type DelegateInput, type DelegateOutcome } from "./delegate.ts";
+import type { RunSummary } from "./run-summary.ts";
 
 export type TaskStatus = "running" | "done" | "error" | "cancelled";
 
@@ -14,6 +15,7 @@ export interface Task {
   finishedAt?: number;
   outcome?: DelegateOutcome;
   error?: string;
+  progress?: RunSummary;
   promise: Promise<void>;
   controller: AbortController;
 }
@@ -64,7 +66,7 @@ function prune() {
 export function startTask(input: DelegateInput): Task {
   const controller = new AbortController();
   const task = { id: `task_${randomUUID().slice(0, 8)}`, input, status: "running", startedAt: Date.now(), controller } as Task;
-  task.promise = delegate(input, controller.signal).then(
+  task.promise = delegate(input, controller.signal, (info) => { task.progress = info; }).then(
     (outcome) => {
       task.outcome = outcome;
       task.status = controller.signal.aborted ? "cancelled" : outcome.result.ok ? "done" : "error";
@@ -85,6 +87,13 @@ export function startTask(input: DelegateInput): Task {
 
 export function getTask(id: string): Task | undefined {
   return tasks.get(id);
+}
+
+export function runningProgress(task: Task): string {
+  const p = task.progress;
+  const minutes = ((Date.now() - (p?.lastEventAt ?? task.startedAt)) / 60000).toFixed(1);
+  const command = p?.inflight?.command ?? p?.checks?.find((c) => c.state === "running")?.command;
+  return `phase: ${p?.phase ?? "codex"}; last codex event: ${minutes}m ago${command ? `\ninflight: ${command.replace(/\s+/g, " ").slice(0, 200)}` : ""}`;
 }
 
 export function listTasks(): Task[] {

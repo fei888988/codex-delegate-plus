@@ -2,6 +2,22 @@ import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, readFileSync } from "node:fs";
 import { config, type Sandbox } from "./config.ts";
 import { stop, track } from "./procs.ts";
+import { idleWatchdog, type CpuSampler } from "./watchdog.ts";
+
+export interface InflightItem { id: string; type: string; command?: string; startedAt: number }
+export interface CodexProgress { codexPid?: number; lastEventAt: number; inflight?: InflightItem }
+export interface Stall { kind: "silent" | "command"; idleMs: number; command?: string; commandStartedAt?: number }
+export type ExitKind = "completed" | "timeout" | "stalled" | "cancelled" | "crashed" | "api_error";
+export type ErrorKind = "quota" | "rate_limit" | "auth" | "network" | "context" | "other";
+
+export function classifyError(text: string): ErrorKind {
+  if (/quota|usage limit|insufficient_quota|credits|billing|exceeded.*usage/i.test(text)) return "quota";
+  if (/rate.?limit|429|too many requests/i.test(text)) return "rate_limit";
+  if (/auth|401|403|api.?key|unauthorized|forbidden|log.?in/i.test(text)) return "auth";
+  if (/network|connect|ECONN|ENOTFOUND|fetch failed|socket|stream disconnect|timed? ?out|\b50[234]\b/i.test(text)) return "network";
+  if (/context|token limit|too many tokens|maximum.*tokens/i.test(text)) return "context";
+  return "other";
+}
 
 export interface RunOptions {
   prompt: string;
@@ -14,6 +30,11 @@ export interface RunOptions {
   fork?: boolean;
   sandbox: Sandbox;
   timeoutMs?: number;
+  /** Overrides both the silent and command idle windows; zero disables. */
+  idleTimeoutMs?: number;
+  onProgress?: (info: CodexProgress) => void;
+  /** Injectable CPU confirmation for deterministic watchdog tests. */
+  cpuSampler?: CpuSampler;
   signal?: AbortSignal;
   /** `-o`: codex writes only its final message here. */
   lastMessageFile?: string;
@@ -53,6 +74,10 @@ export interface RunResult {
   error?: string;
   exitCode: number | null;
   timedOut: boolean;
+  stalled: boolean;
+  stall?: Stall;
+  exitKind: ExitKind;
+  errorKind?: ErrorKind;
   durationMs: number;
 }
 
@@ -103,8 +128,11 @@ export class EventCollector {
   warnings: string[] = [];
   errors: string[] = [];
   raw: string[] = [];
+  lastEventAt = Date.now();
+  inflight = new Map<string, InflightItem>();
 
   push(line: string) {
+    this.lastEventAt = Date.now();
     const trimmed = line.trim();
     if (!trimmed) return;
     let e: any;
@@ -115,10 +143,15 @@ export class EventCollector {
       return;
     }
     switch (e.type) {
+      case "item.started":
+        if (e.item?.id) this.inflight.set(e.item.id, { id: e.item.id, type: e.item.type,
+          command: e.item.command, startedAt: this.lastEventAt });
+        break;
       case "thread.started":
         this.sessionId ??= e.thread_id;
         break;
       case "item.completed":
+        this.inflight.delete(e.item?.id);
         this.item(e.item ?? {});
         break;
       case "turn.completed": {
@@ -220,6 +253,12 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
     let stderr = "";
     let timedOut = false;
     let settled = false;
+    let stall: Stall | undefined;
+    const progress = () => {
+      try { o.onProgress?.({ codexPid: child.pid, lastEventAt: collector.lastEventAt,
+        inflight: collector.inflight.values().next().value }); } catch {}
+    };
+    progress();
     let announced = false;
     const announce = () => {
       if (announced || !collector.sessionId) return;
@@ -229,7 +268,28 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
       } catch {}
     };
 
-    const kill = () => stop(child);
+    const kill = () => {
+      watchdog.dispose();
+      if (timer) clearTimeout(timer);
+      stop(child);
+    };
+    const idleWindow = () => {
+      const commands = [...collector.inflight.values()].filter((it) => it.type === "command_execution");
+      if (commands.length === 1) {
+        const it = commands[0]!;
+        return { key: it.id, since: Math.max(it.startedAt, collector.lastEventAt),
+          timeoutMs: o.idleTimeoutMs ?? config.commandIdleTimeoutSec * 1000 };
+      }
+      if (!commands.length) return { key: "silent", since: collector.lastEventAt,
+        timeoutMs: o.idleTimeoutMs ?? config.idleTimeoutSec * 1000 };
+      return undefined;
+    };
+    const watchdog = idleWatchdog(child.pid, idleWindow, () => {
+      const command = [...collector.inflight.values()].find((it) => it.type === "command_execution");
+      stall = { kind: command ? "command" : "silent", idleMs: Date.now() - collector.lastEventAt,
+        command: command?.command, commandStartedAt: command?.startedAt };
+      kill();
+    }, o.cpuSampler);
     const timer = o.timeoutMs
       ? setTimeout(() => {
           timedOut = true;
@@ -237,15 +297,19 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
         }, o.timeoutMs)
       : undefined;
     o.signal?.addEventListener("abort", kill, { once: true });
+    if (o.signal?.aborted) kill();
 
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
       log?.write(chunk);
       buf += chunk;
       let i: number;
+      let sawLine = false;
       while ((i = buf.indexOf("\n")) >= 0) {
+        sawLine = true;
         collector.push(buf.slice(0, i));
         buf = buf.slice(i + 1);
       }
+      if (sawLine) { watchdog.touch(); progress(); }
       announce();
     });
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -255,14 +319,19 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
     const finish = (exitCode: number | null, spawnError?: string) => {
       if (settled) return;
       settled = true;
+      watchdog.dispose();
+      o.signal?.removeEventListener("abort", kill);
       if (timer) clearTimeout(timer);
-      collector.push(buf);
+      if (buf) collector.push(buf);
+      progress();
+      announce();
       if (stderr.trim()) log?.write(`\n# stderr (tail)\n${stderr}\n`);
       log?.end();
       const errors = [...collector.errors];
       if (spawnError) errors.push(spawnError);
       if (timedOut) errors.push(`timed out after ${Math.round((o.timeoutMs ?? 0) / 1000)}s`);
       else if (o.signal?.aborted) errors.push("cancelled");
+      if (stall) errors.push(`stalled: no codex output for ${Math.round(stall.idleMs / 60000)}m${stall.command ? ` while running: ${stall.command.slice(0, 200)}` : " (model silent)"}`);
       if (exitCode && !errors.length) {
         const tail = stderr
           .split("\n")
@@ -271,8 +340,17 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
           .join("\n");
         errors.push(tail || `exit code ${exitCode}`);
       }
+      const exitKind: ExitKind = timedOut ? "timeout" : stall ? "stalled" : o.signal?.aborted ? "cancelled"
+        : spawnError ? "crashed" : collector.errors.length ? "api_error"
+        : exitCode !== 0 || !collector.turns ? "crashed" : "completed";
+      if (exitKind === "crashed" && !errors.length) errors.push("codex exited without turn.completed");
+      const error = errors.join("; ") || undefined;
       resolve({
-        ok: exitCode === 0 && !errors.length,
+        ok: exitKind === "completed",
+        exitKind,
+        errorKind: error ? classifyError(error) : undefined,
+        stalled: !!stall,
+        stall,
         sessionId: collector.sessionId,
         text: readFinal(o.lastMessageFile) ?? collector.finalText,
         logFile: o.logFile,
@@ -281,7 +359,7 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
         tokens: collector.tokens,
         turns: collector.turns,
         warnings: collector.warnings,
-        error: errors.join("; ") || undefined,
+        error,
         exitCode,
         timedOut,
         durationMs: Date.now() - started,
