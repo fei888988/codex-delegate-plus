@@ -453,11 +453,11 @@
   .sw-row { display: flex; align-items: flex-start; gap: 14px; border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; background: rgba(255,255,255,.015); }
   .sw-row .muted { font-size: 12px; line-height: 1.6; margin-top: 3px; }
   .sw-state { font-size: 13px; font-weight: 600; }
-  .switch { flex: none; position: relative; width: 44px; height: 24px; padding: 0; border-radius: 999px; border: 1px solid var(--line2); background: rgba(0,0,0,.3); transition: background .25s, border-color .25s; }
-  .switch i { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform .25s var(--out), background .25s; }
-  .switch[aria-checked="true"] { background: var(--accent-soft); border-color: var(--accent); box-shadow: 0 0 16px -6px var(--accent-glow); }
-  .switch[aria-checked="true"] i { transform: translateX(20px); background: var(--accent); }
-  .switch:focus-visible { outline: none; box-shadow: 0 0 0 4px var(--accent-soft); }
+  .pswitch { flex: none; position: relative; width: 44px; height: 24px; padding: 0; border-radius: 999px; border: 1px solid var(--line2); background: rgba(0,0,0,.3); transition: background .25s, border-color .25s; }
+  .pswitch i { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform .25s var(--out), background .25s; }
+  .pswitch[aria-checked="true"] { background: var(--accent-soft); border-color: var(--accent); box-shadow: 0 0 16px -6px var(--accent-glow); }
+  .pswitch[aria-checked="true"] i { transform: translateX(20px); background: var(--accent); }
+  .pswitch:focus-visible { outline: none; box-shadow: 0 0 0 4px var(--accent-soft); }
   .toast { border-radius: 12px; padding: 10px 15px; font-size: 13px; animation: rise .4s var(--out); }
   .toast.ok { background: var(--ok-bg); color: var(--ok); border: 1px solid rgba(198,255,61,.25); } .toast.err { background: var(--err-bg); color: var(--err); border: 1px solid rgba(255,77,94,.25); }
   .toast.info { background: var(--soft); color: var(--text2); border: 1px solid var(--line); }
@@ -622,7 +622,7 @@
       <section class="p-sec">
         <h3>写入沙箱 <small>审查类任务始终只读，这里只管会改文件的任务</small></h3>
         <div class="sw-row">
-          <button type="button" class="switch" id="pSandbox" role="switch" aria-checked="false" aria-describedby="pSandboxHint"><i></i></button>
+          <button type="button" class="pswitch" id="pSandbox" role="switch" aria-checked="false" aria-describedby="pSandboxHint"><i></i></button>
           <div>
             <div class="sw-state" id="pSandboxState">关闭 · 写任务直接放开权限</div>
             <div class="muted" id="pSandboxHint">开启后写任务改用 workspace-write：只能写工作目录和本次运行的临时目录。Windows 上越界写入会被拒、偶尔卡住，一般保持关闭。</div>
