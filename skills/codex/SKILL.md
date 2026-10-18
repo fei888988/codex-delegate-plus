@@ -25,6 +25,13 @@ Tools: `delegate` (preferred: one call, no polling); `delegate_async` + `task_re
 Delegate anything that needs investigation, multi-file changes or test runs. If you can already see
 a change and make it in one or two edits, do it yourself, unless the user explicitly asked for Codex.
 
+Opinion and direction calls are never delegated. When the question asks for judgement (which
+approach, architecture or direction to take, whether a plan, design or trade-off is right, what to
+prioritise or recommend), Codex only gathers objective facts and data: what the code actually does,
+measurements, test or benchmark results, documented behaviour, counts and comparisons. Ask it for
+findings, not conclusions. You form the judgement and make the final call; never adopt Codex's
+opinion or recommendation as the answer.
+
 ## 2. Choose the cost tier (`effort`, required)
 
 `effort` names a tier of the user's delegation policy. Each tier fixes a model and a reasoning
