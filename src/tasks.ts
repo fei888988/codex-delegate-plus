@@ -1,3 +1,5 @@
+import { baseline, denialBlock, evidenceDelta, logReport, recentFiles, tailFile, trendReport } from "./observability.ts";
+import { sampleTreeEvidence } from "./watchdog.ts";
 import type { EvidenceSampler } from "./watchdog.ts";
 import type { StallControl } from "./codex.ts";
 import { randomUUID } from "node:crypto";
@@ -111,6 +113,7 @@ export function formatSuspicion(task: Task): string {
   const p = task.progress!;
   const s = p.suspicion!;
   return [
+    denialBlock(p.denials),
     "status: suspected_stall (still running, not killed)",
     "next: judge from the evidence; if it looks healthy call task_result(task_id, wait_s, stall_after_s?) to keep waiting; if hung call task_cancel then resume with session_id and tell codex which command hung",
     `task_id: ${task.id}`, `session_id: ${p.sessionId ?? "(none)"}`, `run id: ${p.id}`,
@@ -118,7 +121,10 @@ export function formatSuspicion(task: Task): string {
     `inflight: ${s.command?.replace(/\s+/g, " ").slice(0, 300) ?? "(model silent)"}; idle: ${((Date.now() - (p.lastEventAt ?? task.startedAt)) / 1000).toFixed(0)}s`,
     `threshold: ${s.thresholdSec}s; wakes: ${s.wakes}${s.matchedRule ? `; rule: ${s.matchedRule}` : ""}`,
     `evidence: ${JSON.stringify(s.evidence)}`,
-  ].join("\n");
+    logReport(join(config.runsDir, p.id)),
+    trendReport(p.trend),
+    s.command ? baseline(config.runsDir, s.command, p.id) : "",
+  ].filter(Boolean).join("\n");
 }
 
 export async function waitTask(task: Task, waitSec: number, stallAfterSec?: number): Promise<void> {
@@ -163,4 +169,22 @@ export async function delegateSync(input: DelegateInput, signal?: AbortSignal, e
   } finally {
     signal?.removeEventListener("abort", abort);
   }
+}
+
+/** Inspection never acknowledges a wake, re-arms a window or changes task state. */
+export async function inspectTask(task: Task): Promise<string> {
+  const p = task.progress;
+  if (!p) return `task_id: ${task.id}; ${task.status}; evidence unavailable`;
+  const dir = join(config.runsDir, p.id);
+  const sample = task.status === "running" && p.codexPid
+    ? await sampleTreeEvidence(p.codexPid, new AbortController().signal) : undefined;
+  const events = tailFile(join(dir, "events.jsonl"), 16000).trim().split(/\r?\n/).slice(-5).map(line => {
+    try { const e = JSON.parse(line); return `${e.type}: ${e.item?.command ?? e.item?.text ?? e.item?.type ?? e.message ?? ""}`.slice(0, 120); }
+    catch { return line.slice(0, 120); }
+  });
+  return [denialBlock(p.denials), `task_id: ${task.id}; ${task.status}; sandbox: ${p.sandbox}`,
+    `inflight: ${(p.inflight?.command ?? "none").slice(0, 180)}`,
+    `evidence: ${sample ? evidenceDelta(sample, p.trend?.at(-1) ?? p.suspicion?.evidence) + `; busiest: ${sample.busiest?.name ?? "?"}; ${sample.error ?? ""}` : "process exited"}`,
+    logReport(dir, 650), `last events:\n${events.join("\n")}`,
+    `recent files (30m, top 10; scan capped at 20000 entries): ${(p.cwd ? recentFiles(p.cwd) : []).join(", ").slice(0, 600)}`].filter(Boolean).join("\n");
 }

@@ -48,7 +48,7 @@ codex exec --json -m <model> -s <sandbox> -c approval_policy="never" -o <last-me
 
 ## 环境要求
 
-- Node.js ≥ 22.18，且位于 `PATH` 中（插件运行 `node dist/index.js`）。
+- Node.js ≥ 24，且位于 `PATH` 中（插件运行 `node dist/index.js`）。
 - [Codex CLI](https://github.com/openai/codex)，并已登录（运行 `codex login`）。先运行一次 `codex`，让模型列表缓存到 `~/.codex/models_cache.json`。
 
 ## 安装
@@ -150,9 +150,8 @@ claude mcp add codex -s user -- node /path/to/codex-delegate-plus/dist/index.js
 
 | `sandbox` | 说明 |
 |---|---|
-| `workspace-write`（默认） | Codex 可修改 `cwd` 下的文件并运行命令，但没有网络访问权限。 |
+| `write` (default) | Edits, builds and tests. Uses danger-full-access; policy.sandboxWrites enables workspace-write. |
 | `read-only` | 不允许编辑；`auto: false` 等同于此模式。适用于代码审查和问答。 |
-| `danger-full-access` | 不启用沙箱，允许安装软件包、访问网络和整个文件系统。只有任务确实需要时才传入。 |
 
 审批始终设置为 `never`，因为没有人会在后台等待并回答审批提示。安全边界由沙箱提供。Claude 会被要求审查 Codex 返回的每项改动。
 
@@ -182,7 +181,7 @@ claude mcp add codex -s user -- node /path/to/codex-delegate-plus/dist/index.js
 | `CODEX_DELEGATE_CHECK_IDLE_TIMEOUT` | `300` | 主机检查命令允许无输出的秒数；`0` 表示禁用。 |
 | `CODEX_DELEGATE_RUNS_DIR` | `~/.codex-delegate/runs` | 保存任务说明、事件日志、最终消息和异步任务结果的目录。 |
 | `CODEX_DELEGATE_FAST` | 来自 `config.toml` | 默认 `fast` 值。 |
-| `CODEX_DELEGATE_SANDBOX` | `workspace-write` | 默认沙箱模式。 |
+| `CODEX_DELEGATE_SANDBOX` | `workspace-write` | Legacy default: read-only stays read-only; write modes follow policy.sandboxWrites. |
 | `CODEX_DELEGATE_AUTO` | `true` | 默认 `auto` 值。 |
 | `CODEX_DELEGATE_TIMEOUT` | `1800` | 达到此秒数后终止委派任务。 |
 | `CODEX_DELEGATE_MAX_OUTPUT` | `6000` | 自由格式回答返回给 Claude 的最大字符数。 |
@@ -219,3 +218,39 @@ npm start           # 从源码运行服务器（Node 可直接运行 .ts 文件
 ## 许可证
 
 [MIT 许可证](LICENSE)
+
+## v0.7.0: sandbox and run diagnosis
+
+Requires Node 24; `npm run build` produces `dist/index.js`.
+Choose `sandbox: "read-only"` for investigation/review/questions and `sandbox: "write"`
+for edits, builds and tests. Write defaults to Codex `danger-full-access`.
+The dashboard policy API (`GET/PUT /api/policy`) accepts `sandboxWrites: true` to
+use `workspace-write` instead. Older policy files default to false. Legacy tool
+values `workspace-write` and `danger-full-access` are still accepted as `write`;
+`auto: false` selects read-only unless sandbox is explicit. The result and run
+metadata report the effective sandbox.
+
+`add_dirs: ["D:/shared"]` adds writable directories for the panel sandbox. Every run
+also passes its run directory via `--add-dir`. Workspace-write runs set `TEMP` and
+`TMP` to `<runDir>/tmp`, created before launch and removed after completion.
+Server-appended guidance asks Codex to tee commands expected to exceed a minute to
+`<runDir>/cmd-<n>.log`. Logging is cooperative: if Codex does not tee, the report
+says no command log is available.
+
+Suspected-stall reports include the latest log's size/tail, CPU/RSS/IO/log-growth
+trends sampled every 60 seconds (last 10 points), and historical command-class
+p50/p90 duration when at least three timings exist. `task_inspect(task_id)` fetches
+fresh evidence with a delta, the newest log tail, five recent events and the top ten
+recently modified files in cwd (30 minutes; skips `.git` and `node_modules`). It
+does not acknowledge wakes or extend the task's lifetime. Permission-denial reports
+lead wake/final output with grouped paths and recovery advice; resuming a failed,
+interrupted or denied session prepends a short previous-attempt diagnosis.
+
+Policy `retention` defaults to `{ "cmdLogMaxMB": 5, "failedLogDays": 3,
+"runDays": 30, "totalMaxMB": 1024 }`; omitted keys merge with defaults and limits
+must be positive numbers. The sampler bounds command logs by keeping their tail.
+Successful runs archive the last 2KB of each log in metadata, then delete those log
+files. Failed/cancelled/stalled logs expire after three days; runs expire after
+30 days or oldest first over the 1GB cap. Cleanup runs at MCP startup and hourly.
+Live runs are protected, so the size cap may temporarily be exceeded.
+See [run observability](docs/run-observability.md) for metadata and sampling details.

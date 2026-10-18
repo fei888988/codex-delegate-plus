@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -3875,49 +3875,49 @@ var require_fast_uri = __commonJS({
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
-    function resolveComponent(base, relative2, options, skipNormalization) {
+    function resolveComponent(base, relative3, options, skipNormalization) {
       const target = {};
       if (!skipNormalization) {
         base = parse3(serialize(base, options), options);
-        relative2 = parse3(serialize(relative2, options), options);
+        relative3 = parse3(serialize(relative3, options), options);
       }
       options = options || {};
-      if (!options.tolerant && relative2.scheme) {
-        target.scheme = relative2.scheme;
-        target.userinfo = relative2.userinfo;
-        target.host = relative2.host;
-        target.port = relative2.port;
-        target.path = removeDotSegments(relative2.path || "");
-        target.query = relative2.query;
+      if (!options.tolerant && relative3.scheme) {
+        target.scheme = relative3.scheme;
+        target.userinfo = relative3.userinfo;
+        target.host = relative3.host;
+        target.port = relative3.port;
+        target.path = removeDotSegments(relative3.path || "");
+        target.query = relative3.query;
       } else {
-        if (relative2.userinfo !== void 0 || relative2.host !== void 0 || relative2.port !== void 0) {
-          target.userinfo = relative2.userinfo;
-          target.host = relative2.host;
-          target.port = relative2.port;
-          target.path = removeDotSegments(relative2.path || "");
-          target.query = relative2.query;
+        if (relative3.userinfo !== void 0 || relative3.host !== void 0 || relative3.port !== void 0) {
+          target.userinfo = relative3.userinfo;
+          target.host = relative3.host;
+          target.port = relative3.port;
+          target.path = removeDotSegments(relative3.path || "");
+          target.query = relative3.query;
         } else {
-          if (!relative2.path) {
+          if (!relative3.path) {
             target.path = base.path;
-            if (relative2.query !== void 0) {
-              target.query = relative2.query;
+            if (relative3.query !== void 0) {
+              target.query = relative3.query;
             } else {
               target.query = base.query;
             }
           } else {
-            if (relative2.path[0] === "/") {
-              target.path = removeDotSegments(relative2.path);
+            if (relative3.path[0] === "/") {
+              target.path = removeDotSegments(relative3.path);
             } else {
               if ((base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0) && !base.path) {
-                target.path = "/" + relative2.path;
+                target.path = "/" + relative3.path;
               } else if (!base.path) {
-                target.path = relative2.path;
+                target.path = relative3.path;
               } else {
-                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative2.path;
+                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative3.path;
               }
               target.path = removeDotSegments(target.path);
             }
-            target.query = relative2.query;
+            target.query = relative3.query;
           }
           target.userinfo = base.userinfo;
           target.host = base.host;
@@ -3925,7 +3925,7 @@ var require_fast_uri = __commonJS({
         }
         target.scheme = base.scheme;
       }
-      target.fragment = relative2.fragment;
+      target.fragment = relative3.fragment;
       return target;
     }
     function equal(uriA, uriB, options) {
@@ -7199,6 +7199,198 @@ var require_dist = __commonJS({
     exports.default = formatsPlugin;
   }
 });
+
+// src/observability.ts
+import { closeSync, openSync, readSync, readdirSync, readFileSync, lstatSync, rmSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
+function effectiveSandbox(sandbox2, auto, sandboxWrites) {
+  return (sandbox2 ?? (auto ? "write" : "read-only")) === "read-only" ? "read-only" : sandboxWrites ? "workspace-write" : "danger-full-access";
+}
+function extractDenials(output2) {
+  const paths = /* @__PURE__ */ new Set();
+  let count = 0;
+  for (const line of output2.split(/\r?\n/)) {
+    if (!/PermissionError|WinError\s*5\b|Access is denied|拒绝访问|\bEACCES\b|\bEPERM\b/i.test(line)) continue;
+    count++;
+    for (const m of line.matchAll(/(?:["'])([A-Za-z]:[\\/][^"'\r\n]*|\/[^"'\r\n]+|\\\\[^"'\r\n]+)["']|([A-Za-z]:[\\/][^\s,"'<>]*)/g)) {
+      paths.add((m[1] ?? m[2]).replace(/\\/g, "/"));
+    }
+  }
+  return { count, paths: [...paths] };
+}
+function denialBlock(denials) {
+  return denials?.count ? `sandbox_denied: ${denials.count} denials
+  paths: ${denials.paths.join(", ") || "(not reported)"}
+  next: the target is outside the writable area; fix the code/test to use the default temp dir or cwd, or resume with add_dirs / ask the user to turn off the panel sandbox.` : "";
+}
+function entries(dir2) {
+  try {
+    return readdirSync(dir2, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+function readMeta(dir2) {
+  try {
+    return JSON.parse(readFileSync(join(dir2, "meta.json"), "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+function tailFile(file2, bytes) {
+  let fd;
+  try {
+    const size = lstatSync(file2).size;
+    fd = openSync(file2, "r");
+    const buffer = Buffer.alloc(Math.min(size, bytes));
+    readSync(fd, buffer, 0, buffer.length, Math.max(0, size - bytes));
+    return buffer.toString("utf8");
+  } catch {
+    return "";
+  } finally {
+    if (fd !== void 0) closeSync(fd);
+  }
+}
+function commandLogs(dir2) {
+  return entries(dir2).filter((e) => e.isFile() && /^cmd-.*\.log$/.test(e.name)).flatMap((e) => {
+    const file2 = join(dir2, e.name);
+    try {
+      const stat = lstatSync(file2);
+      return [{ file: file2, name: e.name, bytes: stat.size, mtime: stat.mtimeMs }];
+    } catch {
+      return [];
+    }
+  }).sort((a, b) => b.mtime - a.mtime);
+}
+function logReport(dir2, maxBytes = 1500) {
+  const log = commandLogs(dir2)[0];
+  if (!log) {
+    const saved = Object.entries(readMeta(dir2)?.cmdLogTails ?? {}).at(-1);
+    return saved ? `cmd log: ${saved[0]} (archived tail)
+${saved[1].slice(-maxBytes).split(/\r?\n/).slice(-15).join("\n")}` : "cmd log: (none)";
+  }
+  return log ? `cmd log: ${log.name} (${log.bytes} bytes)
+${tailFile(log.file, maxBytes).split(/\r?\n/).slice(-15).join("\n")}` : "cmd log: (none)";
+}
+function trimCommandLogs(dir2, maxMB) {
+  for (const log of commandLogs(dir2)) if (log.bytes > maxMB * 1024 * 1024) writeFileSync(log.file, tailFile(log.file, Math.floor(maxMB * 1024 * 1024)));
+}
+function finishCommandLogs(dir2, success2) {
+  if (!success2) return void 0;
+  const tails = {};
+  for (const log of commandLogs(dir2)) {
+    tails[log.name] = tailFile(log.file, 2048);
+    rmSync(log.file);
+  }
+  return tails;
+}
+function commandClass(command) {
+  const tokens = command.trim().replace(/^cd\s+.+?\s*(?:&&|;)\s*/i, "").replace(/^(?:(?:[\w]+=[^\s]+|&|call|exec)\s+)+/i, "").match(/"[^"]+"|'[^']+'|\S+/g) ?? [];
+  const first = (tokens[0] ?? "").replace(/["']/g, "").replace(/\\/g, "/").split("/").at(-1).replace(/\.(exe|cmd)$/i, "").toLowerCase();
+  if (/^(?:bash|sh|cmd|powershell|pwsh)$/.test(first)) {
+    const flag = tokens.findIndex((t) => /^(?:-[a-z]*c|\/c|-command)$/i.test(t));
+    if (flag >= 0 && tokens[flag + 1]) return commandClass(tokens.slice(flag + 1).join(" ").replace(/^["']|["']$/g, ""));
+  }
+  if (/^python(?:\d+(?:\.\d+)?)?$/.test(first) && tokens[1] === "-m") return `python -m ${tokens[2] ?? ""}`.trim();
+  if (/^(npm|pnpm|yarn)$/.test(first)) return [first, ...tokens.slice(1, tokens[1] === "run" ? 3 : 2)].join(" ");
+  return first;
+}
+function percentile(values, q) {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.max(0, Math.ceil(q * sorted.length) - 1)] ?? 0;
+}
+function baseline(runsDir, command, exclude) {
+  const cls = commandClass(command);
+  const values = [];
+  for (const e of entries(runsDir)) {
+    if (!e.isDirectory() || e.name === exclude) continue;
+    const meta3 = readMeta(join(runsDir, e.name));
+    for (const c of [...meta3?.commands ?? [], ...meta3?.checks ?? []]) {
+      if (c.durationMs !== void 0 && commandClass(c.command) === cls) values.push(c.durationMs / 1e3);
+    }
+  }
+  return values.length >= 3 ? `baseline: ${cls} p50 ${percentile(values, 0.5).toFixed(0)}s p90 ${percentile(values, 0.9).toFixed(0)}s (n=${values.length})` : "";
+}
+function evidenceDelta(current, previous) {
+  const delta = (key) => current[key] === void 0 || previous?.[key] === void 0 ? "?" : Math.max(0, current[key] - previous[key]).toFixed(0);
+  return `CPU \u0394${delta("cpuTotalMs")}ms; RSS ${((current.rssBytes ?? 0) / 1048576).toFixed(0)}MB; IO \u0394R${delta("ioReadBytes")}/W${delta("ioWriteBytes")}B`;
+}
+function trendReport(points = []) {
+  if (!points.length) return "trend: awaiting samples";
+  const rows = points.slice(-4).map((p, i, all) => {
+    const prev = all[i - 1] ?? points[points.indexOf(p) - 1];
+    const same = prev?.commandStartedAt === p.commandStartedAt;
+    return `${prev ? Math.round((p.at - prev.at) / 1e3) : "?"}s: ${evidenceDelta(p, same ? prev : void 0)}, log \u0394${same ? Math.max(0, p.logBytes - (prev?.logBytes ?? p.logBytes)) : "?"}B`;
+  });
+  return `trend: ${rows.join(" | ")}
+hint: CPU >0 and log growing -> likely working.
+hint: CPU \u22480, no IO or log growth across repeated intervals -> likely hung; unavailable counters are inconclusive.`;
+}
+function diagnosisPrefix(meta3) {
+  if (!meta3 || meta3.state === "ok" && meta3.exitKind === "completed" && !meta3.denials?.count) return "";
+  const paths = (meta3.denials?.paths.join(", ") || "none").slice(0, 120);
+  const command = (meta3.lastInflight?.command ?? meta3.stall?.command ?? meta3.inflight?.command ?? meta3.commands?.at(-1)?.command ?? "unknown").replace(/\s+/g, " ").slice(0, 160);
+  const evidence = meta3.lastEvidence ?? meta3.trend?.at(-1) ?? meta3.suspicion?.evidence;
+  const summary = evidence ? `CPU ${evidence.cpuDeltaMs ?? "?"}ms/${evidence.sampleMs ?? "?"}ms, RSS ${((evidence.rssBytes ?? 0) / 1048576).toFixed(0)}MB; ${evidence.error ?? ""}` : "unavailable";
+  return `Previous attempt diagnosis
+exit: ${meta3.exitKind ?? meta3.state}; denied paths: ${paths}; last command: ${command}; evidence: ${summary.slice(0, 140)}
+
+`;
+}
+function previousDiagnosis(runsDir, sessionId) {
+  if (!sessionId) return "";
+  const metas = entries(runsDir).filter((e) => e.isDirectory()).map((e) => readMeta(join(runsDir, e.name))).filter((m) => !!m && m.sessionId === sessionId && (m.state !== "running" || !!m.pid && !alive(m.pid) && !alive(m.codexPid))).map((m) => m.state === "running" ? { ...m, state: "interrupted", exitKind: "crashed" } : m).sort((a, b) => b.startedAt - a.startedAt);
+  return diagnosisPrefix(metas[0]);
+}
+function alive(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+function dirBytes(dir2) {
+  return entries(dir2).reduce((sum, e) => sum + (e.isDirectory() ? dirBytes(join(dir2, e.name)) : e.isFile() ? lstatSync(join(dir2, e.name)).size : 0), 0);
+}
+function cleanupRuns(runsDir, retention, active = /* @__PURE__ */ new Set(), now = Date.now()) {
+  const runs = entries(runsDir).filter((e) => e.isDirectory() && e.name !== "pending" && e.name !== "tasks").map((e) => {
+    const dir2 = join(runsDir, e.name), meta3 = readMeta(dir2);
+    return { dir: dir2, meta: meta3, age: now - (meta3?.endedAt ?? meta3?.startedAt ?? lstatSync(dir2).mtimeMs), bytes: dirBytes(dir2), protected: active.has(e.name) || meta3?.state === "running" && (alive(meta3.pid) || alive(meta3.codexPid) || (meta3.heartbeatAt !== void 0 ? now - meta3.heartbeatAt < 9e4 : meta3.pid === void 0 && meta3.codexPid === void 0)) };
+  }).sort((a, b) => b.age - a.age);
+  let total = dirBytes(runsDir);
+  for (const r of runs) {
+    if (r.protected) continue;
+    if (r.age > retention.runDays * 864e5 || total > retention.totalMaxMB * 1048576) {
+      rmSync(r.dir, { recursive: true, force: true });
+      total -= r.bytes;
+      continue;
+    }
+    if (r.age > retention.failedLogDays * 864e5) for (const log of commandLogs(r.dir)) rmSync(log.file);
+  }
+}
+function recentFiles(cwd, now = Date.now()) {
+  const files = [];
+  let visited = 0;
+  const walk = (dir2) => {
+    for (const e of entries(dir2)) {
+      if (++visited > 2e4) return;
+      if (e.name === ".git" || e.name === "node_modules") continue;
+      const file2 = join(dir2, e.name);
+      if (e.isDirectory()) walk(file2);
+      else if (e.isFile()) {
+        try {
+          const at = lstatSync(file2).mtimeMs;
+          if (now - at <= 18e5) files.push({ name: relative(cwd, file2), at });
+        } catch {
+        }
+      }
+    }
+  };
+  walk(cwd);
+  return files.sort((a, b) => b.at - a.at).slice(0, 10).map((f) => f.name);
+}
 
 // node_modules/zod/v3/helpers/util.js
 var util;
@@ -11507,9 +11699,9 @@ function assertNever(_x) {
 }
 function assert(_) {
 }
-function getEnumValues(entries) {
-  const numericValues = Object.values(entries).filter((v) => typeof v === "number");
-  const values = Object.entries(entries).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
+function getEnumValues(entries2) {
+  const numericValues = Object.values(entries2).filter((v) => typeof v === "number");
+  const values = Object.entries(entries2).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
   return values;
 }
 function joinValues(array2, separator = "|") {
@@ -13332,16 +13524,16 @@ var $ZodCheckProperties = /* @__PURE__ */ $constructor("$ZodCheckProperties", (i
   hide(inst, Symbol.iterator, function* () {
     yield inst;
   });
-  let entries;
+  let entries2;
   inst._zod.check = (payload) => {
     if (payload.value == null) {
       payload.issues.push({ expected: "object", code: "invalid_type", input: payload.value, inst });
       return void 0;
     }
-    entries ?? (entries = Reflect.ownKeys(def.shape).map((key) => [key, def.shape[key]]));
+    entries2 ?? (entries2 = Reflect.ownKeys(def.shape).map((key) => [key, def.shape[key]]));
     const input2 = payload.value;
     let proms;
-    for (const [key, schema] of entries) {
+    for (const [key, schema] of entries2) {
       const result = schema._zod.run({ value: input2[key], issues: [] }, {});
       if (result instanceof Promise) {
         proms ?? (proms = []);
@@ -26123,18 +26315,18 @@ function _set(Class2, valueType, params) {
 }
 // @__NO_SIDE_EFFECTS__
 function _enum(Class2, values, params) {
-  const entries = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
+  const entries2 = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
   return new Class2({
     type: "enum",
-    entries,
+    entries: entries2,
     ...normalizeParams(params)
   });
 }
 // @__NO_SIDE_EFFECTS__
-function _nativeEnum(Class2, entries, params) {
+function _nativeEnum(Class2, entries2, params) {
   return new Class2({
     type: "enum",
-    entries,
+    entries: entries2,
     ...normalizeParams(params)
   });
 }
@@ -29761,17 +29953,17 @@ var ZodEnum2 = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
   };
 });
 function _enum2(values, params) {
-  const entries = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
+  const entries2 = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
   return new ZodEnum2({
     type: "enum",
-    entries,
+    entries: entries2,
     ...util_exports.normalizeParams(params)
   });
 }
-function nativeEnum(entries, params) {
+function nativeEnum(entries2, params) {
   return new ZodEnum2({
     type: "enum",
-    entries,
+    entries: entries2,
     ...util_exports.normalizeParams(params)
   });
 }
@@ -36482,19 +36674,19 @@ var StdioServerTransport = class {
 import { resolve as resolve3 } from "node:path";
 
 // src/config.ts
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync as readFileSync2 } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join as join2 } from "node:path";
 function fallbackDirs(env, platform) {
   const home = homedir();
   if (platform === "win32") {
-    return [env.APPDATA ? join(env.APPDATA, "npm") : "", join(home, ".bun", "bin"), join(home, ".cargo", "bin")].filter(Boolean);
+    return [env.APPDATA ? join2(env.APPDATA, "npm") : "", join2(home, ".bun", "bin"), join2(home, ".cargo", "bin")].filter(Boolean);
   }
   return [
-    join(home, ".bun", "bin"),
-    join(home, ".local", "bin"),
-    join(home, ".npm-global", "bin"),
-    join(home, ".cargo", "bin"),
+    join2(home, ".bun", "bin"),
+    join2(home, ".local", "bin"),
+    join2(home, ".npm-global", "bin"),
+    join2(home, ".cargo", "bin"),
     "/usr/local/bin",
     "/opt/homebrew/bin",
     "/usr/bin"
@@ -36507,12 +36699,12 @@ function resolveCodex(env = process.env, platform = process.platform) {
   const dirs = [...path.split(platform === "win32" ? ";" : delimiter).filter(Boolean), ...fallbackDirs(env, platform)];
   for (const dir2 of dirs) {
     if (platform === "win32") {
-      const js = join(dir2, "node_modules", "@openai", "codex", "bin", "codex.js");
+      const js = join2(dir2, "node_modules", "@openai", "codex", "bin", "codex.js");
       if (existsSync(js)) return viaNode(js);
-      const exe = join(dir2, "codex.exe");
+      const exe = join2(dir2, "codex.exe");
       if (existsSync(exe)) return { cmd: exe, args: [] };
     } else {
-      const candidate = join(dir2, "codex");
+      const candidate = join2(dir2, "codex");
       if (existsSync(candidate)) return { cmd: candidate, args: [] };
     }
   }
@@ -36541,10 +36733,10 @@ function optionalBool(v) {
   if (v === void 0 || v.trim() === "") return void 0;
   return bool(v, false);
 }
-var codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
-function configuredModel(path = join(codexHome, "config.toml")) {
+var codexHome = process.env.CODEX_HOME || join2(homedir(), ".codex");
+function configuredModel(path = join2(codexHome, "config.toml")) {
   try {
-    const top = readFileSync(path, "utf8").split(/^\s*\[/m)[0] ?? "";
+    const top = readFileSync2(path, "utf8").split(/^\s*\[/m)[0] ?? "";
     return top.match(/^\s*model\s*=\s*"([^"]+)"/m)?.[1];
   } catch {
     return void 0;
@@ -36592,22 +36784,15 @@ var config2 = {
   checkIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_CHECK_IDLE_TIMEOUT, 300),
   // What goes back into the caller's context. The full event log stays on disk.
   maxOutputChars: int2(process.env.CODEX_DELEGATE_MAX_OUTPUT, 6e3),
-  runsDir: process.env.CODEX_DELEGATE_RUNS_DIR || join(homedir(), ".codex-delegate", "runs"),
+  runsDir: process.env.CODEX_DELEGATE_RUNS_DIR || join2(homedir(), ".codex-delegate", "runs"),
   // Cost tiers and guidance prompts, edited from the dashboard (see policy.ts).
-  policyFile: process.env.CODEX_DELEGATE_POLICY || join(homedir(), ".codex-delegate", "policy.json"),
+  policyFile: process.env.CODEX_DELEGATE_POLICY || join2(homedir(), ".codex-delegate", "policy.json"),
   defaultCwd: process.env.CODEX_DELEGATE_CWD || process.cwd()
 };
 
-// src/delegate.ts
-import { randomUUID } from "node:crypto";
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, writeFileSync as writeFileSync3 } from "node:fs";
-import { basename, isAbsolute, join as join5, relative, resolve } from "node:path";
-
-// src/checks.ts
-import { spawn } from "node:child_process";
-
-// src/procs.ts
-import { spawnSync } from "node:child_process";
+// src/watchdog.ts
+import { execFile } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 
 // src/windows-process-tree.ts
 function windowsProcessTreeScript(cpuPid = 0) {
@@ -36624,6 +36809,8 @@ public class DelegateProcesses {
  [DllImport("kernel32.dll", CharSet=CharSet.Auto)] public static extern bool Process32First(IntPtr h, ref Entry e);
  [DllImport("kernel32.dll", CharSet=CharSet.Auto)] public static extern bool Process32Next(IntPtr h, ref Entry e);
  [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+ [StructLayout(LayoutKind.Sequential)] public struct IO { public ulong readOps, writeOps, otherOps, readBytes, writeBytes, otherBytes; }
+ [DllImport("kernel32.dll")] public static extern bool GetProcessIoCounters(IntPtr h, out IO io);
  public static void Print(uint root) {
   var h=CreateToolhelp32Snapshot(2,0);
   var rows=new System.Collections.Generic.List<Entry>();
@@ -36634,9 +36821,9 @@ public class DelegateProcesses {
   bool changed=true;
   while(root!=0 && changed) { changed=false; foreach(var e in rows) if(ids.Contains(e.parent) && ids.Add(e.pid)) changed=true; }
   foreach(var e in rows) if(root==0 || ids.Contains(e.pid)) {
-    double cpu=0; long rss=0;
-    if(root!=0) try { using(var p=System.Diagnostics.Process.GetProcessById((int)e.pid)) { cpu=p.TotalProcessorTime.TotalMilliseconds; rss=p.WorkingSet64; } } catch {}
-    Console.WriteLine(e.pid+" "+e.parent+" "+cpu.ToString(System.Globalization.CultureInfo.InvariantCulture)+" "+rss+" "+e.name);
+    double cpu=0; long rss=0; string io="- -";
+    if(root!=0) try { using(var p=System.Diagnostics.Process.GetProcessById((int)e.pid)) { cpu=p.TotalProcessorTime.TotalMilliseconds; rss=p.WorkingSet64; IO counters; if(GetProcessIoCounters(p.Handle,out counters)) io=counters.readBytes+" "+counters.writeBytes; } } catch {}
+    Console.WriteLine(e.pid+" "+e.parent+" "+cpu.ToString(System.Globalization.CultureInfo.InvariantCulture)+" "+rss+" "+io+" "+e.name);
   }
  }
 }
@@ -36645,95 +36832,7 @@ public class DelegateProcesses {
 `;
 }
 
-// src/procs.ts
-var live = /* @__PURE__ */ new Set();
-function killWindowsTree(pid) {
-  const killed = spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 5e3 });
-  if (killed.status === 0) return;
-  const snapshot2 = spawnSync(
-    "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", windowsProcessTreeScript()],
-    { encoding: "utf8", windowsHide: true, timeout: 5e3 }
-  );
-  const rows = (snapshot2.stdout ?? "").trim().split(/\r?\n/).map((line) => line.trim().split(/\s+/).map(Number));
-  const ids = /* @__PURE__ */ new Set([pid]);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const [child, parent] of rows) if (child && parent && ids.has(parent) && !ids.has(child)) {
-      ids.add(child);
-      changed = true;
-    }
-  }
-  for (const id of [...ids].reverse()) {
-    try {
-      process.kill(id, "SIGKILL");
-    } catch {
-    }
-  }
-}
-function killTree(child, force = false) {
-  if (child.pid === void 0 || child.exitCode !== null || child.signalCode !== null) return;
-  if (process.platform === "win32") {
-    killWindowsTree(child.pid);
-    child.kill("SIGKILL");
-    return;
-  }
-  try {
-    process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM");
-  } catch {
-    child.kill(force ? "SIGKILL" : "SIGTERM");
-  }
-}
-function track(child) {
-  live.add(child);
-  child.once("close", () => live.delete(child));
-}
-function stop(child, graceMs = 3e3) {
-  killTree(child);
-  if (process.platform !== "win32") setTimeout(() => killTree(child, true), graceMs).unref();
-}
-function killOrphan(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return;
-  if (process.platform === "win32") {
-    const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true, timeout: 5e3 });
-    if (!/^"(node|codex)\.exe"/im.test(r.stdout ?? "")) {
-      const name = spawnSync("powershell.exe", [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `(Get-Process -Id ${pid} -ErrorAction Stop).ProcessName`
-      ], { encoding: "utf8", windowsHide: true, timeout: 5e3 });
-      if (!/^(node|codex)$/i.test(name.stdout?.trim() ?? "")) return;
-    }
-    killWindowsTree(pid);
-    return;
-  }
-  try {
-    process.kill(-pid, "SIGKILL");
-  } catch {
-  }
-}
-var installed = false;
-function installExitCleanup() {
-  if (installed) return;
-  installed = true;
-  const cleanup = () => {
-    for (const c of live) killTree(c, true);
-  };
-  process.once("exit", cleanup);
-  process.stdin.once("end", () => process.exit(0));
-  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-    process.once(sig, () => {
-      cleanup();
-      process.exit(128);
-    });
-  }
-}
-
 // src/watchdog.ts
-import { execFile } from "node:child_process";
-import { setTimeout as delay } from "node:timers/promises";
 function capture(cmd, args, signal) {
   return new Promise((resolve4) => {
     execFile(
@@ -36849,20 +36948,28 @@ var sampleTreeEvidence = async (pid, signal) => {
     const details = process.platform === "win32" ? await capture("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsProcessTreeScript(pid)], signal) : await capture("ps", ["-A", "-o", "pid=,ppid=,rss=,comm="], signal);
     let busiest;
     let delta = 0;
+    let rssBytes = 0, ioReadBytes = 0, ioWriteBytes = 0;
+    let hasIo = false;
     for (const [id, cpu] of after) {
       const d = Math.max(0, cpu - (before.get(id) ?? cpu));
       delta += d;
-      if (id === pid || busiest && d <= busiest.cpuMs) continue;
       const line = details.split(/\r?\n/).find((l) => Number(l.trim().split(/\s+/)[0]) === id);
       const fields = line?.trim().split(/\s+/) ?? [];
+      rssBytes += Number(fields[process.platform === "win32" ? 3 : 2] ?? 0) * (process.platform === "win32" ? 1 : 1024);
+      if (process.platform === "win32" && fields[4] !== "-" && Number.isFinite(Number(fields[4]))) {
+        hasIo = true;
+        ioReadBytes += Number(fields[4]);
+        ioWriteBytes += Number(fields[5]);
+      }
+      if (busiest && d <= busiest.cpuMs) continue;
       busiest = {
         pid: id,
         cpuMs: d,
-        name: fields.slice(process.platform === "win32" ? 4 : 3).join(" "),
+        name: fields.slice(process.platform === "win32" ? 6 : 3).join(" "),
         rssBytes: Number(fields[process.platform === "win32" ? 3 : 2] ?? 0) * (process.platform === "win32" ? 1 : 1024)
       };
     }
-    return { cpuDeltaMs: delta, sampleMs: Date.now() - started, descendantCount: Math.max(0, after.size - 1), busiest };
+    return { cpuTotalMs: [...after.values()].reduce((n, cpu) => n + cpu, 0), rssBytes, ...hasIo ? { ioReadBytes, ioWriteBytes } : {}, cpuDeltaMs: delta, sampleMs: Date.now() - started, descendantCount: Math.max(0, after.size - 1), busiest };
   } catch {
     return { error: "process sample unavailable" };
   }
@@ -36897,6 +37004,101 @@ function softWatchdog(pid, window, suspected, sample = sampleTreeEvidence) {
     sampling?.abort();
     clearTimeout(timer);
   } };
+}
+
+// src/delegate.ts
+import { randomUUID } from "node:crypto";
+import { existsSync as existsSync4, mkdirSync as mkdirSync3, rmSync as rmSync3, writeFileSync as writeFileSync4 } from "node:fs";
+import { basename, isAbsolute, join as join6, relative as relative2, resolve } from "node:path";
+
+// src/checks.ts
+import { spawn } from "node:child_process";
+
+// src/procs.ts
+import { spawnSync } from "node:child_process";
+var live = /* @__PURE__ */ new Set();
+function killWindowsTree(pid) {
+  const killed = spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 5e3 });
+  if (killed.status === 0) return;
+  const snapshot2 = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", windowsProcessTreeScript()],
+    { encoding: "utf8", windowsHide: true, timeout: 5e3 }
+  );
+  const rows = (snapshot2.stdout ?? "").trim().split(/\r?\n/).map((line) => line.trim().split(/\s+/).map(Number));
+  const ids = /* @__PURE__ */ new Set([pid]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [child, parent] of rows) if (child && parent && ids.has(parent) && !ids.has(child)) {
+      ids.add(child);
+      changed = true;
+    }
+  }
+  for (const id of [...ids].reverse()) {
+    try {
+      process.kill(id, "SIGKILL");
+    } catch {
+    }
+  }
+}
+function killTree(child, force = false) {
+  if (child.pid === void 0 || child.exitCode !== null || child.signalCode !== null) return;
+  if (process.platform === "win32") {
+    killWindowsTree(child.pid);
+    child.kill("SIGKILL");
+    return;
+  }
+  try {
+    process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM");
+  } catch {
+    child.kill(force ? "SIGKILL" : "SIGTERM");
+  }
+}
+function track(child) {
+  live.add(child);
+  child.once("close", () => live.delete(child));
+}
+function stop(child, graceMs = 3e3) {
+  killTree(child);
+  if (process.platform !== "win32") setTimeout(() => killTree(child, true), graceMs).unref();
+}
+function killOrphan(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  if (process.platform === "win32") {
+    const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true, timeout: 5e3 });
+    if (!/^"(node|codex)\.exe"/im.test(r.stdout ?? "")) {
+      const name = spawnSync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-Process -Id ${pid} -ErrorAction Stop).ProcessName`
+      ], { encoding: "utf8", windowsHide: true, timeout: 5e3 });
+      if (!/^(node|codex)$/i.test(name.stdout?.trim() ?? "")) return;
+    }
+    killWindowsTree(pid);
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+  }
+}
+var installed = false;
+function installExitCleanup() {
+  if (installed) return;
+  installed = true;
+  const cleanup2 = () => {
+    for (const c of live) killTree(c, true);
+  };
+  process.once("exit", cleanup2);
+  process.stdin.once("end", () => process.exit(0));
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.once(sig, () => {
+      cleanup2();
+      process.exit(128);
+    });
+  }
 }
 
 // src/checks.ts
@@ -36985,7 +37187,7 @@ async function runChecks(commands, cwd, timeoutMs, signal, options = {}) {
 
 // src/codex.ts
 import { spawn as spawn2 } from "node:child_process";
-import { createWriteStream, existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
+import { createWriteStream, existsSync as existsSync2, readFileSync as readFileSync3 } from "node:fs";
 function classifyError(text2) {
   if (/quota|usage limit|insufficient_quota|credits|billing|exceeded.*usage/i.test(text2)) return "quota";
   if (/rate.?limit|429|too many requests/i.test(text2)) return "rate_limit";
@@ -37009,6 +37211,7 @@ function buildArgs(o) {
   if (o.fast !== void 0) args.push("-c", `service_tier=${toml(o.fast ? "priority" : "default")}`);
   if (o.lastMessageFile) args.push("-o", o.lastMessageFile);
   if (o.outputSchemaFile) args.push("--output-schema", o.outputSchemaFile);
+  for (const dir2 of o.addDirs ?? []) args.push("--add-dir", dir2);
   for (const img of o.images ?? []) args.push("-i", img);
   args.push("--", "-");
   return args;
@@ -37034,6 +37237,12 @@ var EventCollector = class {
   errors = [];
   raw = [];
   lastEventAt = Date.now();
+  commands = [];
+  denialOutputs = /* @__PURE__ */ new Map();
+  get denials() {
+    const values = [...this.denialOutputs.values()];
+    return { count: values.reduce((n, d) => n + d.count, 0), paths: [...new Set(values.flatMap((d) => d.paths))] };
+  }
   inflight = /* @__PURE__ */ new Map();
   push(line) {
     this.lastEventAt = Date.now();
@@ -37045,6 +37254,9 @@ var EventCollector = class {
     } catch {
       this.raw.push(trimmed);
       return;
+    }
+    if (e.item?.type === "command_execution" && typeof e.item.aggregated_output === "string") {
+      this.denialOutputs.set(e.item.id ?? `command-${this.commands.length}`, extractDenials(e.item.aggregated_output));
     }
     switch (e.type) {
       case "item.started":
@@ -37058,10 +37270,13 @@ var EventCollector = class {
       case "thread.started":
         this.sessionId ??= e.thread_id;
         break;
-      case "item.completed":
+      case "item.completed": {
+        const started = this.inflight.get(e.item?.id);
+        if (started?.type === "command_execution" && started.command) this.commands.push({ command: started.command, durationMs: this.lastEventAt - started.startedAt });
         this.inflight.delete(e.item?.id);
         this.item(e.item ?? {});
         break;
+      }
       case "turn.completed": {
         this.turns++;
         const u = e.usage ?? {};
@@ -37120,7 +37335,7 @@ var EventCollector = class {
 function readFinal(file2) {
   if (!file2 || !existsSync2(file2)) return void 0;
   try {
-    return readFileSync2(file2, "utf8").trim() || void 0;
+    return readFileSync3(file2, "utf8").trim() || void 0;
   } catch {
     return void 0;
   }
@@ -37131,7 +37346,7 @@ function runCodex(o) {
   return new Promise((resolve4) => {
     const child = spawn2(config2.codex.cmd, [...config2.codex.args, ...buildArgs(o)], {
       cwd: o.cwd,
-      env: process.env,
+      env: { ...process.env, ...o.env },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       // Own process group on POSIX so the whole tree can be signalled (see procs.ts).
@@ -37163,6 +37378,8 @@ function runCodex(o) {
     const progress = () => {
       try {
         o.onProgress?.({
+          commands: [...collector.commands],
+          denials: collector.denials,
           codexPid: child.pid,
           lastEventAt: collector.lastEventAt,
           inflight: [...collector.inflight.values()].find((it) => it.type === "command_execution") ?? collector.inflight.values().next().value,
@@ -37285,6 +37502,8 @@ ${stderr}
       if (exitKind === "crashed" && !errors.length) errors.push("codex exited without turn.completed");
       const error62 = errors.join("; ") || void 0;
       resolve4({
+        denials: collector.denials,
+        commands: collector.commands,
         ok: exitKind === "completed",
         exitKind,
         errorKind: error62 ? classifyError(error62) : void 0,
@@ -37312,19 +37531,19 @@ ${stderr}
 // src/git.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync as readFileSync3, statSync } from "node:fs";
-import { join as join2 } from "node:path";
+import { readFileSync as readFileSync4, statSync } from "node:fs";
+import { join as join3 } from "node:path";
 function parsePorcelainZ(out) {
   const parts = out.split("\0");
-  const entries = [];
+  const entries2 = [];
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
     if (p.length < 4) continue;
     const xy = p.slice(0, 2);
-    entries.push({ xy, path: p.slice(3) });
+    entries2.push({ xy, path: p.slice(3) });
     if (xy[0] === "R" || xy[0] === "C") i++;
   }
-  return entries;
+  return entries2;
 }
 function git(cwd, args) {
   return spawnSync2("git", ["-c", "core.quotepath=off", ...args], { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true });
@@ -37335,7 +37554,7 @@ function fingerprint(file2) {
     const st = statSync(file2);
     if (!st.isFile()) return "dir";
     if (st.size > MAX_HASH_BYTES) return `big:${st.size}:${st.mtimeMs}`;
-    return createHash("sha1").update(readFileSync3(file2)).digest("hex");
+    return createHash("sha1").update(readFileSync4(file2)).digest("hex");
   } catch {
     return "deleted";
   }
@@ -37344,7 +37563,7 @@ function snapshot(cwd) {
   const r = git(cwd, ["status", "--porcelain", "-z", "--untracked-files=all"]);
   if (r.status !== 0) return void 0;
   const snap = /* @__PURE__ */ new Map();
-  for (const e of parsePorcelainZ(r.stdout)) snap.set(e.path, { xy: e.xy, hash: fingerprint(join2(cwd, e.path)) });
+  for (const e of parsePorcelainZ(r.stdout)) snap.set(e.path, { xy: e.xy, hash: fingerprint(join3(cwd, e.path)) });
   return snap;
 }
 function diffSnapshots(before, after) {
@@ -37372,7 +37591,7 @@ function diffStat(cwd, changes) {
   return changes.map((c) => {
     if (c.xy === "??") {
       try {
-        const buf = readFileSync3(join2(cwd, c.path));
+        const buf = readFileSync4(join3(cwd, c.path));
         if (buf.includes(0)) return { ...c, binary: true };
         const text2 = buf.toString("utf8");
         return { ...c, added: text2 ? text2.split("\n").length - (text2.endsWith("\n") ? 1 : 0) : 0, removed: 0 };
@@ -37385,12 +37604,12 @@ function diffStat(cwd, changes) {
 }
 
 // src/models.ts
-import { readFileSync as readFileSync4 } from "node:fs";
-import { join as join3 } from "node:path";
-function listModels(path = join3(config2.codexHome, "models_cache.json")) {
+import { readFileSync as readFileSync5 } from "node:fs";
+import { join as join4 } from "node:path";
+function listModels(path = join4(config2.codexHome, "models_cache.json")) {
   let data;
   try {
-    data = JSON.parse(readFileSync4(path, "utf8"));
+    data = JSON.parse(readFileSync5(path, "utf8"));
   } catch {
     return [];
   }
@@ -37450,10 +37669,12 @@ function resolveModelOrThrow(query) {
 }
 
 // src/policy.ts
-import { mkdirSync, readFileSync as readFileSync5, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync as readFileSync6, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
 var DEFAULT_POLICY = {
+  sandboxWrites: false,
+  retention: { cmdLogMaxMB: 5, failedLogDays: 3, runDays: 30, totalMaxMB: 1024 },
   stall: { long_commands: [{ match: "unittest discover|pytest|npm (run )?test|node --test", idle_s: 1800 }] },
-  "guidance": "Cost policy: Codex usage is billed per token, and the higher tiers cost several times more. Pick the cheapest tier that will get this task right; quality is not negotiable, so cheap means fewer wasted tokens, not a sloppier result. Unsure between two tiers: take the cheaper one, unless the task is in the risky class named by the top tier, where a failed attempt costs more than the difference. Escalate on evidence: after a check FAIL or a wrong result, continue the same session_id one tier up. Keep briefs tight and pass only the checks that prove the change. Read-only reviews and questions: use high when the reviewed code touches live trading, money, concurrency or security; low for other reviews and for questions; medium when a non-risky review must judge cross-module design. Frontend design stays with you: page layout, visual style, CSS, component look and feel, and UI copy are yours to do, not Codex's (its design taste is weak); backend, data plumbing and tests behind a UI can still be delegated. When Codex can't work: if a delegate call fails for an environment reason (quota or rate limit, auth, network, codex crash, a timeout or abort with no usable result; not the user pressing Stop), retry once only if the error looks transient. If it still fails, don't quietly take the delegated work over yourself. Estimate what is left that you meant to give Codex: if it is small (a few edits you can already see), finish it and say Codex was unavailable; if it is substantial, stop and ask the user, with the error and the remaining work, whether to wait or fix Codex and continue, have you do it yourself (give a rough size), or do something else.\nSandbox selection: Before every delegation, explicitly choose the sandbox parameter based on the task's execution and verification needs. Use read-only for investigations, code reviews and questions that require no writes. Use workspace-write for code changes and ordinary tests that can finish within the working directory and permitted temporary directories. Within the user's authorized scope, use danger-full-access when the task requires network access, dependency installation, writes outside those directories, or host permissions needed for complete verification. Prefer the least permissive mode that can complete the task and its required verification in one attempt. Check known requirements before starting, including the Python interpreter, dependencies and hard-coded temporary paths. If a sandbox restriction is confirmed, do not repeat the same blocked attempt: adjust the execution environment or resume the same session_id with an appropriate sandbox mode within the user's authorization. A failure caused only by sandbox restrictions or missing environment dependencies does not justify raising the reasoning tier; the earlier tier-escalation rule applies to reasoning or implementation failures. Sandbox selection does not expand authorization for deployment, live operations or other external changes.",
+  "guidance": "Cost policy: Codex usage is billed per token, and the higher tiers cost several times more. Pick the cheapest tier that will get this task right; quality is not negotiable, so cheap means fewer wasted tokens, not a sloppier result. Unsure between two tiers: take the cheaper one, unless the task is in the risky class named by the top tier, where a failed attempt costs more than the difference. Escalate on evidence: after a check FAIL or a wrong result, continue the same session_id one tier up. Keep briefs tight and pass only the checks that prove the change. Read-only reviews and questions: use high when the reviewed code touches live trading, money, concurrency or security; low for other reviews and for questions; medium when a non-risky review must judge cross-module design. Frontend design stays with you: page layout, visual style, CSS, component look and feel, and UI copy are yours to do, not Codex's (its design taste is weak); backend, data plumbing and tests behind a UI can still be delegated. When Codex can't work: if a delegate call fails for an environment reason (quota or rate limit, auth, network, codex crash, a timeout or abort with no usable result; not the user pressing Stop), retry once only if the error looks transient. If it still fails, don't quietly take the delegated work over yourself. Estimate what is left that you meant to give Codex: if it is small (a few edits you can already see), finish it and say Codex was unavailable; if it is substantial, stop and ask the user, with the error and the remaining work, whether to wait or fix Codex and continue, have you do it yourself (give a rough size), or do something else.\nSandbox selection: Set sandbox on every delegation. Use read-only for investigations, code reviews and questions that need no writes. Use write for anything that edits files or runs builds and tests; the user's panel setting decides how write runs (by default with full access, so network, dependency installs and paths outside cwd work). Full access does not expand authorization: no deployment, live operations, or writes to production or shared data unless the user asked for them; name off-limits paths and systems in the brief. State known requirements in the brief (Python interpreter, dependencies, temp paths). If a result reports sandbox_denied, the panel sandbox is on: fix the path (prefer cwd or the default temp dir), pass add_dirs, or ask the user to turn the sandbox off; never repeat the same blocked attempt. A failure caused only by sandbox restrictions or missing environment dependencies does not justify raising the reasoning tier.",
   "codexGuidance": "Cost (added by the delegating tool): work economically. Search before opening whole files and read only what you need, prefer a targeted test over re-running the full suite on every step, and stop once the acceptance criteria are met. Never skip the verification needed to be sure the change is correct. Keep the diff minimal and targeted: change only what the task needs and never rewrite a whole file or module when a local edit works. In your final report, list every existing behaviour you removed, disabled, narrowed or simplified (deleted branches, narrowed conditions or time windows, dropped arguments, flags or recovery paths), or state that there were none.",
   "tiers": [
     {
@@ -37493,6 +37714,10 @@ var str = (v) => typeof v === "string" ? v.trim() : void 0;
 function validatePolicy(input2, models = listModels()) {
   if (!input2 || typeof input2 !== "object" || Array.isArray(input2)) return { ok: false, error: "policy must be a JSON object" };
   const raw = { ...DEFAULT_POLICY, ...input2 };
+  if (typeof raw.sandboxWrites !== "boolean") return { ok: false, error: "sandboxWrites must be boolean" };
+  if (!raw.retention || typeof raw.retention !== "object" || Array.isArray(raw.retention)) return { ok: false, error: "invalid retention policy" };
+  const retention = { ...DEFAULT_POLICY.retention, ...raw.retention };
+  if (Object.values(retention).some((v) => typeof v !== "number" || !Number.isFinite(v) || v <= 0)) return { ok: false, error: "retention limits must be positive numbers" };
   const stall = raw.stall;
   if (stall !== void 0 && (!stall || typeof stall !== "object" || Array.isArray(stall) || [stall.silent_s, stall.command_s].some((v) => v !== void 0 && (!Number.isFinite(v) || v < 0)) || stall.long_commands !== void 0 && (!Array.isArray(stall.long_commands) || stall.long_commands.some((r) => !r || typeof r.match !== "string" || !Number.isFinite(r.idle_s) || r.idle_s < 0))))
     return { ok: false, error: "invalid stall policy" };
@@ -37527,12 +37752,12 @@ function validatePolicy(input2, models = listModels()) {
     }
     tiers.push({ id, ...model2 ? { model: model2 } : {}, effort, use });
   }
-  return { ok: true, policy: { guidance, codexGuidance, tiers, models: allowed, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
+  return { ok: true, policy: { sandboxWrites: raw.sandboxWrites, retention, guidance, codexGuidance, tiers, models: allowed, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
 }
 function loadPolicy(file2 = config2.policyFile) {
   let text2;
   try {
-    text2 = readFileSync5(file2, "utf8");
+    text2 = readFileSync6(file2, "utf8");
   } catch {
     return { policy: DEFAULT_POLICY };
   }
@@ -37553,12 +37778,12 @@ function tierLabel(t) {
 
 // src/pending.ts
 import { createHash as createHash2 } from "node:crypto";
-import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync6, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join4 } from "node:path";
+import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync7, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join5 } from "node:path";
 var MAX_AGE_MS = 24 * 3600 * 1e3;
-var dir = () => join4(config2.runsDir, "pending");
-var fileFor = (cwd) => join4(dir(), `${createHash2("sha1").update(cwd.toLowerCase()).digest("hex").slice(0, 16)}.json`);
-function alive(pid) {
+var dir = () => join5(config2.runsDir, "pending");
+var fileFor = (cwd) => join5(dir(), `${createHash2("sha1").update(cwd.toLowerCase()).digest("hex").slice(0, 16)}.json`);
+function alive2(pid) {
   if (pid === process.pid) return true;
   try {
     process.kill(pid, 0);
@@ -37570,7 +37795,7 @@ function alive(pid) {
 function savePending(rec) {
   try {
     mkdirSync2(dir(), { recursive: true });
-    writeFileSync2(fileFor(rec.cwd), JSON.stringify(rec, null, 2));
+    writeFileSync3(fileFor(rec.cwd), JSON.stringify(rec, null, 2));
   } catch {
   }
 }
@@ -37579,10 +37804,10 @@ function clearPending(cwd, owner) {
   try {
     if (owner) {
       if (!existsSync3(f)) return;
-      const cur = JSON.parse(readFileSync6(f, "utf8"));
+      const cur = JSON.parse(readFileSync7(f, "utf8"));
       if (cur.pid !== owner.pid || cur.startedAt !== owner.startedAt) return;
     }
-    rmSync(f, { force: true });
+    rmSync2(f, { force: true });
   } catch {
   }
 }
@@ -37591,14 +37816,14 @@ function loadPending(cwd) {
   if (!existsSync3(f)) return void 0;
   let rec;
   try {
-    rec = JSON.parse(readFileSync6(f, "utf8"));
+    rec = JSON.parse(readFileSync7(f, "utf8"));
   } catch {
     return void 0;
   }
   if (rec.cwd.toLowerCase() !== cwd.toLowerCase()) return void 0;
   if (rec.state === "running") {
     const stale = Date.now() - rec.startedAt > (config2.timeoutSec + 300) * 1e3;
-    if (!stale && (rec.pid === process.pid || alive(rec.pid))) return void 0;
+    if (!stale && (rec.pid === process.pid || alive2(rec.pid))) return void 0;
     if (rec.codexPid) killOrphan(rec.codexPid);
     rec.state = "interrupted";
   }
@@ -37689,7 +37914,7 @@ function renderReport(r) {
 // package.json
 var package_default = {
   name: "claude-codex-delegate",
-  version: "0.6.0",
+  version: "0.7.0",
   description: "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna\u2026) while staying the orchestrator.",
   type: "module",
   license: "MIT",
@@ -37724,7 +37949,7 @@ var version3 = package_default.version;
 // src/delegate.ts
 function newRunDir() {
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
-  const dir2 = join5(config2.runsDir, `${stamp}-${randomUUID().slice(0, 6)}`);
+  const dir2 = resolve(config2.runsDir, `${stamp}-${randomUUID().slice(0, 6)}`);
   try {
     mkdirSync3(dir2, { recursive: true });
     return dir2;
@@ -37736,7 +37961,8 @@ async function delegate(input2, signal, onProgress, stallControl) {
   const cwd = resolve(config2.defaultCwd, input2.cwd ?? ".");
   if (!existsSync4(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const auto = input2.auto ?? config2.auto;
-  const sandbox2 = input2.sandbox ?? (auto ? config2.sandbox : "read-only");
+  const { policy, error: policyError } = loadPolicy();
+  const sandbox2 = effectiveSandbox(input2.sandbox, auto && config2.sandbox !== "read-only", policy.sandboxWrites);
   const readOnly = sandbox2 === "read-only";
   const notes = [];
   const lockKey = cwd.toLowerCase();
@@ -37750,7 +37976,6 @@ async function delegate(input2, signal, onProgress, stallControl) {
   const pending = !readOnly && !input2.fresh ? loadPending(cwd) : void 0;
   const continued = pending && (!input2.session_id || input2.session_id === pending.sessionId) ? pending : void 0;
   if (continued && !input2.session_id) input2 = { ...input2, session_id: continued.sessionId };
-  const { policy, error: policyError } = loadPolicy();
   if (policyError) notes.push(policyError);
   const tier = findTier(policy, input2.effort);
   const query = input2.model ?? tier?.model ?? (input2.session_id ? void 0 : auto ? config2.defaultModel : config2.readModel);
@@ -37780,7 +38005,7 @@ async function delegate(input2, signal, onProgress, stallControl) {
     activeWriters.set(lockKey, { signal, done });
   }
   try {
-    const run = { cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, fast, images, structured, notes, continued };
+    const run = { cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, fast, images, structured, notes, continued };
     const stall = {
       silent_s: input2.stall?.silent_s ?? input2.idle_timeout_s ?? policy.stall?.silent_s ?? config2.idleTimeoutSec,
       command_s: input2.stall?.command_s ?? input2.idle_timeout_s ?? policy.stall?.command_s ?? config2.commandIdleTimeoutSec,
@@ -37833,7 +38058,7 @@ async function execute(input2, r, signal, onProgress, stallControl) {
     lastSnapshot = serialized;
     lastWrite = Date.now();
     try {
-      if (runDir) writeFileSync3(join5(runDir, "meta.json"), serialized);
+      if (runDir) writeFileSync4(join6(runDir, "meta.json"), serialized);
     } catch {
     }
   };
@@ -37847,23 +38072,51 @@ async function execute(input2, r, signal, onProgress, stallControl) {
   };
   writeMeta();
   progress();
+  let sampling = false;
+  const sampleController = new AbortController();
+  const sampler = setInterval(async () => {
+    if (sampling || !meta3.inflight || meta3.inflight.type !== "command_execution" || !meta3.codexPid) return;
+    sampling = true;
+    const inflight = meta3.inflight;
+    try {
+      const evidence = await (stallControl?.evidenceSampler ?? sampleTreeEvidence)(meta3.codexPid, sampleController.signal);
+      if (sampleController.signal.aborted || meta3.inflight?.startedAt !== inflight.startedAt) return;
+      if (runDir) trimCommandLogs(runDir, r.retention.cmdLogMaxMB);
+      const point = {
+        ...evidence,
+        at: Date.now(),
+        command: inflight.command,
+        commandStartedAt: inflight.startedAt,
+        logBytes: runDir ? commandLogs(runDir).reduce((n, log) => n + log.bytes, 0) : 0
+      };
+      meta3.trend = [...meta3.trend ?? [], point].slice(-10);
+      progress();
+    } catch {
+    } finally {
+      sampling = false;
+    }
+  }, 6e4);
+  sampler.unref();
   const heartbeat = setInterval(() => {
     meta3.heartbeatAt = Date.now();
     progress();
   }, 15e3);
   heartbeat.unref();
   try {
-    let prompt = (continued ? continuationPreamble(continued) : "") + input2.prompt;
+    let prompt = previousDiagnosis(config2.runsDir, input2.session_id) + (continued ? continuationPreamble(continued) : "") + input2.prompt;
     if (config2.contract) prompt += readOnly ? READ_CONTRACT : WRITE_CONTRACT;
     if (codexGuidance) prompt += `
 
 ${codexGuidance}`;
+    if (runDir) prompt += `
+
+Command logs (added by the server): for commands likely to run longer than ~1 minute, tee output to ${join6(runDir, "cmd-<n>.log")} (use a new n per command). Absolute run directory: ${runDir}.`;
     let outputSchemaFile;
     if (runDir) {
-      writeFileSync3(join5(runDir, "prompt.md"), prompt);
+      writeFileSync4(join6(runDir, "prompt.md"), prompt);
       if (structured) {
-        outputSchemaFile = join5(runDir, "report.schema.json");
-        writeFileSync3(outputSchemaFile, JSON.stringify(REPORT_SCHEMA, null, 2));
+        outputSchemaFile = join6(runDir, "report.schema.json");
+        writeFileSync4(outputSchemaFile, JSON.stringify(REPORT_SCHEMA, null, 2));
       }
     }
     const rec = readOnly ? void 0 : {
@@ -37881,7 +38134,11 @@ ${codexGuidance}`;
     };
     if (rec) savePending(rec);
     const before = snapshot(cwd);
+    const tempDir = runDir && sandbox2 === "workspace-write" ? join6(runDir, "tmp") : void 0;
+    if (tempDir) mkdirSync3(tempDir, { recursive: true });
     const result = await runCodex({
+      addDirs: [...runDir ? [runDir] : [], ...(input2.add_dirs ?? []).map((dir2) => resolve(cwd, dir2))],
+      env: tempDir ? { TEMP: tempDir, TMP: tempDir } : void 0,
       onSpawn: (pid) => {
         meta3.codexPid = pid;
         progress();
@@ -37895,7 +38152,11 @@ ${codexGuidance}`;
       onProgress: (info) => {
         const wasSuspected = !!meta3.suspicion;
         const it = info.inflight;
+        if (info.suspicion) meta3.lastEvidence = info.suspicion.evidence;
+        if (it?.type === "command_execution") meta3.lastInflight = { command: it.command, startedAt: it.startedAt };
         Object.assign(meta3, {
+          commands: info.commands,
+          denials: info.denials,
           codexPid: info.codexPid,
           lastEventAt: info.lastEventAt,
           suspicion: info.suspicion,
@@ -37922,9 +38183,9 @@ ${codexGuidance}`;
       timeoutMs: (input2.timeout_s ?? config2.timeoutSec) * 1e3,
       idleTimeoutMs: input2.idle_timeout_s === void 0 ? void 0 : input2.idle_timeout_s * 1e3,
       signal,
-      lastMessageFile: runDir && join5(runDir, "last-message.txt"),
+      lastMessageFile: runDir && join6(runDir, "last-message.txt"),
       outputSchemaFile,
-      logFile: runDir && join5(runDir, "events.jsonl")
+      logFile: runDir && join6(runDir, "events.jsonl")
     });
     Object.assign(meta3, {
       exitKind: result.exitKind,
@@ -37985,6 +38246,19 @@ ${codexGuidance}`;
     throw error62;
   } finally {
     clearInterval(heartbeat);
+    clearInterval(sampler);
+    sampleController.abort();
+    if (runDir) {
+      try {
+        trimCommandLogs(runDir, r.retention.cmdLogMaxMB);
+        meta3.cmdLogTails = finishCommandLogs(runDir, meta3.state === "ok" && !meta3.checks?.some((c) => c.ok === false));
+      } catch {
+      }
+      try {
+        rmSync3(join6(runDir, "tmp"), { recursive: true, force: true });
+      } catch {
+      }
+    }
     meta3.phase = "done";
     meta3.inflight = void 0;
     meta3.endedAt = Date.now();
@@ -38056,34 +38330,34 @@ function formatOutcome(o) {
   if (o.report) lines.push(renderReport(o.report));
   if (o.changes) lines.push(renderChanges(o.cwd, o.changes));
   else if (r.fileChanges.length) {
-    const seen = [...new Set(r.fileChanges.map((c) => relative(o.cwd, c.path) || c.path))];
+    const seen = [...new Set(r.fileChanges.map((c) => relative2(o.cwd, c.path) || c.path))];
     lines.push(`files edited by codex:
 ${seen.map((p) => `  ${p}`).join("\n")}`);
   }
   if (o.checks?.length) lines.push(renderChecks(o.checks));
   if (!o.report) {
-    const where = o.runDir && join5(o.runDir, "last-message.txt");
+    const where = o.runDir && join6(o.runDir, "last-message.txt");
     lines.push("--- response ---", truncate(r.text || "(no text output)", config2.maxOutputChars, where));
   }
   if (o.runDir) lines.push(`run log: ${o.runDir}`);
-  return lines.join("\n");
+  return [denialBlock(r.denials), ...lines].filter(Boolean).join("\n");
 }
 
 // src/index.ts
 import { watchFile } from "node:fs";
 
 // src/sessions.ts
-import { closeSync, openSync, readdirSync, readSync, statSync as statSync2 } from "node:fs";
-import { join as join6, resolve as resolve2 } from "node:path";
+import { closeSync as closeSync2, openSync as openSync2, readdirSync as readdirSync2, readSync as readSync2, statSync as statSync2 } from "node:fs";
+import { join as join7, resolve as resolve2 } from "node:path";
 var HEAD_BYTES = 512 * 1024;
 function readHead(file2) {
-  const fd = openSync(file2, "r");
+  const fd = openSync2(file2, "r");
   try {
     const buf = Buffer.alloc(HEAD_BYTES);
-    const n = readSync(fd, buf, 0, HEAD_BYTES, 0);
+    const n = readSync2(fd, buf, 0, HEAD_BYTES, 0);
     return buf.subarray(0, n).toString("utf8");
   } finally {
-    closeSync(fd);
+    closeSync2(fd);
   }
 }
 function firstPrompt(lines) {
@@ -38111,19 +38385,19 @@ function parseRollout(head, file2) {
   }
 }
 function* rollouts(dir2) {
-  let entries;
+  let entries2;
   try {
-    entries = readdirSync(dir2).sort().reverse();
+    entries2 = readdirSync2(dir2).sort().reverse();
   } catch {
     return;
   }
-  for (const e of entries) {
-    const p = join6(dir2, e);
+  for (const e of entries2) {
+    const p = join7(dir2, e);
     if (e.startsWith("rollout-") && e.endsWith(".jsonl")) yield p;
     else if (statSync2(p).isDirectory()) yield* rollouts(p);
   }
 }
-function listSessions(cwd, limit, root = join6(config2.codexHome, "sessions")) {
+function listSessions(cwd, limit, root = join7(config2.codexHome, "sessions")) {
   const want = resolve2(cwd);
   const out = [];
   for (const file2 of rollouts(root)) {
@@ -38136,18 +38410,18 @@ function listSessions(cwd, limit, root = join6(config2.codexHome, "sessions")) {
 
 // src/tasks.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
-import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync7, writeFileSync as writeFileSync4 } from "node:fs";
-import { join as join7 } from "node:path";
+import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
+import { join as join8 } from "node:path";
 var MAX_FINISHED = 100;
 var tasks = /* @__PURE__ */ new Map();
-var tasksDir = () => join7(config2.runsDir, "tasks");
-var taskFile = (id) => join7(tasksDir(), `${id.replace(/[^\w-]/g, "")}.json`);
+var tasksDir = () => join8(config2.runsDir, "tasks");
+var taskFile = (id) => join8(tasksDir(), `${id.replace(/[^\w-]/g, "")}.json`);
 function store(t) {
   try {
     mkdirSync4(tasksDir(), { recursive: true });
     const text2 = t.outcome ? formatOutcome(t.outcome) : t.error && `error: ${t.error}`;
     const rec = { id: t.id, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, title: t.input.title, text: text2 };
-    writeFileSync4(taskFile(t.id), JSON.stringify(rec));
+    writeFileSync5(taskFile(t.id), JSON.stringify(rec));
   } catch {
   }
 }
@@ -38155,7 +38429,7 @@ function storedTask(id) {
   const f = taskFile(id);
   if (!existsSync5(f)) return void 0;
   try {
-    const rec = JSON.parse(readFileSync7(f, "utf8"));
+    const rec = JSON.parse(readFileSync8(f, "utf8"));
     if (rec.status === "running") rec.status = "interrupted";
     return rec;
   } catch {
@@ -38209,6 +38483,7 @@ function formatSuspicion(task) {
   const p = task.progress;
   const s = p.suspicion;
   return [
+    denialBlock(p.denials),
     "status: suspected_stall (still running, not killed)",
     "next: judge from the evidence; if it looks healthy call task_result(task_id, wait_s, stall_after_s?) to keep waiting; if hung call task_cancel then resume with session_id and tell codex which command hung",
     `task_id: ${task.id}`,
@@ -38217,8 +38492,11 @@ function formatSuspicion(task) {
     `elapsed: ${((Date.now() - task.startedAt) / 1e3).toFixed(0)}s`,
     `inflight: ${s.command?.replace(/\s+/g, " ").slice(0, 300) ?? "(model silent)"}; idle: ${((Date.now() - (p.lastEventAt ?? task.startedAt)) / 1e3).toFixed(0)}s`,
     `threshold: ${s.thresholdSec}s; wakes: ${s.wakes}${s.matchedRule ? `; rule: ${s.matchedRule}` : ""}`,
-    `evidence: ${JSON.stringify(s.evidence)}`
-  ].join("\n");
+    `evidence: ${JSON.stringify(s.evidence)}`,
+    logReport(join8(config2.runsDir, p.id)),
+    trendReport(p.trend),
+    s.command ? baseline(config2.runsDir, s.command, p.id) : ""
+  ].filter(Boolean).join("\n");
 }
 async function waitTask(task, waitSec, stallAfterSec) {
   task.control.lastObservedAt = Date.now();
@@ -38264,9 +38542,42 @@ async function delegateSync(input2, signal, evidenceSampler) {
     signal?.removeEventListener("abort", abort);
   }
 }
+async function inspectTask(task) {
+  const p = task.progress;
+  if (!p) return `task_id: ${task.id}; ${task.status}; evidence unavailable`;
+  const dir2 = join8(config2.runsDir, p.id);
+  const sample = task.status === "running" && p.codexPid ? await sampleTreeEvidence(p.codexPid, new AbortController().signal) : void 0;
+  const events = tailFile(join8(dir2, "events.jsonl"), 16e3).trim().split(/\r?\n/).slice(-5).map((line) => {
+    try {
+      const e = JSON.parse(line);
+      return `${e.type}: ${e.item?.command ?? e.item?.text ?? e.item?.type ?? e.message ?? ""}`.slice(0, 120);
+    } catch {
+      return line.slice(0, 120);
+    }
+  });
+  return [
+    denialBlock(p.denials),
+    `task_id: ${task.id}; ${task.status}; sandbox: ${p.sandbox}`,
+    `inflight: ${(p.inflight?.command ?? "none").slice(0, 180)}`,
+    `evidence: ${sample ? evidenceDelta(sample, p.trend?.at(-1) ?? p.suspicion?.evidence) + `; busiest: ${sample.busiest?.name ?? "?"}; ${sample.error ?? ""}` : "process exited"}`,
+    logReport(dir2, 650),
+    `last events:
+${events.join("\n")}`,
+    `recent files (30m, top 10; scan capped at 20000 entries): ${(p.cwd ? recentFiles(p.cwd) : []).join(", ").slice(0, 600)}`
+  ].filter(Boolean).join("\n");
+}
 
 // src/index.ts
 installExitCleanup();
+var cleanup = () => {
+  try {
+    cleanupRuns(config2.runsDir, loadPolicy().policy.retention);
+  } catch (e) {
+    console.error(`codex-delegate cleanup: ${e}`);
+  }
+};
+cleanup();
+setInterval(cleanup, 36e5).unref();
 var server = new McpServer({ name: "codex-delegate", version: package_default.version });
 var text = (t, isError = false) => ({ content: [{ type: "text", text: t }], isError });
 function effortParam(policy) {
@@ -38294,9 +38605,11 @@ var delegateShape = {
   images: external_exports.array(external_exports.string()).optional().describe("Image files to attach to the prompt (screenshots, mockups)."),
   session_id: external_exports.string().optional().describe("Continue an existing Codex session (returned by a previous call) for follow-ups."),
   fork: external_exports.boolean().optional().describe("Fork the session given by session_id into a new session instead of appending to it."),
-  sandbox: external_exports.enum(SANDBOXES).optional().describe(
-    `Codex sandbox. 'workspace-write' (default: ${config2.sandbox}): edit files in cwd and run commands, no network. 'danger-full-access': no sandbox \u2014 use when the task must install packages or reach the network. 'read-only': no edits.`
-  ),
+  sandbox: external_exports.preprocess(
+    (value) => value === "workspace-write" || value === "danger-full-access" ? "write" : value,
+    external_exports.enum(["read-only", "write"]).optional()
+  ).meta({ type: "string", enum: ["read-only", "write"] }).describe("read-only for investigations, reviews and questions; write for anything that edits files or runs builds/tests. Write uses the panel sandbox toggle (off by default)."),
+  add_dirs: external_exports.array(external_exports.string()).optional().describe("Additional writable directories for the panel sandbox; one --add-dir per directory."),
   auto: external_exports.boolean().optional().describe(`Shorthand: false = read-only sandbox, for reading files, reviews and questions. Default: ${config2.auto}. An explicit sandbox wins.`),
   title: external_exports.string().optional().describe("Short label shown in task_list."),
   stall: external_exports.object({
@@ -38412,6 +38725,19 @@ still running \u2014 call again later or with a larger wait_s.`);
 ${formatOutcome(t.outcome)}`, t.status !== "done");
     return text(`task: ${t.id} (${t.status})
 error: ${t.error}`, true);
+  }
+);
+server.registerTool(
+  "task_inspect",
+  {
+    title: "Inspect a Codex task",
+    description: "Fresh process evidence and delta, newest command log tail, last five events and recently modified files. Does not acknowledge or re-arm a stall wake.",
+    inputSchema: { task_id: external_exports.string() },
+    annotations: { readOnlyHint: true }
+  },
+  async ({ task_id }) => {
+    const task = getTask(task_id);
+    return task ? text(await inspectTask(task)) : text(`unknown task_id '${task_id}'`, true);
   }
 );
 server.registerTool(

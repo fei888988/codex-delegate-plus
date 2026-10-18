@@ -1,13 +1,15 @@
+import { effectiveSandbox, previousDiagnosis, denialBlock, commandLogs, trimCommandLogs, finishCommandLogs, type TrendPoint } from "./observability.ts";
+import { sampleTreeEvidence } from "./watchdog.ts";
 import type { StallPolicy } from "./watchdog.ts";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { runChecks, type CheckResult } from "./checks.ts";
 import { clampEffort, config, configuredModel, type Sandbox } from "./config.ts";
 import { classifyError, runCodex, type RunResult, type StallControl } from "./codex.ts";
 import { diffSnapshots, diffStat, snapshot, type FileStat } from "./git.ts";
 import { resolveModelOrThrow } from "./models.ts";
-import { findTier, loadPolicy } from "./policy.ts";
+import { findTier, loadPolicy, type Retention } from "./policy.ts";
 import { clearPending, continuationPreamble, loadPending, savePending, type PendingRun } from "./pending.ts";
 import { parseReport, READ_CONTRACT, renderReport, REPORT_SCHEMA, WRITE_CONTRACT, type Report } from "./report.ts";
 import { version, type RunSummary } from "./run-summary.ts";
@@ -21,7 +23,8 @@ export interface DelegateInput {
   images?: string[];
   session_id?: string;
   fork?: boolean;
-  sandbox?: Sandbox;
+  sandbox?: Sandbox | "write";
+  add_dirs?: string[];
   auto?: boolean;
   title?: string;
   timeout_s?: number;
@@ -56,7 +59,7 @@ export interface DelegateOutcome {
 
 function newRunDir(): string | undefined {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
-  const dir = join(config.runsDir, `${stamp}-${randomUUID().slice(0, 6)}`);
+  const dir = resolve(config.runsDir, `${stamp}-${randomUUID().slice(0, 6)}`);
   try {
     mkdirSync(dir, { recursive: true });
     return dir;
@@ -69,7 +72,8 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
   const cwd = resolve(config.defaultCwd, input.cwd ?? ".");
   if (!existsSync(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const auto = input.auto ?? config.auto;
-  const sandbox: Sandbox = input.sandbox ?? (auto ? config.sandbox : "read-only");
+  const { policy, error: policyError } = loadPolicy();
+  const sandbox = effectiveSandbox(input.sandbox, auto && config.sandbox !== "read-only", policy.sandboxWrites);
   const readOnly = sandbox === "read-only";
   const notes: string[] = [];
 
@@ -91,7 +95,6 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
   if (continued && !input.session_id) input = { ...input, session_id: continued.sessionId };
 
   // `effort` names a tier of the cost policy (model + effort); a plain effort name still works.
-  const { policy, error: policyError } = loadPolicy();
   if (policyError) notes.push(policyError);
   const tier = findTier(policy, input.effort);
 
@@ -125,7 +128,7 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
     activeWriters.set(lockKey, { signal, done });
   }
   try {
-    const run = { cwd, sandbox, readOnly, model, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, fast, images, structured, notes, continued };
+    const run = { cwd, sandbox, readOnly, model, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, fast, images, structured, notes, continued };
     const stall: StallPolicy = {
       silent_s: input.stall?.silent_s ?? input.idle_timeout_s ?? policy.stall?.silent_s ?? config.idleTimeoutSec,
       command_s: input.stall?.command_s ?? input.idle_timeout_s ?? policy.stall?.command_s ?? config.commandIdleTimeoutSec,
@@ -148,6 +151,7 @@ interface Resolved {
   effort?: string;
   tier?: string;
   codexGuidance: string;
+  retention: Retention;
   fast?: boolean;
   images?: string[];
   structured: boolean;
@@ -190,12 +194,30 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
   };
   writeMeta();
   progress();
+  let sampling = false;
+  const sampleController = new AbortController();
+  const sampler = setInterval(async () => {
+    if (sampling || !meta.inflight || meta.inflight.type !== "command_execution" || !meta.codexPid) return;
+    sampling = true;
+    const inflight = meta.inflight;
+    try {
+      const evidence = await (stallControl?.evidenceSampler ?? sampleTreeEvidence)(meta.codexPid, sampleController.signal);
+      if (sampleController.signal.aborted || meta.inflight?.startedAt !== inflight.startedAt) return;
+      if (runDir) trimCommandLogs(runDir, r.retention.cmdLogMaxMB);
+      const point: TrendPoint = { ...evidence, at: Date.now(), command: inflight.command, commandStartedAt: inflight.startedAt,
+        logBytes: runDir ? commandLogs(runDir).reduce((n, log) => n + log.bytes, 0) : 0 };
+      meta.trend = [...(meta.trend ?? []), point].slice(-10);
+      progress();
+    } catch {} finally { sampling = false; }
+  }, 60000);
+  sampler.unref();
   const heartbeat = setInterval(() => { meta.heartbeatAt = Date.now(); progress(); }, 15000);
   heartbeat.unref();
   try {
-    let prompt = (continued ? continuationPreamble(continued) : "") + input.prompt;
+    let prompt = previousDiagnosis(config.runsDir, input.session_id) + (continued ? continuationPreamble(continued) : "") + input.prompt;
     if (config.contract) prompt += readOnly ? READ_CONTRACT : WRITE_CONTRACT;
     if (codexGuidance) prompt += `\n\n${codexGuidance}`;
+    if (runDir) prompt += `\n\nCommand logs (added by the server): for commands likely to run longer than ~1 minute, tee output to ${join(runDir, "cmd-<n>.log")} (use a new n per command). Absolute run directory: ${runDir}.`;
     let outputSchemaFile: string | undefined;
     if (runDir) {
       writeFileSync(join(runDir, "prompt.md"), prompt);
@@ -224,7 +246,11 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
     if (rec) savePending(rec);
 
     const before = snapshot(cwd);
+    const tempDir = runDir && sandbox === "workspace-write" ? join(runDir, "tmp") : undefined;
+    if (tempDir) mkdirSync(tempDir, { recursive: true });
     const result = await runCodex({
+      addDirs: [...(runDir ? [runDir] : []), ...(input.add_dirs ?? []).map(dir => resolve(cwd, dir))],
+      env: tempDir ? { TEMP: tempDir, TMP: tempDir } : undefined,
       onSpawn: (pid) => {
         meta.codexPid = pid;
         progress();
@@ -238,7 +264,9 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
       onProgress: (info) => {
         const wasSuspected = !!meta.suspicion;
         const it = info.inflight;
-        Object.assign(meta, { codexPid: info.codexPid, lastEventAt: info.lastEventAt,
+        if (info.suspicion) meta.lastEvidence = info.suspicion.evidence;
+        if (it?.type === "command_execution") meta.lastInflight = { command: it.command, startedAt: it.startedAt };
+        Object.assign(meta, { commands: info.commands, denials: info.denials, codexPid: info.codexPid, lastEventAt: info.lastEventAt,
           suspicion: info.suspicion, stallWindowSince: info.stallWindowSince, effectiveThresholdSec: info.effectiveThresholdSec, matchedRule: info.matchedRule,
           inflight: it && { type: it.type, command: it.command, startedAt: it.startedAt } });
         progress();
@@ -313,6 +341,15 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
     throw error;
   } finally {
     clearInterval(heartbeat);
+    clearInterval(sampler);
+    sampleController.abort();
+    if (runDir) {
+      try {
+        trimCommandLogs(runDir, r.retention.cmdLogMaxMB);
+        meta.cmdLogTails = finishCommandLogs(runDir, meta.state === "ok" && !meta.checks?.some(c => c.ok === false));
+      } catch {}
+      try { rmSync(join(runDir, "tmp"), { recursive: true, force: true }); } catch {}
+    }
     meta.phase = "done";
     meta.inflight = undefined;
     meta.endedAt = Date.now();
@@ -401,5 +438,5 @@ export function formatOutcome(o: DelegateOutcome): string {
     lines.push("--- response ---", truncate(r.text || "(no text output)", config.maxOutputChars, where));
   }
   if (o.runDir) lines.push(`run log: ${o.runDir}`);
-  return lines.join("\n");
+  return [denialBlock(r.denials), ...lines].filter(Boolean).join("\n");
 }

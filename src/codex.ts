@@ -1,3 +1,4 @@
+import { extractDenials, type Denials, type CommandTiming } from "./observability.ts";
 import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, readFileSync } from "node:fs";
 import { config, type Sandbox } from "./config.ts";
@@ -7,7 +8,7 @@ import { softWatchdog, commandThreshold, type StallPolicy, type CpuEvidence, typ
 export interface InflightItem { id: string; type: string; command?: string; startedAt: number }
 export interface Suspicion extends Stall { suspectedAt: number; wakes: number; thresholdSec: number; matchedRule?: string; evidence: CpuEvidence }
 export interface StallControl { evidenceSampler?: EvidenceSampler; rearm?: (seconds?: number) => void; background?: boolean; lastObservedAt: number; waiting?: number }
-export interface CodexProgress { stallWindowSince?: number; suspicion?: Suspicion; effectiveThresholdSec?: number; matchedRule?: string; codexPid?: number; lastEventAt: number; inflight?: InflightItem }
+export interface CodexProgress { commands?: CommandTiming[]; denials?: Denials; stallWindowSince?: number; suspicion?: Suspicion; effectiveThresholdSec?: number; matchedRule?: string; codexPid?: number; lastEventAt: number; inflight?: InflightItem }
 export interface Stall { kind: "silent" | "command"; idleMs: number; command?: string; commandStartedAt?: number }
 export type ExitKind = "completed" | "timeout" | "stalled" | "cancelled" | "crashed" | "api_error";
 export type ErrorKind = "quota" | "rate_limit" | "auth" | "network" | "context" | "other";
@@ -22,6 +23,8 @@ export function classifyError(text: string): ErrorKind {
 }
 
 export interface RunOptions {
+  addDirs?: string[];
+  env?: NodeJS.ProcessEnv;
   prompt: string;
   model?: string;
   effort?: string;
@@ -65,6 +68,8 @@ export interface FileChange {
 }
 
 export interface RunResult {
+  denials?: Denials;
+  commands?: CommandTiming[];
   ok: boolean;
   sessionId?: string;
   /** Final message (from `-o` when available, else the last agent message). */
@@ -103,6 +108,7 @@ export function buildArgs(o: RunOptions): string[] {
   if (o.fast !== undefined) args.push("-c", `service_tier=${toml(o.fast ? "priority" : "default")}`);
   if (o.lastMessageFile) args.push("-o", o.lastMessageFile);
   if (o.outputSchemaFile) args.push("--output-schema", o.outputSchemaFile);
+  for (const dir of o.addDirs ?? []) args.push("--add-dir", dir);
   for (const img of o.images ?? []) args.push("-i", img);
   // The prompt goes through stdin ("-"): no argv length limit (Windows caps a command line at ~32K)
   // and the brief doesn't show up in process listings. "--" ends -i's list of files.
@@ -133,6 +139,12 @@ export class EventCollector {
   errors: string[] = [];
   raw: string[] = [];
   lastEventAt = Date.now();
+  commands: CommandTiming[] = [];
+  denialOutputs = new Map<string, Denials>();
+  get denials(): Denials {
+    const values = [...this.denialOutputs.values()];
+    return { count: values.reduce((n, d) => n + d.count, 0), paths: [...new Set(values.flatMap(d => d.paths))] };
+  }
   inflight = new Map<string, InflightItem>();
 
   push(line: string) {
@@ -146,6 +158,9 @@ export class EventCollector {
       this.raw.push(trimmed);
       return;
     }
+    if (e.item?.type === "command_execution" && typeof e.item.aggregated_output === "string") {
+      this.denialOutputs.set(e.item.id ?? `command-${this.commands.length}`, extractDenials(e.item.aggregated_output));
+    }
     switch (e.type) {
       case "item.started":
         if (e.item?.id) this.inflight.set(e.item.id, { id: e.item.id, type: e.item.type,
@@ -154,10 +169,13 @@ export class EventCollector {
       case "thread.started":
         this.sessionId ??= e.thread_id;
         break;
-      case "item.completed":
+      case "item.completed": {
+        const started = this.inflight.get(e.item?.id);
+        if (started?.type === "command_execution" && started.command) this.commands.push({ command: started.command, durationMs: this.lastEventAt - started.startedAt });
         this.inflight.delete(e.item?.id);
         this.item(e.item ?? {});
         break;
+      }
       case "turn.completed": {
         this.turns++;
         const u = e.usage ?? {};
@@ -236,7 +254,7 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn(config.codex.cmd, [...config.codex.args, ...buildArgs(o)], {
       cwd: o.cwd,
-      env: process.env,
+      env: { ...process.env, ...o.env },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       // Own process group on POSIX so the whole tree can be signalled (see procs.ts).
@@ -264,7 +282,7 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
     let windowSince: number | undefined;
     const control = o.stallControl;
     const progress = () => {
-      try { o.onProgress?.({ codexPid: child.pid, lastEventAt: collector.lastEventAt,
+      try { o.onProgress?.({ commands: [...collector.commands], denials: collector.denials, codexPid: child.pid, lastEventAt: collector.lastEventAt,
         inflight: [...collector.inflight.values()].find(it => it.type === "command_execution") ?? collector.inflight.values().next().value,
         suspicion, stallWindowSince: idleWindow().since, effectiveThresholdSec: idleWindow().timeoutMs / 1000, matchedRule: selectedRule() }); } catch {}
     };
@@ -369,6 +387,7 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
       if (exitKind === "crashed" && !errors.length) errors.push("codex exited without turn.completed");
       const error = errors.join("; ") || undefined;
       resolve({
+        denials: collector.denials, commands: collector.commands,
         ok: exitKind === "completed",
         exitKind,
         errorKind: error ? classifyError(error) : undefined,

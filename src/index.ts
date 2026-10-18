@@ -1,19 +1,25 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
+import { cleanupRuns } from "./observability.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { config, configuredModel, SANDBOXES } from "./config.ts";
+import { config, configuredModel } from "./config.ts";
 import { formatOutcome } from "./delegate.ts";
 import { listModels } from "./models.ts";
 import { loadPolicy, tierLabel, type Policy } from "./policy.ts";
 import { watchFile } from "node:fs";
 import { listSessions } from "./sessions.ts";
-import { delegateSync, formatSuspicion, getTask, runningProgress, listTasks, startTask, storedTask, waitTask, type Task } from "./tasks.ts";
+import { delegateSync, inspectTask, formatSuspicion, getTask, runningProgress, listTasks, startTask, storedTask, waitTask, type Task } from "./tasks.ts";
 import { installExitCleanup } from "./procs.ts";
 import pkg from "../package.json" with { type: "json" };
 
 installExitCleanup();
+const cleanup = () => {
+  try { cleanupRuns(config.runsDir, loadPolicy().policy.retention); } catch (e) { console.error(`codex-delegate cleanup: ${e}`); }
+};
+cleanup();
+setInterval(cleanup, 3600000).unref();
 const server = new McpServer({ name: "codex-delegate", version: pkg.version });
 
 const text = (t: string, isError = false) => ({ content: [{ type: "text" as const, text: t }], isError });
@@ -60,12 +66,10 @@ const delegateShape = {
   images: z.array(z.string()).optional().describe("Image files to attach to the prompt (screenshots, mockups)."),
   session_id: z.string().optional().describe("Continue an existing Codex session (returned by a previous call) for follow-ups."),
   fork: z.boolean().optional().describe("Fork the session given by session_id into a new session instead of appending to it."),
-  sandbox: z
-    .enum(SANDBOXES)
-    .optional()
-    .describe(
-      `Codex sandbox. 'workspace-write' (default: ${config.sandbox}): edit files in cwd and run commands, no network. 'danger-full-access': no sandbox — use when the task must install packages or reach the network. 'read-only': no edits.`,
-    ),
+  sandbox: z.preprocess(value => value === "workspace-write" || value === "danger-full-access" ? "write" : value,
+    z.enum(["read-only", "write"]).optional()).meta({ type: "string", enum: ["read-only", "write"] })
+    .describe("read-only for investigations, reviews and questions; write for anything that edits files or runs builds/tests. Write uses the panel sandbox toggle (off by default)."),
+  add_dirs: z.array(z.string()).optional().describe("Additional writable directories for the panel sandbox; one --add-dir per directory."),
   auto: z
     .boolean()
     .optional()
@@ -196,6 +200,20 @@ server.registerTool(
     if (t.status === "running") return text(`${taskSummary(t)}\n${runningProgress(t)}\nstill running — call again later or with a larger wait_s.`);
     if (t.outcome) return text(`task: ${t.id} (${t.status})\n${formatOutcome(t.outcome)}`, t.status !== "done");
     return text(`task: ${t.id} (${t.status})\nerror: ${t.error}`, true);
+  },
+);
+
+server.registerTool(
+  "task_inspect",
+  {
+    title: "Inspect a Codex task",
+    description: "Fresh process evidence and delta, newest command log tail, last five events and recently modified files. Does not acknowledge or re-arm a stall wake.",
+    inputSchema: { task_id: z.string() },
+    annotations: { readOnlyHint: true },
+  },
+  async ({ task_id }) => {
+    const task = getTask(task_id);
+    return task ? text(await inspectTask(task)) : text(`unknown task_id '${task_id}'`, true);
   },
 );
 

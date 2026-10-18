@@ -12,6 +12,8 @@ public class DelegateProcesses {
  [DllImport("kernel32.dll", CharSet=CharSet.Auto)] public static extern bool Process32First(IntPtr h, ref Entry e);
  [DllImport("kernel32.dll", CharSet=CharSet.Auto)] public static extern bool Process32Next(IntPtr h, ref Entry e);
  [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+ [StructLayout(LayoutKind.Sequential)] public struct IO { public ulong readOps, writeOps, otherOps, readBytes, writeBytes, otherBytes; }
+ [DllImport("kernel32.dll")] public static extern bool GetProcessIoCounters(IntPtr h, out IO io);
  public static void Print(uint root) {
   var h=CreateToolhelp32Snapshot(2,0);
   var rows=new System.Collections.Generic.List<Entry>();
@@ -22,9 +24,9 @@ public class DelegateProcesses {
   bool changed=true;
   while(root!=0 && changed) { changed=false; foreach(var e in rows) if(ids.Contains(e.parent) && ids.Add(e.pid)) changed=true; }
   foreach(var e in rows) if(root==0 || ids.Contains(e.pid)) {
-    double cpu=0; long rss=0;
-    if(root!=0) try { using(var p=System.Diagnostics.Process.GetProcessById((int)e.pid)) { cpu=p.TotalProcessorTime.TotalMilliseconds; rss=p.WorkingSet64; } } catch {}
-    Console.WriteLine(e.pid+" "+e.parent+" "+cpu.ToString(System.Globalization.CultureInfo.InvariantCulture)+" "+rss+" "+e.name);
+    double cpu=0; long rss=0; string io="- -";
+    if(root!=0) try { using(var p=System.Diagnostics.Process.GetProcessById((int)e.pid)) { cpu=p.TotalProcessorTime.TotalMilliseconds; rss=p.WorkingSet64; IO counters; if(GetProcessIoCounters(p.Handle,out counters)) io=counters.readBytes+" "+counters.writeBytes; } } catch {}
+    Console.WriteLine(e.pid+" "+e.parent+" "+cpu.ToString(System.Globalization.CultureInfo.InvariantCulture)+" "+rss+" "+io+" "+e.name);
   }
  }
 }

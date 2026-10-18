@@ -55,7 +55,7 @@ key), `~/.codex/config.toml`, AGENTS.md files, MCP servers and rules. It does no
 
 ## Requirements
 
-- Node.js ≥ 22.18 on `PATH` (the plugin runs `node dist/index.js`)
+- Node.js ≥ 24 on `PATH` (the plugin runs `node dist/index.js`)
 - [Codex CLI](https://github.com/openai/codex), logged in (`codex login`). Run `codex` once so the model list is cached in `~/.codex/models_cache.json`.
 
 ## Install
@@ -178,12 +178,10 @@ The dashboard accepts `PUT /api/policy` only from its own page on a loopback hos
 
 | `sandbox` | |
 |---|---|
-| `workspace-write` (default) | Codex can edit files under `cwd` and run commands, without network access. |
+| `write` (default) | Edits, builds and tests. Uses danger-full-access; policy.sandboxWrites enables workspace-write. |
 | `read-only` | No edits. `auto: false` is shorthand for this. Use it for reviews and questions. |
-| `danger-full-access` | No sandbox: package installs, network, and the whole filesystem. Only pass it per call when a task needs it. |
 
-Approvals are always `never`, because nobody is there to answer a prompt. The sandbox is the
-boundary. Claude is told to review every change it gets back.
+Approvals are always `never`, because nobody is there to answer a prompt. The panel toggle controls write sandboxing. Claude is told to review every change it gets back.
 
 ### Using it from workflows
 
@@ -213,7 +211,7 @@ conflict.
 | `CODEX_DELEGATE_CHECK_IDLE_TIMEOUT` | `300` | Seconds of host-check output silence; `0` disables this detector. |
 | `CODEX_DELEGATE_RUNS_DIR` | `~/.codex-delegate/runs` | Prompts, event logs, final messages, async task results. |
 | `CODEX_DELEGATE_FAST` | *(from config.toml)* | `true` or `false`: the default for `fast`. |
-| `CODEX_DELEGATE_SANDBOX` | `workspace-write` | Default sandbox. |
+| `CODEX_DELEGATE_SANDBOX` | `workspace-write` | Legacy default: read-only stays read-only; write modes follow policy.sandboxWrites. |
 | `CODEX_DELEGATE_AUTO` | `true` | Default for `auto`. |
 | `CODEX_DELEGATE_TIMEOUT` | `1800` | Seconds before a run is killed. |
 | `CODEX_DELEGATE_MAX_OUTPUT` | `6000` | Maximum number of response characters returned to Claude (free-form answers). |
@@ -256,3 +254,39 @@ To debug interactively, use `npx @modelcontextprotocol/inspector node dist/index
 ## License
 
 [MIT](LICENSE)
+
+## v0.7.0: sandbox and run diagnosis
+
+Requires Node 24; `npm run build` produces `dist/index.js`.
+Choose `sandbox: "read-only"` for investigation/review/questions and `sandbox: "write"`
+for edits, builds and tests. Write defaults to Codex `danger-full-access`.
+The dashboard policy API (`GET/PUT /api/policy`) accepts `sandboxWrites: true` to
+use `workspace-write` instead. Older policy files default to false. Legacy tool
+values `workspace-write` and `danger-full-access` are still accepted as `write`;
+`auto: false` selects read-only unless sandbox is explicit. The result and run
+metadata report the effective sandbox.
+
+`add_dirs: ["D:/shared"]` adds writable directories for the panel sandbox. Every run
+also passes its run directory via `--add-dir`. Workspace-write runs set `TEMP` and
+`TMP` to `<runDir>/tmp`, created before launch and removed after completion.
+Server-appended guidance asks Codex to tee commands expected to exceed a minute to
+`<runDir>/cmd-<n>.log`. Logging is cooperative: if Codex does not tee, the report
+says no command log is available.
+
+Suspected-stall reports include the latest log's size/tail, CPU/RSS/IO/log-growth
+trends sampled every 60 seconds (last 10 points), and historical command-class
+p50/p90 duration when at least three timings exist. `task_inspect(task_id)` fetches
+fresh evidence with a delta, the newest log tail, five recent events and the top ten
+recently modified files in cwd (30 minutes; skips `.git` and `node_modules`). It
+does not acknowledge wakes or extend the task's lifetime. Permission-denial reports
+lead wake/final output with grouped paths and recovery advice; resuming a failed,
+interrupted or denied session prepends a short previous-attempt diagnosis.
+
+Policy `retention` defaults to `{ "cmdLogMaxMB": 5, "failedLogDays": 3,
+"runDays": 30, "totalMaxMB": 1024 }`; omitted keys merge with defaults and limits
+must be positive numbers. The sampler bounds command logs by keeping their tail.
+Successful runs archive the last 2KB of each log in metadata, then delete those log
+files. Failed/cancelled/stalled logs expire after three days; runs expire after
+30 days or oldest first over the 1GB cap. Cleanup runs at MCP startup and hourly.
+Live runs are protected, so the size cap may temporarily be exceeded.
+See [run observability](docs/run-observability.md) for metadata and sampling details.

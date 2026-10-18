@@ -59,10 +59,11 @@ after(async () => {
 test("tools are listed and delegate defaults cwd to the server's cwd", async () => {
   const list = await call("tools/list");
   const names = list.result.tools.map((t: any) => t.name);
-  for (const n of ["delegate", "delegate_async", "task_result", "task_cancel", "list_models"]) assert(names.includes(n), n);
+  for (const n of ["delegate", "delegate_async", "task_result", "task_cancel", "task_inspect", "list_models"]) assert(names.includes(n), n);
   // The lead must pick a cost tier from the policy (defaults: luna-xhigh, low, medium, high).
   const schema = list.result.tools.find((t: any) => t.name === "delegate").inputSchema;
   assert(schema.required.includes("effort"));
+  assert.deepEqual(schema.properties.sandbox.enum, ["read-only", "write"]);
   assert.deepEqual(schema.properties.effort.enum, ["luna-xhigh", "low", "medium", "high"]);
   assert.match(list.result.tools.find((t: any) => t.name === "delegate").description, /Cost policy:/);
   const bad = await call("tools/call", { name: "delegate", arguments: { prompt: "x", effort: "xhigh" } });
@@ -171,4 +172,13 @@ test("killOrphan kills a leftover node/codex process tree", async () => {
   assert(alive(orphan.pid!));
   killOrphan(orphan.pid!);
   assert(await waitDead(orphan.pid!), "orphan still alive");
+});
+
+
+test("MCP accepts legacy sandbox values without advertising them", async () => {
+  for (const sandbox of ["workspace-write", "danger-full-access"]) {
+    const r = await call("tools/call", { name: "delegate", arguments: { prompt: "legacy", effort: "low", sandbox } });
+    assert.equal(r.result.isError, false, r.result.content[0].text);
+    assert.match(r.result.content[0].text, /sandbox: danger-full-access/);
+  }
 });

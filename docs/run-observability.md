@@ -1,6 +1,6 @@
 # Run watchdog and dashboard contract
 
-Version 0.6.0 uses soft Codex stall suspicions: they wake the lead and **never kill**.
+Version 0.7.0 uses soft Codex stall suspicions: they wake the lead and **never kill**.
 
 | Variable | Default | Applies to |
 | --- | ---: | --- |
@@ -182,3 +182,75 @@ Failures start with `status: error (<exitKind>[/<errorKind>])`. A single `next:`
 advises resuming a stalled session and addressing the hanging command, retrying
 network/rate-limit crashes or API errors once with the same session, or telling the
 user about quota/auth environment problems. Other failures retain the error details.
+
+## v0.7.0 diagnostics and retention contract
+
+Both delegate tools advertise `sandbox: "read-only" | "write"` and accept optional
+`add_dirs: string[]`. Legacy `workspace-write` and `danger-full-access` inputs map
+to write. The policy field `sandboxWrites` defaults to false, including when absent
+from existing files; false maps write to danger-full-access, true to workspace-write.
+Read-only remains read-only, including `auto: false` unless sandbox is explicit.
+`CODEX_DELEGATE_SANDBOX=read-only` still supplies a read-only default; other legacy
+environment values select write and follow the toggle. GET/PUT `/api/policy` return,
+validate and persist both `sandboxWrites` and `retention` like existing policy keys.
+User-editable policy guidance is unchanged; the server appends the logging instruction
+with the absolute run directory to the Codex prompt.
+
+Each launch passes `--add-dir <runDir>` plus each requested additional directory,
+including resumed sessions. Workspace-write also creates `<runDir>/tmp`, sets TEMP
+and TMP for the child only, then deletes tmp when the run ends. The effective sandbox
+is recorded in run metadata and final results. Additional directories do not change
+the selected sandbox mode.
+
+Codex is instructed to tee commands expected to exceed about one minute to
+`<runDir>/cmd-<n>.log`. Suspicions include the newest file's byte size and last 15
+lines, bounded to approximately 1.5KB. Logging is cooperative and may be absent.
+Every 60 seconds during an inflight Codex command the server samples process-tree
+evidence, storing a ten-point ring in `meta.json.trend`. Points include timestamp,
+command/start time, cumulative CPU milliseconds, RSS bytes, optional IO read/write
+bytes, process details, and command-log byte count. Windows uses Toolhelp/.NET and
+GetProcessIoCounters without WMI; inaccessible IO counters are omitted and unavailable
+command lines are skipped. The busiest process name/PID remains available when
+process sampling succeeds. RSS covers the process tree.
+
+Wake trends show interval CPU/IO deltas, RSS and log growth, followed by working/hung
+judgment hints. Missing counters remain unknown; process exits can reduce cumulative
+totals, so deltas are clamped at zero and are evidence, not a definitive hang test.
+`commands: { command, durationMs }[]` records paired command start/completion events.
+The command class strips paths, simple environment assignments, cd prefixes and
+shell wrappers, retaining `python -m <module>` and npm/pnpm/yarn subcommands.
+Historical matching Codex commands and host checks supply nearest-rank p50/p90
+seconds when n >= 3, excluding the current run. Unpaired/interrupted commands do not
+contribute timing samples.
+
+`task_inspect(task_id)` is read-only: a fresh sample and delta against the last
+periodic/suspicion sample, newest command log tail (or saved success tail), last five
+events, and top ten cwd files modified within 30 minutes. Files are sorted by mtime;
+.git/node_modules and symlinks are skipped and traversal is capped at 20,000 entries.
+Inspection does not update observation timestamps, acknowledge a suspicion, re-arm
+windows or persist its sample. Process sampling failure is reported gracefully.
+
+Command event outputs are scanned for PermissionError, WinError 5, Access is denied,
+拒绝访问, EACCES and EPERM. `denials: { count, paths }` groups paths and deduplicates
+cumulative updates per command. Final/wake reports lead with `sandbox_denied`, paths
+and recovery advice. `lastInflight` and `lastEvidence` retain diagnostics after exit.
+An explicit or automatic session resume finds the latest terminated matching run;
+failed/interrupted/denied attempts add a <600-character "Previous attempt diagnosis"
+prefix with exit kind, denied paths, last command and evidence.
+
+Retention fields (positive numeric limits, missing fields merge defaults):
+
+| Policy field | Default | Behavior |
+| --- | ---: | --- |
+| retention.cmdLogMaxMB | 5 | At sampling and exit, truncate oversized logs keeping tail |
+| retention.failedLogDays | 3 | Remove retained command logs after this many days |
+| retention.runDays | 30 | Remove finished run directories after this many days |
+| retention.totalMaxMB | 1024 | Remove oldest unprotected runs first over this runs-directory cap |
+
+Successful runs save each command log's last 2048 bytes in `cmdLogTails`, then delete
+those files; runs with failed host checks retain their logs too. Cleanup occurs at
+MCP startup and hourly on an unref'd timer, using the latest policy. Running records
+with a live server/child PID or recent heartbeat are protected across server instances.
+Ambiguous legacy running records without liveness fields are conservatively protected.
+Protected runs and non-run records may keep the directory above the cap. Pending
+resume and stored task records are not removed by run-directory cleanup.

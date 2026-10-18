@@ -216,6 +216,13 @@ test("policy API: GET returns the policy with defaults; PUT validates, saves, an
     assert.deepEqual(first.body.policy, DEFAULT_POLICY);
     assert.deepEqual(first.body.defaults, DEFAULT_POLICY);
     assert.equal(first.body.file, file);
+    assert.equal(first.body.policy.sandboxWrites, false);
+    const toggled = await send("PUT", JSON.stringify({ sandboxWrites: true, retention: { cmdLogMaxMB: 2 } }), json);
+    assert.equal(toggled.status, 200);
+    assert.equal(toggled.body.policy.sandboxWrites, true);
+    assert.deepEqual(toggled.body.policy.retention, { ...DEFAULT_POLICY.retention, cmdLogMaxMB: 2 });
+    assert.equal((await send("GET")).body.policy.sandboxWrites, true);
+    assert.equal((await send("PUT", JSON.stringify({ sandboxWrites: 1 }), json)).status, 400);
     assert(first.body.efforts.includes("max"));
 
     const next = { ...DEFAULT_POLICY, guidance: "省着用", tiers: [{ id: "only", effort: "medium", use: "everything" }] };

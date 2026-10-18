@@ -1,3 +1,4 @@
+import type { CommandTiming, Denials, TrendPoint } from "./observability.ts";
 import type { StallPolicy } from "./watchdog.ts";
 import type { Suspicion } from "./codex.ts";
 import type { CheckResult } from "./checks.ts";
@@ -10,6 +11,12 @@ import pkg from "../package.json" with { type: "json" };
 export const version = pkg.version;
 
 export interface RunSummary {
+  commands?: CommandTiming[];
+  denials?: Denials;
+  trend?: TrendPoint[];
+  cmdLogTails?: Record<string, string>;
+  lastEvidence?: import("./watchdog.ts").CpuEvidence;
+  lastInflight?: { command?: string; startedAt: number };
   id: string;
   startedAt: number;
   endedAt?: number;

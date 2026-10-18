@@ -14,7 +14,16 @@ export interface Tier {
 }
 
 /** User-editable delegation policy, kept in `config.policyFile` and edited from the dashboard. */
+export interface Retention {
+  cmdLogMaxMB: number;
+  failedLogDays: number;
+  runDays: number;
+  totalMaxMB: number;
+}
+
 export interface Policy {
+  sandboxWrites: boolean;
+  retention: Retention;
   stall?: StallPolicy;
   /** Cost/quality guidance for the lead (Claude), added to the delegate tool description. */
   guidance: string;
@@ -27,8 +36,10 @@ export interface Policy {
 }
 
 export const DEFAULT_POLICY: Policy = {
+  sandboxWrites: false,
+  retention: { cmdLogMaxMB: 5, failedLogDays: 3, runDays: 30, totalMaxMB: 1024 },
   stall: { long_commands: [{ match: "unittest discover|pytest|npm (run )?test|node --test", idle_s: 1800 }] },
-  "guidance": "Cost policy: Codex usage is billed per token, and the higher tiers cost several times more. Pick the cheapest tier that will get this task right; quality is not negotiable, so cheap means fewer wasted tokens, not a sloppier result. Unsure between two tiers: take the cheaper one, unless the task is in the risky class named by the top tier, where a failed attempt costs more than the difference. Escalate on evidence: after a check FAIL or a wrong result, continue the same session_id one tier up. Keep briefs tight and pass only the checks that prove the change. Read-only reviews and questions: use high when the reviewed code touches live trading, money, concurrency or security; low for other reviews and for questions; medium when a non-risky review must judge cross-module design. Frontend design stays with you: page layout, visual style, CSS, component look and feel, and UI copy are yours to do, not Codex's (its design taste is weak); backend, data plumbing and tests behind a UI can still be delegated. When Codex can't work: if a delegate call fails for an environment reason (quota or rate limit, auth, network, codex crash, a timeout or abort with no usable result; not the user pressing Stop), retry once only if the error looks transient. If it still fails, don't quietly take the delegated work over yourself. Estimate what is left that you meant to give Codex: if it is small (a few edits you can already see), finish it and say Codex was unavailable; if it is substantial, stop and ask the user, with the error and the remaining work, whether to wait or fix Codex and continue, have you do it yourself (give a rough size), or do something else.\nSandbox selection: Before every delegation, explicitly choose the sandbox parameter based on the task's execution and verification needs. Use read-only for investigations, code reviews and questions that require no writes. Use workspace-write for code changes and ordinary tests that can finish within the working directory and permitted temporary directories. Within the user's authorized scope, use danger-full-access when the task requires network access, dependency installation, writes outside those directories, or host permissions needed for complete verification. Prefer the least permissive mode that can complete the task and its required verification in one attempt. Check known requirements before starting, including the Python interpreter, dependencies and hard-coded temporary paths. If a sandbox restriction is confirmed, do not repeat the same blocked attempt: adjust the execution environment or resume the same session_id with an appropriate sandbox mode within the user's authorization. A failure caused only by sandbox restrictions or missing environment dependencies does not justify raising the reasoning tier; the earlier tier-escalation rule applies to reasoning or implementation failures. Sandbox selection does not expand authorization for deployment, live operations or other external changes.",
+  "guidance": "Cost policy: Codex usage is billed per token, and the higher tiers cost several times more. Pick the cheapest tier that will get this task right; quality is not negotiable, so cheap means fewer wasted tokens, not a sloppier result. Unsure between two tiers: take the cheaper one, unless the task is in the risky class named by the top tier, where a failed attempt costs more than the difference. Escalate on evidence: after a check FAIL or a wrong result, continue the same session_id one tier up. Keep briefs tight and pass only the checks that prove the change. Read-only reviews and questions: use high when the reviewed code touches live trading, money, concurrency or security; low for other reviews and for questions; medium when a non-risky review must judge cross-module design. Frontend design stays with you: page layout, visual style, CSS, component look and feel, and UI copy are yours to do, not Codex's (its design taste is weak); backend, data plumbing and tests behind a UI can still be delegated. When Codex can't work: if a delegate call fails for an environment reason (quota or rate limit, auth, network, codex crash, a timeout or abort with no usable result; not the user pressing Stop), retry once only if the error looks transient. If it still fails, don't quietly take the delegated work over yourself. Estimate what is left that you meant to give Codex: if it is small (a few edits you can already see), finish it and say Codex was unavailable; if it is substantial, stop and ask the user, with the error and the remaining work, whether to wait or fix Codex and continue, have you do it yourself (give a rough size), or do something else.\nSandbox selection: Set sandbox on every delegation. Use read-only for investigations, code reviews and questions that need no writes. Use write for anything that edits files or runs builds and tests; the user's panel setting decides how write runs (by default with full access, so network, dependency installs and paths outside cwd work). Full access does not expand authorization: no deployment, live operations, or writes to production or shared data unless the user asked for them; name off-limits paths and systems in the brief. State known requirements in the brief (Python interpreter, dependencies, temp paths). If a result reports sandbox_denied, the panel sandbox is on: fix the path (prefer cwd or the default temp dir), pass add_dirs, or ask the user to turn the sandbox off; never repeat the same blocked attempt. A failure caused only by sandbox restrictions or missing environment dependencies does not justify raising the reasoning tier.",
   "codexGuidance": "Cost (added by the delegating tool): work economically. Search before opening whole files and read only what you need, prefer a targeted test over re-running the full suite on every step, and stop once the acceptance criteria are met. Never skip the verification needed to be sure the change is correct. Keep the diff minimal and targeted: change only what the task needs and never rewrite a whole file or module when a local edit works. In your final report, list every existing behaviour you removed, disabled, narrowed or simplified (deleted branches, narrowed conditions or time windows, dropped arguments, flags or recovery paths), or state that there were none.",
   "tiers": [
     {
@@ -75,6 +86,10 @@ const str = (v: unknown) => (typeof v === "string" ? v.trim() : undefined);
 export function validatePolicy(input: unknown, models: ModelInfo[] = listModels()): { ok: true; policy: Policy } | { ok: false; error: string } {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, error: "policy must be a JSON object" };
   const raw = { ...DEFAULT_POLICY, ...(input as Record<string, unknown>) };
+  if (typeof raw.sandboxWrites !== "boolean") return { ok: false, error: "sandboxWrites must be boolean" };
+  if (!raw.retention || typeof raw.retention !== "object" || Array.isArray(raw.retention)) return { ok: false, error: "invalid retention policy" };
+  const retention = { ...DEFAULT_POLICY.retention, ...raw.retention };
+  if (Object.values(retention).some(v => typeof v !== "number" || !Number.isFinite(v) || v <= 0)) return { ok: false, error: "retention limits must be positive numbers" };
   const stall = raw.stall as StallPolicy | undefined;
   if (stall !== undefined && (!stall || typeof stall !== "object" || Array.isArray(stall)
     || [stall.silent_s, stall.command_s].some(v => v !== undefined && (!Number.isFinite(v) || v < 0))
@@ -113,7 +128,7 @@ export function validatePolicy(input: unknown, models: ModelInfo[] = listModels(
     }
     tiers.push({ id, ...(model ? { model } : {}), effort, use });
   }
-  return { ok: true, policy: { guidance, codexGuidance, tiers, models: allowed, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
+  return { ok: true, policy: { sandboxWrites: raw.sandboxWrites, retention, guidance, codexGuidance, tiers, models: allowed, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
 }
 
 /** Missing file → defaults. A broken file also falls back to the defaults, and says why. */

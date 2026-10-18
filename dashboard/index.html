@@ -420,7 +420,8 @@
   .p-dirty:not(:empty)::before { content: "● "; animation: pulse 1.2s infinite; }
   .p-body { padding: 22px 28px 40px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; overflow: auto; flex: 1; align-content: start; }
   .p-body > * { animation: rise .6s var(--out) both; } .p-body > :nth-child(2) { animation-delay: 60ms; } .p-body > :nth-child(3) { animation-delay: 120ms; } .p-body > :nth-child(4) { animation-delay: 180ms; }
-  .p-sec h3 { font-size: 13.5px; font-weight: 600; margin: 0 0 12px; display: flex; align-items: baseline; gap: 10px; }
+  .p-sec h3 { font-size: 13.5px; font-weight: 600; margin: 0 0 12px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; white-space: nowrap; }
+  .p-sec h3 small { white-space: normal; }
   .p-sec h3 small { color: var(--muted); font-weight: 400; font-size: 12px; }
   .ladder { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: rgba(255,255,255,.015); }
   .lrow { position: relative; display: grid; grid-template-columns: 22px 104px 176px 84px 1fr 64px; gap: 8px; align-items: center; padding: 7px 10px; border-top: 1px solid var(--line); }
@@ -449,6 +450,14 @@
   .chip { font-family: var(--mono); font-size: 12px; border-radius: 999px; padding: 5px 14px; color: var(--text2); }
   .chip[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); box-shadow: 0 0 16px -6px var(--accent-glow); }
   .chip[aria-pressed="true"]::before { content: "✓ "; }
+  .sw-row { display: flex; align-items: flex-start; gap: 14px; border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; background: rgba(255,255,255,.015); }
+  .sw-row .muted { font-size: 12px; line-height: 1.6; margin-top: 3px; }
+  .sw-state { font-size: 13px; font-weight: 600; }
+  .switch { flex: none; position: relative; width: 44px; height: 24px; padding: 0; border-radius: 999px; border: 1px solid var(--line2); background: rgba(0,0,0,.3); transition: background .25s, border-color .25s; }
+  .switch i { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform .25s var(--out), background .25s; }
+  .switch[aria-checked="true"] { background: var(--accent-soft); border-color: var(--accent); box-shadow: 0 0 16px -6px var(--accent-glow); }
+  .switch[aria-checked="true"] i { transform: translateX(20px); background: var(--accent); }
+  .switch:focus-visible { outline: none; box-shadow: 0 0 0 4px var(--accent-soft); }
   .toast { border-radius: 12px; padding: 10px 15px; font-size: 13px; animation: rise .4s var(--out); }
   .toast.ok { background: var(--ok-bg); color: var(--ok); border: 1px solid rgba(198,255,61,.25); } .toast.err { background: var(--err-bg); color: var(--err); border: 1px solid rgba(255,77,94,.25); }
   .toast.info { background: var(--soft); color: var(--text2); border: 1px solid var(--line); }
@@ -608,6 +617,16 @@
           <div class="lrow lhead" aria-hidden="true"><span></span><span>TIER 档位</span><span>MODEL 模型</span><span>推理</span><span>适用场景（给 Claude 看）</span><span></span></div>
           <div id="tiers"></div>
           <button type="button" class="ladd" id="addTier">+ 添加档位</button>
+        </div>
+      </section>
+      <section class="p-sec">
+        <h3>写入沙箱 <small>审查类任务始终只读，这里只管会改文件的任务</small></h3>
+        <div class="sw-row">
+          <button type="button" class="switch" id="pSandbox" role="switch" aria-checked="false" aria-describedby="pSandboxHint"><i></i></button>
+          <div>
+            <div class="sw-state" id="pSandboxState">关闭 · 写任务直接放开权限</div>
+            <div class="muted" id="pSandboxHint">开启后写任务改用 workspace-write：只能写工作目录和本次运行的临时目录。Windows 上越界写入会被拒、偶尔卡住，一般保持关闭。</div>
+          </div>
         </div>
       </section>
       <section class="p-sec">
@@ -1301,13 +1320,21 @@ function renderChips(selected) {
     ? slugs.map((s) => `<button type="button" class="chip" aria-pressed="${selected.includes(s)}" value="${esc(s)}">${esc(s)}</button>`).join("")
     : '<span class="muted">没有读到 codex 的模型缓存（运行一次 codex 即可生成）</span>';
 }
+// Fields the form doesn't edit (stall, retention…) ride along unchanged.
 const collect = () => ({
+  ...pol.policy,
   guidance: $("#pGuide").value, codexGuidance: $("#pCodex").value, tiers: readTiers(),
   models: [...document.querySelectorAll('#pModels .chip[aria-pressed="true"]')].map((c) => c.value),
+  sandboxWrites: $("#pSandbox").getAttribute("aria-checked") === "true",
 });
+function setSandbox(on) {
+  $("#pSandbox").setAttribute("aria-checked", on);
+  $("#pSandboxState").textContent = on ? "开启 · 写任务在 workspace-write 沙箱里跑" : "关闭 · 写任务直接放开权限";
+}
 function fillForm(p) {
   $("#pGuide").value = p.guidance;
   $("#pCodex").value = p.codexGuidance;
+  setSandbox(!!p.sandboxWrites);
   renderTiers(p.tiers);
   renderChips(p.models);
   markDirty();
@@ -1367,6 +1394,10 @@ $("#pModels").addEventListener("click", (e) => {
   const chip = e.target.closest(".chip");
   if (!chip) return;
   chip.setAttribute("aria-pressed", chip.getAttribute("aria-pressed") !== "true");
+  markDirty();
+});
+$("#pSandbox").addEventListener("click", () => {
+  setSandbox($("#pSandbox").getAttribute("aria-checked") !== "true");
   markDirty();
 });
 $("#pForm").addEventListener("input", markDirty);

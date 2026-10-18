@@ -95,6 +95,10 @@ export function commandThreshold(command: string, fallback: number, rules: Stall
   return { seconds: fallback, matchedRule: undefined };
 }
 export interface CpuEvidence {
+  cpuTotalMs?: number;
+  rssBytes?: number;
+  ioReadBytes?: number;
+  ioWriteBytes?: number;
   cpuDeltaMs?: number;
   sampleMs?: number;
   descendantCount?: number;
@@ -114,16 +118,22 @@ export const sampleTreeEvidence: EvidenceSampler = async (pid, signal) => {
       : await capture("ps", ["-A", "-o", "pid=,ppid=,rss=,comm="], signal);
     let busiest: CpuEvidence["busiest"];
     let delta = 0;
+    let rssBytes = 0, ioReadBytes = 0, ioWriteBytes = 0;
+    let hasIo = false;
     for (const [id, cpu] of after) {
       const d = Math.max(0, cpu - (before.get(id) ?? cpu));
       delta += d;
-      if (id === pid || (busiest && d <= busiest.cpuMs)) continue;
       const line = details.split(/\r?\n/).find(l => Number(l.trim().split(/\s+/)[0]) === id);
       const fields = line?.trim().split(/\s+/) ?? [];
-      busiest = { pid: id, cpuMs: d, name: fields.slice(process.platform === "win32" ? 4 : 3).join(" "),
+      rssBytes += Number(fields[process.platform === "win32" ? 3 : 2] ?? 0) * (process.platform === "win32" ? 1 : 1024);
+      if (process.platform === "win32" && fields[4] !== "-" && Number.isFinite(Number(fields[4]))) {
+        hasIo = true; ioReadBytes += Number(fields[4]); ioWriteBytes += Number(fields[5]);
+      }
+      if (busiest && d <= busiest.cpuMs) continue;
+      busiest = { pid: id, cpuMs: d, name: fields.slice(process.platform === "win32" ? 6 : 3).join(" "),
         rssBytes: Number(fields[process.platform === "win32" ? 3 : 2] ?? 0) * (process.platform === "win32" ? 1 : 1024) };
     }
-    return { cpuDeltaMs: delta, sampleMs: Date.now() - started, descendantCount: Math.max(0, after.size - 1), busiest };
+    return { cpuTotalMs: [...after.values()].reduce((n, cpu) => n + cpu, 0), rssBytes, ...(hasIo ? { ioReadBytes, ioWriteBytes } : {}), cpuDeltaMs: delta, sampleMs: Date.now() - started, descendantCount: Math.max(0, after.size - 1), busiest };
   } catch { return { error: "process sample unavailable" }; }
 };
 
