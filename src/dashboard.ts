@@ -1,3 +1,4 @@
+import { commandThreshold } from "./watchdog.ts";
 import { readFile, readdir, stat, lstat } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { join, resolve } from "node:path";
@@ -24,11 +25,12 @@ export function deriveHealth(run: RunSummary, now = Date.now(), alive = pidAlive
   if (run.state !== "running") return "ok";
   if ((run.pid !== undefined && !alive(run.pid)) || (run.heartbeatAt !== undefined && now - run.heartbeatAt > 90000)) return "orphaned";
   const check = run.phase === "checks" ? run.checks?.find((c) => c.state === "running") : undefined;
-  const last = check ? check.lastOutputAt ?? check.startedAt : run.lastEventAt ?? run.startedAt;
+  const last = check ? check.lastOutputAt ?? check.startedAt : run.stallWindowSince ?? run.lastEventAt ?? run.startedAt;
   const age = now - last;
   const limit = check ? run.checkIdleTimeoutSec ?? config.checkIdleTimeoutSec
-    : run.inflight?.type === "command_execution" ? run.commandIdleTimeoutSec ?? config.commandIdleTimeoutSec
-    : run.idleTimeoutSec ?? config.idleTimeoutSec;
+    : run.effectiveThresholdSec ?? (run.inflight?.type === "command_execution" ? commandThreshold(run.inflight.command ?? "", run.commandIdleTimeoutSec ?? config.commandIdleTimeoutSec, run.stallPolicy?.long_commands).seconds
+    : run.idleTimeoutSec ?? config.idleTimeoutSec);
+  if (!check && run.suspicion) return "stalled";
   if (limit > 0 && age > limit * 1000) return "stalled";
   if (age < 120000) return "active";
   return "quiet";

@@ -22,9 +22,9 @@ public class DelegateProcesses {
   bool changed=true;
   while(root!=0 && changed) { changed=false; foreach(var e in rows) if(ids.Contains(e.parent) && ids.Add(e.pid)) changed=true; }
   foreach(var e in rows) if(root==0 || ids.Contains(e.pid)) {
-    double cpu=0;
-    if(root!=0) try { using(var p=System.Diagnostics.Process.GetProcessById((int)e.pid)) cpu=p.TotalProcessorTime.TotalMilliseconds; } catch {}
-    Console.WriteLine(e.pid+" "+e.parent+" "+cpu.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    double cpu=0; long rss=0;
+    if(root!=0) try { using(var p=System.Diagnostics.Process.GetProcessById((int)e.pid)) { cpu=p.TotalProcessorTime.TotalMilliseconds; rss=p.WorkingSet64; } } catch {}
+    Console.WriteLine(e.pid+" "+e.parent+" "+cpu.ToString(System.Globalization.CultureInfo.InvariantCulture)+" "+rss+" "+e.name);
   }
  }
 }

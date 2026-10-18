@@ -1,3 +1,4 @@
+import type { StallPolicy } from "./watchdog.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { config, configuredModel, EFFORT_ORDER } from "./config.ts";
@@ -14,6 +15,7 @@ export interface Tier {
 
 /** User-editable delegation policy, kept in `config.policyFile` and edited from the dashboard. */
 export interface Policy {
+  stall?: StallPolicy;
   /** Cost/quality guidance for the lead (Claude), added to the delegate tool description. */
   guidance: string;
   /** Appended to every brief Codex gets. */
@@ -25,21 +27,39 @@ export interface Policy {
 }
 
 export const DEFAULT_POLICY: Policy = {
-  guidance:
-    "Cost policy: Codex usage is billed per token, and the higher tiers cost several times more. Pick the cheapest tier that will get this task right; quality is not negotiable, so cheap means fewer wasted tokens, not a sloppier result. " +
-    "Unsure between two tiers: take the cheaper one, unless the task is in the risky class named by the top tier, where a failed attempt costs more than the difference. " +
-    "Escalate on evidence: after a check FAIL or a wrong result, continue the same session_id one tier up. Keep briefs tight and pass only the checks that prove the change. Read-only reviews and questions: use high when the reviewed code touches live trading, money, concurrency or security; low for other reviews and for questions; medium when a non-risky review must judge cross-module design. " +
-    "Frontend design stays with you: page layout, visual style, CSS, component look and feel, and UI copy are yours to do, not Codex's (its design taste is weak); backend, data plumbing and tests behind a UI can still be delegated." +
-    " When Codex can't work: if a delegate call fails for an environment reason (quota or rate limit, auth, network, codex crash, a timeout or abort with no usable result; not the user pressing Stop), retry once only if the error looks transient. If it still fails, don't quietly take the delegated work over yourself. Estimate what is left that you meant to give Codex: if it is small (a few edits you can already see), finish it and say Codex was unavailable; if it is substantial, stop and ask the user, with the error and the remaining work, whether to wait or fix Codex and continue, have you do it yourself (give a rough size), or do something else.",
-  codexGuidance:
-    "Cost (added by the delegating tool): work economically. Search before opening whole files and read only what you need, prefer a targeted test over re-running the full suite on every step, and stop once the acceptance criteria are met. Never skip the verification needed to be sure the change is correct. Keep the diff minimal and targeted: change only what the task needs and never rewrite a whole file or module when a local edit works. In your final report, list every existing behaviour you removed, disabled, narrowed or simplified (deleted branches, narrowed conditions or time windows, dropped arguments, flags or recovery paths), or state that there were none.",
-  tiers: [
-    { id: "luna-xhigh", model: "gpt-6-luna", effort: "xhigh", use: "Mechanical, fully specified tasks with no meaningful ambiguity or design decisions: renaming, version bumps, applying a provided patch, straightforward lint fixes, or simple factual lookups. The solution should be directly executable without investigating alternatives." },
-    { id: "low", model: "gpt-6.1-sol", effort: "low", use: "Default tier for ordinary, non-risky work: features and bug fixes across a few files that follow the project's existing conventions, bugs whose cause can be found by reading or reproducing, moderate refactoring, writing or fixing tests, and routine judgement between obvious local approaches. Use medium only when real design choices are left open, or high when the task is in the risky class." },
-    { id: "medium", model: "gpt-6.1-sol", effort: "medium", use: "Work that needs genuine design decisions without an existing pattern to follow: new structure spanning several modules, non-obvious tradeoffs, or many routine edge cases that interact, while still outside the risky class named by high. Also a low attempt that failed for lack of reasoning." },
-    { id: "high", model: "gpt-6.1-sol", effort: "high", use: "Complex or high-risk tasks involving unclear root causes, cross-module architecture or design tradeoffs, concurrency, security, financial correctness, data migration, or many interacting edge cases. Requires deep investigation, careful validation, or substantial independent reasoning. Also a medium attempt that failed for lack of reasoning (not for external or environmental issues)." },
+  stall: { long_commands: [{ match: "unittest discover|pytest|npm (run )?test|node --test", idle_s: 1800 }] },
+  "guidance": "Cost policy: Codex usage is billed per token, and the higher tiers cost several times more. Pick the cheapest tier that will get this task right; quality is not negotiable, so cheap means fewer wasted tokens, not a sloppier result. Unsure between two tiers: take the cheaper one, unless the task is in the risky class named by the top tier, where a failed attempt costs more than the difference. Escalate on evidence: after a check FAIL or a wrong result, continue the same session_id one tier up. Keep briefs tight and pass only the checks that prove the change. Read-only reviews and questions: use high when the reviewed code touches live trading, money, concurrency or security; low for other reviews and for questions; medium when a non-risky review must judge cross-module design. Frontend design stays with you: page layout, visual style, CSS, component look and feel, and UI copy are yours to do, not Codex's (its design taste is weak); backend, data plumbing and tests behind a UI can still be delegated. When Codex can't work: if a delegate call fails for an environment reason (quota or rate limit, auth, network, codex crash, a timeout or abort with no usable result; not the user pressing Stop), retry once only if the error looks transient. If it still fails, don't quietly take the delegated work over yourself. Estimate what is left that you meant to give Codex: if it is small (a few edits you can already see), finish it and say Codex was unavailable; if it is substantial, stop and ask the user, with the error and the remaining work, whether to wait or fix Codex and continue, have you do it yourself (give a rough size), or do something else.\nSandbox selection: Before every delegation, explicitly choose the sandbox parameter based on the task's execution and verification needs. Use read-only for investigations, code reviews and questions that require no writes. Use workspace-write for code changes and ordinary tests that can finish within the working directory and permitted temporary directories. Within the user's authorized scope, use danger-full-access when the task requires network access, dependency installation, writes outside those directories, or host permissions needed for complete verification. Prefer the least permissive mode that can complete the task and its required verification in one attempt. Check known requirements before starting, including the Python interpreter, dependencies and hard-coded temporary paths. If a sandbox restriction is confirmed, do not repeat the same blocked attempt: adjust the execution environment or resume the same session_id with an appropriate sandbox mode within the user's authorization. A failure caused only by sandbox restrictions or missing environment dependencies does not justify raising the reasoning tier; the earlier tier-escalation rule applies to reasoning or implementation failures. Sandbox selection does not expand authorization for deployment, live operations or other external changes.",
+  "codexGuidance": "Cost (added by the delegating tool): work economically. Search before opening whole files and read only what you need, prefer a targeted test over re-running the full suite on every step, and stop once the acceptance criteria are met. Never skip the verification needed to be sure the change is correct. Keep the diff minimal and targeted: change only what the task needs and never rewrite a whole file or module when a local edit works. In your final report, list every existing behaviour you removed, disabled, narrowed or simplified (deleted branches, narrowed conditions or time windows, dropped arguments, flags or recovery paths), or state that there were none.",
+  "tiers": [
+    {
+      "id": "luna-xhigh",
+      "model": "gpt-6-luna",
+      "effort": "xhigh",
+      "use": "Mechanical, fully specified tasks with no meaningful ambiguity or design decisions: renaming, version bumps, applying a provided patch, straightforward lint fixes, or simple factual lookups. The solution should be directly executable without investigating alternatives."
+    },
+    {
+      "id": "low",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "use": "Default tier for ordinary, non-risky work: features and bug fixes across a few files that follow the project's existing conventions, bugs whose cause can be found by reading or reproducing, moderate refactoring, writing or fixing tests, and routine judgement between obvious local approaches. Use medium only when real design choices are left open, or high when the task is in the risky class."
+    },
+    {
+      "id": "medium",
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "use": "Work that needs genuine design decisions without an existing pattern to follow: new structure spanning several modules, non-obvious tradeoffs, or many routine edge cases that interact, while still outside the risky class named by high. Also a low attempt that failed for lack of reasoning."
+    },
+    {
+      "id": "high",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "use": "Complex or high-risk tasks involving unclear root causes, cross-module architecture or design tradeoffs, concurrency, security, financial correctness, data migration, or many interacting edge cases. Requires deep investigation, careful validation, or substantial independent reasoning. Also a medium attempt that failed for lack of reasoning (not for external or environmental issues)."
+    }
   ],
-  models: ["gpt-6.1-sol", "gpt-6-luna"],
+  "models": [
+    "gpt-6.1-sol",
+    "gpt-6-luna"
+  ]
 };
 
 const TIER_ID = /^[a-z0-9][a-z0-9_-]{0,23}$/;
@@ -55,6 +75,11 @@ const str = (v: unknown) => (typeof v === "string" ? v.trim() : undefined);
 export function validatePolicy(input: unknown, models: ModelInfo[] = listModels()): { ok: true; policy: Policy } | { ok: false; error: string } {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, error: "policy must be a JSON object" };
   const raw = { ...DEFAULT_POLICY, ...(input as Record<string, unknown>) };
+  const stall = raw.stall as StallPolicy | undefined;
+  if (stall !== undefined && (!stall || typeof stall !== "object" || Array.isArray(stall)
+    || [stall.silent_s, stall.command_s].some(v => v !== undefined && (!Number.isFinite(v) || v < 0))
+    || (stall.long_commands !== undefined && (!Array.isArray(stall.long_commands) || stall.long_commands.some(r => !r || typeof r.match !== "string" || !Number.isFinite(r.idle_s) || r.idle_s < 0)))))
+    return { ok: false, error: "invalid stall policy" };
   const guidance = str(raw.guidance);
   const codexGuidance = str(raw.codexGuidance);
   if (guidance === undefined || guidance.length > MAX_TEXT) return { ok: false, error: `guidance must be text of at most ${MAX_TEXT} characters` };
@@ -88,7 +113,7 @@ export function validatePolicy(input: unknown, models: ModelInfo[] = listModels(
     }
     tiers.push({ id, ...(model ? { model } : {}), effort, use });
   }
-  return { ok: true, policy: { guidance, codexGuidance, tiers, models: allowed } };
+  return { ok: true, policy: { guidance, codexGuidance, tiers, models: allowed, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
 }
 
 /** Missing file → defaults. A broken file also falls back to the defaults, and says why. */

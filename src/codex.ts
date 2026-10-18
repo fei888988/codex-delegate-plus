@@ -2,10 +2,12 @@ import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, readFileSync } from "node:fs";
 import { config, type Sandbox } from "./config.ts";
 import { stop, track } from "./procs.ts";
-import { idleWatchdog, type CpuSampler } from "./watchdog.ts";
+import { softWatchdog, commandThreshold, type StallPolicy, type CpuEvidence, type EvidenceSampler } from "./watchdog.ts";
 
 export interface InflightItem { id: string; type: string; command?: string; startedAt: number }
-export interface CodexProgress { codexPid?: number; lastEventAt: number; inflight?: InflightItem }
+export interface Suspicion extends Stall { suspectedAt: number; wakes: number; thresholdSec: number; matchedRule?: string; evidence: CpuEvidence }
+export interface StallControl { evidenceSampler?: EvidenceSampler; rearm?: (seconds?: number) => void; background?: boolean; lastObservedAt: number; waiting?: number }
+export interface CodexProgress { stallWindowSince?: number; suspicion?: Suspicion; effectiveThresholdSec?: number; matchedRule?: string; codexPid?: number; lastEventAt: number; inflight?: InflightItem }
 export interface Stall { kind: "silent" | "command"; idleMs: number; command?: string; commandStartedAt?: number }
 export type ExitKind = "completed" | "timeout" | "stalled" | "cancelled" | "crashed" | "api_error";
 export type ErrorKind = "quota" | "rate_limit" | "auth" | "network" | "context" | "other";
@@ -33,8 +35,10 @@ export interface RunOptions {
   /** Overrides both the silent and command idle windows; zero disables. */
   idleTimeoutMs?: number;
   onProgress?: (info: CodexProgress) => void;
-  /** Injectable CPU confirmation for deterministic watchdog tests. */
-  cpuSampler?: CpuSampler;
+  /** Injectable evidence sampler for deterministic watchdog tests. */
+  evidenceSampler?: EvidenceSampler;
+  stall?: StallPolicy;
+  stallControl?: StallControl;
   signal?: AbortSignal;
   /** `-o`: codex writes only its final message here. */
   lastMessageFile?: string;
@@ -254,11 +258,16 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
     let timedOut = false;
     let settled = false;
     let stall: Stall | undefined;
+    let suspicion: Suspicion | undefined;
+    let wakes = 0;
+    let threshold: number | undefined;
+    let windowSince: number | undefined;
+    const control = o.stallControl;
     const progress = () => {
       try { o.onProgress?.({ codexPid: child.pid, lastEventAt: collector.lastEventAt,
-        inflight: collector.inflight.values().next().value }); } catch {}
+        inflight: [...collector.inflight.values()].find(it => it.type === "command_execution") ?? collector.inflight.values().next().value,
+        suspicion, stallWindowSince: idleWindow().since, effectiveThresholdSec: idleWindow().timeoutMs / 1000, matchedRule: selectedRule() }); } catch {}
     };
-    progress();
     let announced = false;
     const announce = () => {
       if (announced || !collector.sessionId) return;
@@ -273,23 +282,35 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
       if (timer) clearTimeout(timer);
       stop(child);
     };
-    const idleWindow = () => {
-      const commands = [...collector.inflight.values()].filter((it) => it.type === "command_execution");
-      if (commands.length === 1) {
-        const it = commands[0]!;
-        return { key: it.id, since: Math.max(it.startedAt, collector.lastEventAt),
-          timeoutMs: o.idleTimeoutMs ?? config.commandIdleTimeoutSec * 1000 };
-      }
-      if (!commands.length) return { key: "silent", since: collector.lastEventAt,
-        timeoutMs: o.idleTimeoutMs ?? config.idleTimeoutSec * 1000 };
-      return undefined;
+    const command = () => [...collector.inflight.values()].find(it => it.type === "command_execution");
+    const selection = () => commandThreshold(command()?.command ?? "", o.stall?.command_s ?? (o.idleTimeoutMs === undefined ? config.commandIdleTimeoutSec : o.idleTimeoutMs / 1000), o.stall?.long_commands);
+    const selectedRule = () => command() ? selection().matchedRule : undefined;
+    const idleWindow = () => ({ key: command()?.id ?? "silent", since: windowSince ?? collector.lastEventAt,
+      timeoutMs: (threshold ?? (command() ? selection().seconds : o.stall?.silent_s ?? (o.idleTimeoutMs === undefined ? config.idleTimeoutSec : o.idleTimeoutMs / 1000))) * 1000 });
+    const watchdog = softWatchdog(child.pid, idleWindow, evidence => {
+      const it = command();
+      suspicion = { kind: it ? "command" : "silent", command: it?.command, commandStartedAt: it?.startedAt,
+        idleMs: Date.now() - collector.lastEventAt, suspectedAt: Date.now(), wakes: ++wakes,
+        thresholdSec: idleWindow().timeoutMs / 1000, matchedRule: selectedRule(), evidence };
+      progress();
+    }, o.evidenceSampler);
+    if (control) control.rearm = seconds => {
+      threshold = seconds ?? (suspicion ? suspicion.thresholdSec * 2 : idleWindow().timeoutMs / 1000);
+      windowSince = Date.now();
+      suspicion = undefined;
+      watchdog.touch();
+      progress();
     };
-    const watchdog = idleWatchdog(child.pid, idleWindow, () => {
-      const command = [...collector.inflight.values()].find((it) => it.type === "command_execution");
-      stall = { kind: command ? "command" : "silent", idleMs: Date.now() - collector.lastEventAt,
-        command: command?.command, commandStartedAt: command?.startedAt };
-      kill();
-    }, o.cpuSampler);
+    const hardIdle = config.hardIdleTimeoutSec * 1000;
+    const orphanTimer = hardIdle > 0 ? setInterval(() => {
+      if (suspicion && control?.background && !control.waiting
+        && Date.now() - Math.max(collector.lastEventAt, control.lastObservedAt) >= hardIdle) {
+        stall = suspicion;
+        kill();
+      }
+    }, Math.max(10, Math.min(1000, hardIdle))) : undefined;
+    orphanTimer?.unref();
+    progress();
     const timer = o.timeoutMs
       ? setTimeout(() => {
           timedOut = true;
@@ -309,7 +330,7 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
         collector.push(buf.slice(0, i));
         buf = buf.slice(i + 1);
       }
-      if (sawLine) { watchdog.touch(); progress(); }
+      if (sawLine) { suspicion = undefined; wakes = 0; threshold = undefined; windowSince = undefined; watchdog.touch(); progress(); }
       announce();
     });
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
@@ -319,6 +340,8 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
     const finish = (exitCode: number | null, spawnError?: string) => {
       if (settled) return;
       settled = true;
+      clearInterval(orphanTimer);
+      if (control) control.rearm = undefined;
       watchdog.dispose();
       o.signal?.removeEventListener("abort", kill);
       if (timer) clearTimeout(timer);

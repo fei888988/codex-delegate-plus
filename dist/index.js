@@ -36587,7 +36587,8 @@ var config2 = {
   timeoutSec: int2(process.env.CODEX_DELEGATE_TIMEOUT, 1800),
   checkTimeoutSec: int2(process.env.CODEX_DELEGATE_CHECK_TIMEOUT, 600),
   idleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_IDLE_TIMEOUT, 600),
-  commandIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT, 1200),
+  commandIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT, 600),
+  hardIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_HARD_IDLE_TIMEOUT, 3600),
   checkIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_CHECK_IDLE_TIMEOUT, 300),
   // What goes back into the caller's context. The full event log stays on disk.
   maxOutputChars: int2(process.env.CODEX_DELEGATE_MAX_OUTPUT, 6e3),
@@ -36633,9 +36634,9 @@ public class DelegateProcesses {
   bool changed=true;
   while(root!=0 && changed) { changed=false; foreach(var e in rows) if(ids.Contains(e.parent) && ids.Add(e.pid)) changed=true; }
   foreach(var e in rows) if(root==0 || ids.Contains(e.pid)) {
-    double cpu=0;
-    if(root!=0) try { using(var p=System.Diagnostics.Process.GetProcessById((int)e.pid)) cpu=p.TotalProcessorTime.TotalMilliseconds; } catch {}
-    Console.WriteLine(e.pid+" "+e.parent+" "+cpu.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    double cpu=0; long rss=0;
+    if(root!=0) try { using(var p=System.Diagnostics.Process.GetProcessById((int)e.pid)) { cpu=p.TotalProcessorTime.TotalMilliseconds; rss=p.WorkingSet64; } } catch {}
+    Console.WriteLine(e.pid+" "+e.parent+" "+cpu.ToString(System.Globalization.CultureInfo.InvariantCulture)+" "+rss+" "+e.name);
   }
  }
 }
@@ -36827,6 +36828,75 @@ function idleWatchdog(pid, window, stalled, sample = sampleTreeCpu) {
       clearTimeout(timer);
     }
   };
+}
+function commandThreshold(command, fallback, rules = []) {
+  if (fallback === 0) return { seconds: 0, matchedRule: void 0 };
+  for (const rule of rules) {
+    try {
+      if (new RegExp(rule.match, "i").test(command)) return { seconds: rule.idle_s, matchedRule: rule.match };
+    } catch {
+    }
+  }
+  return { seconds: fallback, matchedRule: void 0 };
+}
+var sampleTreeEvidence = async (pid, signal) => {
+  try {
+    const started = Date.now();
+    const before = await cpuTree(pid, signal);
+    await delay(500, void 0, { signal });
+    const after = await cpuTree(pid, signal);
+    if (!after.size) return { error: "process sample unavailable" };
+    const details = process.platform === "win32" ? await capture("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsProcessTreeScript(pid)], signal) : await capture("ps", ["-A", "-o", "pid=,ppid=,rss=,comm="], signal);
+    let busiest;
+    let delta = 0;
+    for (const [id, cpu] of after) {
+      const d = Math.max(0, cpu - (before.get(id) ?? cpu));
+      delta += d;
+      if (id === pid || busiest && d <= busiest.cpuMs) continue;
+      const line = details.split(/\r?\n/).find((l) => Number(l.trim().split(/\s+/)[0]) === id);
+      const fields = line?.trim().split(/\s+/) ?? [];
+      busiest = {
+        pid: id,
+        cpuMs: d,
+        name: fields.slice(process.platform === "win32" ? 4 : 3).join(" "),
+        rssBytes: Number(fields[process.platform === "win32" ? 3 : 2] ?? 0) * (process.platform === "win32" ? 1 : 1024)
+      };
+    }
+    return { cpuDeltaMs: delta, sampleMs: Date.now() - started, descendantCount: Math.max(0, after.size - 1), busiest };
+  } catch {
+    return { error: "process sample unavailable" };
+  }
+};
+function softWatchdog(pid, window, suspected, sample = sampleTreeEvidence) {
+  let timer;
+  let sampling;
+  let generation = 0;
+  let disposed = false;
+  const touch = () => {
+    generation++;
+    sampling?.abort();
+    clearTimeout(timer);
+    const w = window();
+    if (disposed || !w || w.timeoutMs <= 0) return;
+    const version4 = generation;
+    timer = setTimeout(async () => {
+      const controller = sampling = new AbortController();
+      let evidence = { error: "process sample unavailable" };
+      try {
+        if (pid !== void 0) evidence = await sample(pid, controller.signal);
+      } catch {
+      }
+      if (!disposed && version4 === generation && window()?.key === w.key) suspected(evidence);
+    }, Math.max(1, w.since + w.timeoutMs - Date.now()));
+    timer.unref();
+  };
+  touch();
+  return { touch, dispose() {
+    disposed = true;
+    generation++;
+    sampling?.abort();
+    clearTimeout(timer);
+  } };
 }
 
 // src/checks.ts
@@ -37085,17 +37155,25 @@ function runCodex(o) {
     let timedOut = false;
     let settled = false;
     let stall;
+    let suspicion;
+    let wakes = 0;
+    let threshold;
+    let windowSince;
+    const control = o.stallControl;
     const progress = () => {
       try {
         o.onProgress?.({
           codexPid: child.pid,
           lastEventAt: collector.lastEventAt,
-          inflight: collector.inflight.values().next().value
+          inflight: [...collector.inflight.values()].find((it) => it.type === "command_execution") ?? collector.inflight.values().next().value,
+          suspicion,
+          stallWindowSince: idleWindow().since,
+          effectiveThresholdSec: idleWindow().timeoutMs / 1e3,
+          matchedRule: selectedRule()
         });
       } catch {
       }
     };
-    progress();
     let announced = false;
     const announce = () => {
       if (announced || !collector.sessionId) return;
@@ -37110,33 +37188,45 @@ function runCodex(o) {
       if (timer) clearTimeout(timer);
       stop(child);
     };
-    const idleWindow = () => {
-      const commands = [...collector.inflight.values()].filter((it) => it.type === "command_execution");
-      if (commands.length === 1) {
-        const it = commands[0];
-        return {
-          key: it.id,
-          since: Math.max(it.startedAt, collector.lastEventAt),
-          timeoutMs: o.idleTimeoutMs ?? config2.commandIdleTimeoutSec * 1e3
-        };
-      }
-      if (!commands.length) return {
-        key: "silent",
-        since: collector.lastEventAt,
-        timeoutMs: o.idleTimeoutMs ?? config2.idleTimeoutSec * 1e3
-      };
-      return void 0;
-    };
-    const watchdog = idleWatchdog(child.pid, idleWindow, () => {
-      const command = [...collector.inflight.values()].find((it) => it.type === "command_execution");
-      stall = {
-        kind: command ? "command" : "silent",
+    const command = () => [...collector.inflight.values()].find((it) => it.type === "command_execution");
+    const selection = () => commandThreshold(command()?.command ?? "", o.stall?.command_s ?? (o.idleTimeoutMs === void 0 ? config2.commandIdleTimeoutSec : o.idleTimeoutMs / 1e3), o.stall?.long_commands);
+    const selectedRule = () => command() ? selection().matchedRule : void 0;
+    const idleWindow = () => ({
+      key: command()?.id ?? "silent",
+      since: windowSince ?? collector.lastEventAt,
+      timeoutMs: (threshold ?? (command() ? selection().seconds : o.stall?.silent_s ?? (o.idleTimeoutMs === void 0 ? config2.idleTimeoutSec : o.idleTimeoutMs / 1e3))) * 1e3
+    });
+    const watchdog = softWatchdog(child.pid, idleWindow, (evidence) => {
+      const it = command();
+      suspicion = {
+        kind: it ? "command" : "silent",
+        command: it?.command,
+        commandStartedAt: it?.startedAt,
         idleMs: Date.now() - collector.lastEventAt,
-        command: command?.command,
-        commandStartedAt: command?.startedAt
+        suspectedAt: Date.now(),
+        wakes: ++wakes,
+        thresholdSec: idleWindow().timeoutMs / 1e3,
+        matchedRule: selectedRule(),
+        evidence
       };
-      kill();
-    }, o.cpuSampler);
+      progress();
+    }, o.evidenceSampler);
+    if (control) control.rearm = (seconds) => {
+      threshold = seconds ?? (suspicion ? suspicion.thresholdSec * 2 : idleWindow().timeoutMs / 1e3);
+      windowSince = Date.now();
+      suspicion = void 0;
+      watchdog.touch();
+      progress();
+    };
+    const hardIdle = config2.hardIdleTimeoutSec * 1e3;
+    const orphanTimer = hardIdle > 0 ? setInterval(() => {
+      if (suspicion && control?.background && !control.waiting && Date.now() - Math.max(collector.lastEventAt, control.lastObservedAt) >= hardIdle) {
+        stall = suspicion;
+        kill();
+      }
+    }, Math.max(10, Math.min(1e3, hardIdle))) : void 0;
+    orphanTimer?.unref();
+    progress();
     const timer = o.timeoutMs ? setTimeout(() => {
       timedOut = true;
       kill();
@@ -37154,6 +37244,10 @@ function runCodex(o) {
         buf = buf.slice(i + 1);
       }
       if (sawLine) {
+        suspicion = void 0;
+        wakes = 0;
+        threshold = void 0;
+        windowSince = void 0;
         watchdog.touch();
         progress();
       }
@@ -37165,6 +37259,8 @@ function runCodex(o) {
     const finish = (exitCode, spawnError) => {
       if (settled) return;
       settled = true;
+      clearInterval(orphanTimer);
+      if (control) control.rearm = void 0;
       watchdog.dispose();
       o.signal?.removeEventListener("abort", kill);
       if (timer) clearTimeout(timer);
@@ -37356,15 +37452,39 @@ function resolveModelOrThrow(query) {
 // src/policy.ts
 import { mkdirSync, readFileSync as readFileSync5, renameSync, writeFileSync } from "node:fs";
 var DEFAULT_POLICY = {
-  guidance: "Cost policy: Codex usage is billed per token, and the higher tiers cost several times more. Pick the cheapest tier that will get this task right; quality is not negotiable, so cheap means fewer wasted tokens, not a sloppier result. Unsure between two tiers: take the cheaper one, unless the task is in the risky class named by the top tier, where a failed attempt costs more than the difference. Escalate on evidence: after a check FAIL or a wrong result, continue the same session_id one tier up. Keep briefs tight and pass only the checks that prove the change. Read-only reviews and questions: use high when the reviewed code touches live trading, money, concurrency or security; low for other reviews and for questions; medium when a non-risky review must judge cross-module design. Frontend design stays with you: page layout, visual style, CSS, component look and feel, and UI copy are yours to do, not Codex's (its design taste is weak); backend, data plumbing and tests behind a UI can still be delegated. When Codex can't work: if a delegate call fails for an environment reason (quota or rate limit, auth, network, codex crash, a timeout or abort with no usable result; not the user pressing Stop), retry once only if the error looks transient. If it still fails, don't quietly take the delegated work over yourself. Estimate what is left that you meant to give Codex: if it is small (a few edits you can already see), finish it and say Codex was unavailable; if it is substantial, stop and ask the user, with the error and the remaining work, whether to wait or fix Codex and continue, have you do it yourself (give a rough size), or do something else.",
-  codexGuidance: "Cost (added by the delegating tool): work economically. Search before opening whole files and read only what you need, prefer a targeted test over re-running the full suite on every step, and stop once the acceptance criteria are met. Never skip the verification needed to be sure the change is correct. Keep the diff minimal and targeted: change only what the task needs and never rewrite a whole file or module when a local edit works. In your final report, list every existing behaviour you removed, disabled, narrowed or simplified (deleted branches, narrowed conditions or time windows, dropped arguments, flags or recovery paths), or state that there were none.",
-  tiers: [
-    { id: "luna-xhigh", model: "gpt-6-luna", effort: "xhigh", use: "Mechanical, fully specified tasks with no meaningful ambiguity or design decisions: renaming, version bumps, applying a provided patch, straightforward lint fixes, or simple factual lookups. The solution should be directly executable without investigating alternatives." },
-    { id: "low", model: "gpt-6.1-sol", effort: "low", use: "Default tier for ordinary, non-risky work: features and bug fixes across a few files that follow the project's existing conventions, bugs whose cause can be found by reading or reproducing, moderate refactoring, writing or fixing tests, and routine judgement between obvious local approaches. Use medium only when real design choices are left open, or high when the task is in the risky class." },
-    { id: "medium", model: "gpt-6.1-sol", effort: "medium", use: "Work that needs genuine design decisions without an existing pattern to follow: new structure spanning several modules, non-obvious tradeoffs, or many routine edge cases that interact, while still outside the risky class named by high. Also a low attempt that failed for lack of reasoning." },
-    { id: "high", model: "gpt-6.1-sol", effort: "high", use: "Complex or high-risk tasks involving unclear root causes, cross-module architecture or design tradeoffs, concurrency, security, financial correctness, data migration, or many interacting edge cases. Requires deep investigation, careful validation, or substantial independent reasoning. Also a medium attempt that failed for lack of reasoning (not for external or environmental issues)." }
+  stall: { long_commands: [{ match: "unittest discover|pytest|npm (run )?test|node --test", idle_s: 1800 }] },
+  "guidance": "Cost policy: Codex usage is billed per token, and the higher tiers cost several times more. Pick the cheapest tier that will get this task right; quality is not negotiable, so cheap means fewer wasted tokens, not a sloppier result. Unsure between two tiers: take the cheaper one, unless the task is in the risky class named by the top tier, where a failed attempt costs more than the difference. Escalate on evidence: after a check FAIL or a wrong result, continue the same session_id one tier up. Keep briefs tight and pass only the checks that prove the change. Read-only reviews and questions: use high when the reviewed code touches live trading, money, concurrency or security; low for other reviews and for questions; medium when a non-risky review must judge cross-module design. Frontend design stays with you: page layout, visual style, CSS, component look and feel, and UI copy are yours to do, not Codex's (its design taste is weak); backend, data plumbing and tests behind a UI can still be delegated. When Codex can't work: if a delegate call fails for an environment reason (quota or rate limit, auth, network, codex crash, a timeout or abort with no usable result; not the user pressing Stop), retry once only if the error looks transient. If it still fails, don't quietly take the delegated work over yourself. Estimate what is left that you meant to give Codex: if it is small (a few edits you can already see), finish it and say Codex was unavailable; if it is substantial, stop and ask the user, with the error and the remaining work, whether to wait or fix Codex and continue, have you do it yourself (give a rough size), or do something else.\nSandbox selection: Before every delegation, explicitly choose the sandbox parameter based on the task's execution and verification needs. Use read-only for investigations, code reviews and questions that require no writes. Use workspace-write for code changes and ordinary tests that can finish within the working directory and permitted temporary directories. Within the user's authorized scope, use danger-full-access when the task requires network access, dependency installation, writes outside those directories, or host permissions needed for complete verification. Prefer the least permissive mode that can complete the task and its required verification in one attempt. Check known requirements before starting, including the Python interpreter, dependencies and hard-coded temporary paths. If a sandbox restriction is confirmed, do not repeat the same blocked attempt: adjust the execution environment or resume the same session_id with an appropriate sandbox mode within the user's authorization. A failure caused only by sandbox restrictions or missing environment dependencies does not justify raising the reasoning tier; the earlier tier-escalation rule applies to reasoning or implementation failures. Sandbox selection does not expand authorization for deployment, live operations or other external changes.",
+  "codexGuidance": "Cost (added by the delegating tool): work economically. Search before opening whole files and read only what you need, prefer a targeted test over re-running the full suite on every step, and stop once the acceptance criteria are met. Never skip the verification needed to be sure the change is correct. Keep the diff minimal and targeted: change only what the task needs and never rewrite a whole file or module when a local edit works. In your final report, list every existing behaviour you removed, disabled, narrowed or simplified (deleted branches, narrowed conditions or time windows, dropped arguments, flags or recovery paths), or state that there were none.",
+  "tiers": [
+    {
+      "id": "luna-xhigh",
+      "model": "gpt-6-luna",
+      "effort": "xhigh",
+      "use": "Mechanical, fully specified tasks with no meaningful ambiguity or design decisions: renaming, version bumps, applying a provided patch, straightforward lint fixes, or simple factual lookups. The solution should be directly executable without investigating alternatives."
+    },
+    {
+      "id": "low",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "use": "Default tier for ordinary, non-risky work: features and bug fixes across a few files that follow the project's existing conventions, bugs whose cause can be found by reading or reproducing, moderate refactoring, writing or fixing tests, and routine judgement between obvious local approaches. Use medium only when real design choices are left open, or high when the task is in the risky class."
+    },
+    {
+      "id": "medium",
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "use": "Work that needs genuine design decisions without an existing pattern to follow: new structure spanning several modules, non-obvious tradeoffs, or many routine edge cases that interact, while still outside the risky class named by high. Also a low attempt that failed for lack of reasoning."
+    },
+    {
+      "id": "high",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "use": "Complex or high-risk tasks involving unclear root causes, cross-module architecture or design tradeoffs, concurrency, security, financial correctness, data migration, or many interacting edge cases. Requires deep investigation, careful validation, or substantial independent reasoning. Also a medium attempt that failed for lack of reasoning (not for external or environmental issues)."
+    }
   ],
-  models: ["gpt-6.1-sol", "gpt-6-luna"]
+  "models": [
+    "gpt-6.1-sol",
+    "gpt-6-luna"
+  ]
 };
 var TIER_ID = /^[a-z0-9][a-z0-9_-]{0,23}$/;
 var SLUG = /^[\w.-]{1,64}$/;
@@ -37373,6 +37493,9 @@ var str = (v) => typeof v === "string" ? v.trim() : void 0;
 function validatePolicy(input2, models = listModels()) {
   if (!input2 || typeof input2 !== "object" || Array.isArray(input2)) return { ok: false, error: "policy must be a JSON object" };
   const raw = { ...DEFAULT_POLICY, ...input2 };
+  const stall = raw.stall;
+  if (stall !== void 0 && (!stall || typeof stall !== "object" || Array.isArray(stall) || [stall.silent_s, stall.command_s].some((v) => v !== void 0 && (!Number.isFinite(v) || v < 0)) || stall.long_commands !== void 0 && (!Array.isArray(stall.long_commands) || stall.long_commands.some((r) => !r || typeof r.match !== "string" || !Number.isFinite(r.idle_s) || r.idle_s < 0))))
+    return { ok: false, error: "invalid stall policy" };
   const guidance = str(raw.guidance);
   const codexGuidance = str(raw.codexGuidance);
   if (guidance === void 0 || guidance.length > MAX_TEXT) return { ok: false, error: `guidance must be text of at most ${MAX_TEXT} characters` };
@@ -37404,7 +37527,7 @@ function validatePolicy(input2, models = listModels()) {
     }
     tiers.push({ id, ...model2 ? { model: model2 } : {}, effort, use });
   }
-  return { ok: true, policy: { guidance, codexGuidance, tiers, models: allowed } };
+  return { ok: true, policy: { guidance, codexGuidance, tiers, models: allowed, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
 }
 function loadPolicy(file2 = config2.policyFile) {
   let text2;
@@ -37566,7 +37689,7 @@ function renderReport(r) {
 // package.json
 var package_default = {
   name: "claude-codex-delegate",
-  version: "0.5.1",
+  version: "0.6.0",
   description: "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna\u2026) while staying the orchestrator.",
   type: "module",
   license: "MIT",
@@ -37574,7 +37697,7 @@ var package_default = {
   repository: { type: "git", url: "git+https://github.com/aashahin/claude-codex-delegate.git" },
   keywords: ["claude", "claude-code", "claude-desktop", "mcp", "codex", "openai", "subagent", "delegate"],
   bin: { "claude-codex-delegate": "dist/index.js" },
-  files: ["dist", "src", "README.md", "LICENSE"],
+  files: ["dist", "src", "README.md", "README.en.md", "LICENSE"],
   engines: { node: ">=22.18" },
   scripts: {
     start: "node src/index.ts",
@@ -37609,7 +37732,7 @@ function newRunDir() {
     return void 0;
   }
 }
-async function delegate(input2, signal, onProgress) {
+async function delegate(input2, signal, onProgress, stallControl) {
   const cwd = resolve(config2.defaultCwd, input2.cwd ?? ".");
   if (!existsSync4(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const auto = input2.auto ?? config2.auto;
@@ -37658,7 +37781,12 @@ async function delegate(input2, signal, onProgress) {
   }
   try {
     const run = { cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, fast, images, structured, notes, continued };
-    return await execute(input2, run, signal, onProgress);
+    const stall = {
+      silent_s: input2.stall?.silent_s ?? input2.idle_timeout_s ?? policy.stall?.silent_s ?? config2.idleTimeoutSec,
+      command_s: input2.stall?.command_s ?? input2.idle_timeout_s ?? policy.stall?.command_s ?? config2.commandIdleTimeoutSec,
+      long_commands: [...input2.stall?.long_commands ?? [], ...policy.stall?.long_commands ?? []]
+    };
+    return await execute({ ...input2, stall }, run, signal, onProgress, stallControl);
   } finally {
     if (!readOnly) {
       activeWriters.delete(lockKey);
@@ -37666,7 +37794,7 @@ async function delegate(input2, signal, onProgress) {
     }
   }
 }
-async function execute(input2, r, signal, onProgress) {
+async function execute(input2, r, signal, onProgress, stallControl) {
   const { cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier, codexGuidance, fast, images, structured, notes, continued } = r;
   const runDir = newRunDir();
   const meta3 = {
@@ -37689,9 +37817,10 @@ async function execute(input2, r, signal, onProgress) {
     pid: process.pid,
     heartbeatAt: Date.now(),
     lastEventAt: Date.now(),
-    idleTimeoutSec: input2.idle_timeout_s ?? config2.idleTimeoutSec,
-    commandIdleTimeoutSec: input2.idle_timeout_s ?? config2.commandIdleTimeoutSec,
-    checkIdleTimeoutSec: config2.checkIdleTimeoutSec
+    idleTimeoutSec: input2.stall?.silent_s ?? config2.idleTimeoutSec,
+    commandIdleTimeoutSec: input2.stall?.command_s ?? config2.commandIdleTimeoutSec,
+    checkIdleTimeoutSec: config2.checkIdleTimeoutSec,
+    stallPolicy: input2.stall
   };
   let lastWrite = 0;
   let lastSnapshot = "";
@@ -37764,14 +37893,23 @@ ${codexGuidance}`;
         if (rec && rec.sessionId !== id) savePending({ ...rec, sessionId: rec.sessionId = id });
       },
       onProgress: (info) => {
+        const wasSuspected = !!meta3.suspicion;
         const it = info.inflight;
         Object.assign(meta3, {
           codexPid: info.codexPid,
           lastEventAt: info.lastEventAt,
+          suspicion: info.suspicion,
+          stallWindowSince: info.stallWindowSince,
+          effectiveThresholdSec: info.effectiveThresholdSec,
+          matchedRule: info.matchedRule,
           inflight: it && { type: it.type, command: it.command, startedAt: it.startedAt }
         });
         progress();
+        if (info.suspicion || wasSuspected) writeMeta();
       },
+      stall: input2.stall,
+      stallControl,
+      evidenceSampler: stallControl?.evidenceSampler,
       prompt,
       model: model2,
       effort,
@@ -37793,6 +37931,7 @@ ${codexGuidance}`;
       errorKind: result.errorKind,
       stall: result.stall,
       inflight: void 0,
+      suspicion: void 0,
       error: result.error
     });
     progress();
@@ -38027,12 +38166,13 @@ function prune() {
   const finished = [...tasks.values()].filter((t) => t.status !== "running").sort((a, b) => a.startedAt - b.startedAt);
   for (const t of finished.slice(0, Math.max(0, finished.length - MAX_FINISHED))) tasks.delete(t.id);
 }
-function startTask(input2) {
+function startTask(input2, background = true, evidenceSampler) {
   const controller = new AbortController();
-  const task = { id: `task_${randomUUID2().slice(0, 8)}`, input: input2, status: "running", startedAt: Date.now(), controller };
+  const task = { id: `task_${randomUUID2().slice(0, 8)}`, input: input2, status: "running", startedAt: Date.now(), controller, control: { evidenceSampler, background, lastObservedAt: Date.now() }, listeners: /* @__PURE__ */ new Set() };
   task.promise = delegate(input2, controller.signal, (info) => {
     task.progress = info;
-  }).then(
+    for (const notify of task.listeners) notify();
+  }, task.control).then(
     (outcome) => {
       task.outcome = outcome;
       task.status = controller.signal.aborted ? "cancelled" : outcome.result.ok ? "done" : "error";
@@ -38054,6 +38194,7 @@ function getTask(id) {
   return tasks.get(id);
 }
 function runningProgress(task) {
+  if (task.progress?.suspicion) return formatSuspicion(task);
   const p = task.progress;
   const minutes = ((Date.now() - (p?.lastEventAt ?? task.startedAt)) / 6e4).toFixed(1);
   const command = p?.inflight?.command ?? p?.checks?.find((c) => c.state === "running")?.command;
@@ -38061,13 +38202,67 @@ function runningProgress(task) {
 inflight: ${command.replace(/\s+/g, " ").slice(0, 200)}` : ""}`;
 }
 function listTasks() {
+  for (const task of tasks.values()) task.control.lastObservedAt = Date.now();
   return [...tasks.values()].sort((a, b) => b.startedAt - a.startedAt);
 }
-async function waitTask(task, waitSec) {
-  if (task.status !== "running" || waitSec <= 0) return;
+function formatSuspicion(task) {
+  const p = task.progress;
+  const s = p.suspicion;
+  return [
+    "status: suspected_stall (still running, not killed)",
+    "next: judge from the evidence; if it looks healthy call task_result(task_id, wait_s, stall_after_s?) to keep waiting; if hung call task_cancel then resume with session_id and tell codex which command hung",
+    `task_id: ${task.id}`,
+    `session_id: ${p.sessionId ?? "(none)"}`,
+    `run id: ${p.id}`,
+    `elapsed: ${((Date.now() - task.startedAt) / 1e3).toFixed(0)}s`,
+    `inflight: ${s.command?.replace(/\s+/g, " ").slice(0, 300) ?? "(model silent)"}; idle: ${((Date.now() - (p.lastEventAt ?? task.startedAt)) / 1e3).toFixed(0)}s`,
+    `threshold: ${s.thresholdSec}s; wakes: ${s.wakes}${s.matchedRule ? `; rule: ${s.matchedRule}` : ""}`,
+    `evidence: ${JSON.stringify(s.evidence)}`
+  ].join("\n");
+}
+async function waitTask(task, waitSec, stallAfterSec) {
+  task.control.lastObservedAt = Date.now();
+  if (task.status !== "running") return;
+  const suspicion = task.controller.signal.aborted ? void 0 : task.progress?.suspicion;
+  if (suspicion && task.seenWake !== suspicion.suspectedAt && stallAfterSec === void 0) {
+    task.seenWake = suspicion.suspectedAt;
+    return;
+  }
+  if (stallAfterSec !== void 0 || suspicion && waitSec > 0) task.control.rearm?.(stallAfterSec);
+  if (waitSec <= 0) return;
   let timer;
-  await Promise.race([task.promise, new Promise((r) => timer = setTimeout(r, waitSec * 1e3))]);
-  clearTimeout(timer);
+  let notify;
+  const wake = new Promise((resolve4) => {
+    notify = () => {
+      if (!task.controller.signal.aborted && task.progress?.suspicion) resolve4();
+    };
+    task.listeners.add(notify);
+  });
+  task.control.waiting = (task.control.waiting ?? 0) + 1;
+  try {
+    await Promise.race([task.promise, wake, new Promise((r) => {
+      timer = setTimeout(r, waitSec * 1e3);
+    })]);
+    if (task.progress?.suspicion) task.seenWake = task.progress.suspicion.suspectedAt;
+  } finally {
+    task.control.waiting--;
+    task.control.lastObservedAt = Date.now();
+    task.listeners.delete(notify);
+    clearTimeout(timer);
+  }
+}
+async function delegateSync(input2, signal, evidenceSampler) {
+  const task = startTask(input2, false, evidenceSampler);
+  const abort = () => task.controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  try {
+    await waitTask(task, 2147483);
+    if (task.status === "running") task.control.background = true;
+    return task;
+  } finally {
+    signal?.removeEventListener("abort", abort);
+  }
 }
 
 // src/index.ts
@@ -38080,6 +38275,7 @@ function effortParam(policy) {
     "Cost tier for this run, chosen by you from the task's difficulty; it sets the model and reasoning effort (an explicit `model` overrides the tier's model). Tiers, cheapest first:\n" + policy.tiers.map((t) => `- ${t.id} (${tierLabel(t)}): ${t.use}`).join("\n") + "\nA follow-up (same session_id) may use a different tier."
   );
 }
+var STALL_DESCRIPTION = " When the brief includes long-running commands (full test suites, training, backtests, big builds), set stall.long_commands for them. A status: suspected_stall result means Codex is still running: inspect cheaply, then task_result to keep waiting or task_cancel.";
 var DELEGATE_DESCRIPTION = "Run a task with an OpenAI model through the Codex CLI (`codex exec`) and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass it as written rather than restating it. Put test/build commands in `checks`. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id. A result whose first line is `status: needs_decision` (or partial/blocked) is not finished: make the decisions yourself and resume the same session_id with them in this turn; ask the user only for choices that are really theirs.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.";
 var ASYNC_DESCRIPTION = "Same as delegate, but returns a task_id immediately while the Codex model works in the background. Use for long tasks or to run several in parallel; then call task_result to collect output. Parallel tasks editing the same directory can conflict \u2014 give each its own cwd/worktree or non-overlapping files.";
 var withGuidance = (d, policy) => policy.guidance ? `${d}
@@ -38103,7 +38299,12 @@ var delegateShape = {
   ),
   auto: external_exports.boolean().optional().describe(`Shorthand: false = read-only sandbox, for reading files, reviews and questions. Default: ${config2.auto}. An explicit sandbox wins.`),
   title: external_exports.string().optional().describe("Short label shown in task_list."),
-  idle_timeout_s: external_exports.number().int().min(0).optional().describe("Override both codex idle timeouts in seconds; 0 disables idle detection."),
+  stall: external_exports.object({
+    silent_s: external_exports.number().int().min(0).optional(),
+    command_s: external_exports.number().int().min(0).optional(),
+    long_commands: external_exports.array(external_exports.object({ match: external_exports.string(), idle_s: external_exports.number().int().min(0) })).optional()
+  }).optional().describe("Soft suspicion windows in seconds (0 disables); first case-insensitive command regex wins, call rules before policy rules; invalid regex is ignored."),
+  idle_timeout_s: external_exports.number().int().min(0).optional().describe("Compatibility: set both soft suspicion windows; explicit stall fields win; 0 disables."),
   timeout_s: external_exports.number().int().positive().optional().describe(`Kill the run after this many seconds. Default: ${config2.timeoutSec}.`),
   checks: external_exports.array(external_exports.string()).optional().describe(
     `Shell commands (tests, build, lint) the server runs on the host in cwd after codex finishes, through ${process.platform === "win32" ? "cmd.exe (Windows: no bash syntax)" : "/bin/sh"}. Results come back as PASS/FAIL with the output tail on failure, so you don't need to re-run them yourself.`
@@ -38134,7 +38335,7 @@ var delegateTool = server.registerTool(
   "delegate",
   {
     title: "Delegate a task to a Codex model",
-    description: withGuidance(DELEGATE_DESCRIPTION, loadPolicy().policy),
+    description: withGuidance(DELEGATE_DESCRIPTION + STALL_DESCRIPTION, loadPolicy().policy),
     inputSchema: delegateShape
   },
   async (input2, extra) => {
@@ -38149,8 +38350,10 @@ var delegateTool = server.registerTool(
       });
     }, 15e3) : void 0;
     try {
-      const outcome = await delegate(input2, extra.signal);
-      return text(formatOutcome(outcome), !outcome.result.ok);
+      const task = await delegateSync(input2, extra.signal);
+      if (task.status === "running") return text(formatSuspicion(task));
+      if (task.outcome) return text(formatOutcome(task.outcome), !task.outcome.result.ok);
+      return text(task.error ?? "delegate failed", true);
     } catch (e) {
       return text(String(e instanceof Error ? e.message : e), true);
     } finally {
@@ -38162,14 +38365,14 @@ function taskSummary(t) {
   const secs = (((t.finishedAt ?? Date.now()) - t.startedAt) / 1e3).toFixed(0);
   const model2 = t.outcome?.model ?? t.input.model ?? "(default)";
   const report = t.outcome?.report?.status;
-  const status = t.status === "done" && report && report !== "done" ? `${report} \u2190 needs you` : t.status;
+  const status = t.status === "done" && report && report !== "done" ? `${report} \u2190 needs you` : t.status === "running" && t.progress?.suspicion ? "suspected_stall" : t.status;
   return `${t.id}  ${status.padEnd(9)} ${secs}s  ${model2}  ${t.input.title ?? t.input.prompt.slice(0, 60).replace(/\s+/g, " ")}`;
 }
 var asyncTool = server.registerTool(
   "delegate_async",
   {
     title: "Start a Codex task in the background",
-    description: withGuidance(ASYNC_DESCRIPTION, loadPolicy().policy),
+    description: withGuidance(ASYNC_DESCRIPTION + STALL_DESCRIPTION, loadPolicy().policy),
     inputSchema: delegateShape
   },
   async (input2) => {
@@ -38182,14 +38385,15 @@ server.registerTool(
   "task_result",
   {
     title: "Get a background Codex task's result",
-    description: "Return the status/result of a delegate_async task, optionally waiting up to wait_s seconds for it to finish.",
+    description: "Return a background task result; wait_s waits for completion or returns early on suspected stall. stall_after_s sets the next window for the current item; otherwise each acknowledged wake doubles it.",
     inputSchema: {
       task_id: external_exports.string(),
+      stall_after_s: external_exports.number().int().min(0).optional().describe("Next suspicion window for the current item in seconds; 0 disables until new output."),
       wait_s: external_exports.number().int().min(0).max(3600).optional().describe("Seconds to wait for completion before returning (default 0).")
     },
     annotations: { readOnlyHint: true }
   },
-  async ({ task_id, wait_s }) => {
+  async ({ task_id, wait_s, stall_after_s }) => {
     const t = getTask(task_id);
     if (!t) {
       const s = storedTask(task_id);
@@ -38199,7 +38403,8 @@ the server that ran it exited before it finished; re-run it (check git status fi
       return text(`task: ${s.id} (${s.status})
 ${s.text ?? ""}`, s.status !== "done");
     }
-    await waitTask(t, wait_s ?? 0);
+    await waitTask(t, wait_s ?? 0, stall_after_s);
+    if (t.status === "running" && t.progress?.suspicion) return text(formatSuspicion(t));
     if (t.status === "running") return text(`${taskSummary(t)}
 ${runningProgress(t)}
 still running \u2014 call again later or with a larger wait_s.`);
@@ -38262,7 +38467,7 @@ watchFile(config2.policyFile, { interval: 2e3, persistent: false }, () => {
   const { policy, error: error62 } = loadPolicy();
   if (error62) console.error(`codex-delegate: ${error62}`);
   const paramsSchema = { ...delegateShape, effort: effortParam(policy) };
-  delegateTool.update({ description: withGuidance(DELEGATE_DESCRIPTION, policy), paramsSchema });
-  asyncTool.update({ description: withGuidance(ASYNC_DESCRIPTION, policy), paramsSchema });
+  delegateTool.update({ description: withGuidance(DELEGATE_DESCRIPTION + STALL_DESCRIPTION, policy), paramsSchema });
+  asyncTool.update({ description: withGuidance(ASYNC_DESCRIPTION + STALL_DESCRIPTION, policy), paramsSchema });
 });
 await server.connect(new StdioServerTransport());

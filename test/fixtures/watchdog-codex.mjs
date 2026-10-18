@@ -13,7 +13,14 @@ if (mode === "complete") {
   process.exit(0);
 }
 if (mode !== "silent") out({ type: "item.started", item: { id: "cmd-1", type: mode === "tool" ? "mcp_tool_call" : "command_execution", command: mode === "tool" ? undefined : "python -m unittest hung" } });
-if (mode === "output") {
+if (mode === "delayed" || mode === "reset") {
+  if (mode === "reset") setTimeout(() => out({ type: "progress" }), 300);
+  setTimeout(() => {
+    out({ type: "item.completed", item: { id: "cmd-1", type: "command_execution", command: "python -m unittest hung", status: "completed", exit_code: 0 } });
+    out({ type: "item.completed", item: { type: "agent_message", text: "finished response" } });
+    out({ type: "turn.completed" });
+  }, 800);
+} else if (mode === "output") {
   const timer = setInterval(() => console.log("still working"), 40);
   setTimeout(() => {
     clearInterval(timer);

@@ -1,9 +1,10 @@
+import type { StallPolicy } from "./watchdog.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { runChecks, type CheckResult } from "./checks.ts";
 import { clampEffort, config, configuredModel, type Sandbox } from "./config.ts";
-import { classifyError, runCodex, type RunResult } from "./codex.ts";
+import { classifyError, runCodex, type RunResult, type StallControl } from "./codex.ts";
 import { diffSnapshots, diffStat, snapshot, type FileStat } from "./git.ts";
 import { resolveModelOrThrow } from "./models.ts";
 import { findTier, loadPolicy } from "./policy.ts";
@@ -25,6 +26,7 @@ export interface DelegateInput {
   title?: string;
   timeout_s?: number;
   idle_timeout_s?: number;
+  stall?: StallPolicy;
   /** Commands the server runs on the host after codex finishes (tests, build, lint). */
   checks?: string[];
   /** false = free-form final answer instead of the JSON report. */
@@ -63,7 +65,7 @@ function newRunDir(): string | undefined {
   }
 }
 
-export async function delegate(input: DelegateInput, signal?: AbortSignal, onProgress?: (info: RunSummary) => void): Promise<DelegateOutcome> {
+export async function delegate(input: DelegateInput, signal?: AbortSignal, onProgress?: (info: RunSummary) => void, stallControl?: StallControl): Promise<DelegateOutcome> {
   const cwd = resolve(config.defaultCwd, input.cwd ?? ".");
   if (!existsSync(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const auto = input.auto ?? config.auto;
@@ -124,7 +126,12 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
   }
   try {
     const run = { cwd, sandbox, readOnly, model, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, fast, images, structured, notes, continued };
-    return await execute(input, run, signal, onProgress);
+    const stall: StallPolicy = {
+      silent_s: input.stall?.silent_s ?? input.idle_timeout_s ?? policy.stall?.silent_s ?? config.idleTimeoutSec,
+      command_s: input.stall?.command_s ?? input.idle_timeout_s ?? policy.stall?.command_s ?? config.commandIdleTimeoutSec,
+      long_commands: [...(input.stall?.long_commands ?? []), ...(policy.stall?.long_commands ?? [])],
+    };
+    return await execute({ ...input, stall }, run, signal, onProgress, stallControl);
   } finally {
     if (!readOnly) {
       activeWriters.delete(lockKey);
@@ -148,7 +155,7 @@ interface Resolved {
   continued?: PendingRun;
 }
 
-async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, onProgress?: (info: RunSummary) => void): Promise<DelegateOutcome> {
+async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, onProgress?: (info: RunSummary) => void, stallControl?: StallControl): Promise<DelegateOutcome> {
   const { cwd, sandbox, readOnly, model, effort, tier, codexGuidance, fast, images, structured, notes, continued } = r;
   const runDir = newRunDir();
   const meta: RunSummary = {
@@ -157,9 +164,10 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
     sessionId: input.session_id, continuedFrom: continued?.sessionId,
     prompt: input.prompt.slice(0, 2000), version,
     phase: "codex", pid: process.pid, heartbeatAt: Date.now(), lastEventAt: Date.now(),
-    idleTimeoutSec: input.idle_timeout_s ?? config.idleTimeoutSec,
-    commandIdleTimeoutSec: input.idle_timeout_s ?? config.commandIdleTimeoutSec,
+    idleTimeoutSec: input.stall?.silent_s ?? config.idleTimeoutSec,
+    commandIdleTimeoutSec: input.stall?.command_s ?? config.commandIdleTimeoutSec,
     checkIdleTimeoutSec: config.checkIdleTimeoutSec,
+    stallPolicy: input.stall,
   };
   let lastWrite = 0;
   let lastSnapshot = "";
@@ -228,11 +236,17 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
         if (rec && rec.sessionId !== id) savePending({ ...rec, sessionId: (rec.sessionId = id) });
       },
       onProgress: (info) => {
+        const wasSuspected = !!meta.suspicion;
         const it = info.inflight;
         Object.assign(meta, { codexPid: info.codexPid, lastEventAt: info.lastEventAt,
+          suspicion: info.suspicion, stallWindowSince: info.stallWindowSince, effectiveThresholdSec: info.effectiveThresholdSec, matchedRule: info.matchedRule,
           inflight: it && { type: it.type, command: it.command, startedAt: it.startedAt } });
         progress();
+        if (info.suspicion || wasSuspected) writeMeta();
       },
+      stall: input.stall,
+      stallControl,
+      evidenceSampler: stallControl?.evidenceSampler,
       prompt,
       model,
       effort,
@@ -250,7 +264,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
       logFile: runDir && join(runDir, "events.jsonl"),
     });
     Object.assign(meta, { exitKind: result.exitKind, errorKind: result.errorKind, stall: result.stall,
-      inflight: undefined, error: result.error });
+      inflight: undefined, suspicion: undefined, error: result.error });
     progress();
     const after = before && snapshot(cwd);
     const changes = before && after ? diffStat(cwd, diffSnapshots(before, after)) : undefined;

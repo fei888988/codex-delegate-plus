@@ -35,8 +35,8 @@ This fork (`codex-delegate-plus`) adds, on top of upstream:
   the new direction. `fresh: true` opts out. Records live in `<runs dir>/pending/`.
 - Live run observability: the dashboard shows a 14-day activity view, per-run Codex timelines,
   progress and health states (`active`, `quiet`, `stalled`, `orphaned`).
-- Idle watchdogs use separate deadlines for Codex output, in-flight commands and host checks; a
-  short process-tree CPU sample can prevent a false stall termination.
+- Codex idle thresholds wake the lead with `status: suspected_stall` and evidence; the run stays alive.
+  Use `task_result` to continue waiting or `task_cancel` to stop. Host-check idle deadlines still kill.
 
 ## How it works
 
@@ -168,7 +168,8 @@ The dashboard accepts `PUT /api/policy` only from its own page on a loopback hos
 - `prompt`, `model`, `effort` and `fast`
 - `cwd` and `images` (screenshots, mockups)
 - `session_id` and `fork` to follow up in an earlier session
-- `idle_timeout_s` to override the two Codex output idle limits for one call
+- `stall: { silent_s, command_s, long_commands: [{ match, idle_s }] }` sets soft suspicion windows. Set command rules for full tests, training, backtests or big builds; call regexes precede policy rules (default full-test rule: 1800s).
+- `idle_timeout_s` sets both base windows for compatibility; explicit `stall` fields win. `task_result` wakes early on suspicion; `stall_after_s` sets the next window, otherwise each acknowledged wake doubles it. New output resets backoff.
 - `sandbox` or `auto`, `title`, and `timeout_s`
 - `checks`: commands run on the host after Codex (cmd.exe on Windows, `/bin/sh` elsewhere)
 - `structured: false` for a free-form answer instead of the JSON report
@@ -207,7 +208,8 @@ conflict.
 | `CODEX_DELEGATE_CONTRACT` | `true` | Append the working agreement to every brief. |
 | `CODEX_DELEGATE_CHECK_TIMEOUT` | `600` | Seconds per host check. |
 | `CODEX_DELEGATE_IDLE_TIMEOUT` | `600` | Seconds of Codex output silence when no command is in flight; `0` disables this detector. |
-| `CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT` | `1200` | Seconds of silence while a command is in flight; `0` disables this detector. |
+| `CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT` | `600` | Seconds of silence while a command is in flight; `0` disables this detector. |
+| `CODEX_DELEGATE_HARD_IDLE_TIMEOUT` | `3600` | Kill suspected background tasks with no output or task_result/task_list observation for this long; `0` disables. |
 | `CODEX_DELEGATE_CHECK_IDLE_TIMEOUT` | `300` | Seconds of host-check output silence; `0` disables this detector. |
 | `CODEX_DELEGATE_RUNS_DIR` | `~/.codex-delegate/runs` | Prompts, event logs, final messages, async task results. |
 | `CODEX_DELEGATE_FAST` | *(from config.toml)* | `true` or `false`: the default for `fast`. |

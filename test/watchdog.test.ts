@@ -1,3 +1,7 @@
+import { deriveHealth } from "../src/dashboard.ts";
+import { loadPolicy, validatePolicy } from "../src/policy.ts";
+import { loadPending } from "../src/pending.ts";
+import { commandThreshold } from "../src/watchdog.ts";
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -7,7 +11,7 @@ import { config } from "../src/config.ts";
 import { classifyError, runCodex, type CodexProgress } from "../src/codex.ts";
 import { runCheck } from "../src/checks.ts";
 import { delegate, formatOutcome } from "../src/delegate.ts";
-import { startTask, runningProgress } from "../src/tasks.ts";
+import { delegateSync, formatSuspicion, getTask, listTasks, waitTask, startTask, runningProgress } from "../src/tasks.ts";
 
 const root = mkdtempSync(join(tmpdir(), "cd-watchdog-"));
 const original = { ...config };
@@ -17,50 +21,144 @@ config.policyFile = join(root, "policy.json");
 after(() => { Object.assign(config, original); rmSync(root, { recursive: true, force: true }); });
 function mode(value: string) { config.codex = { cmd: process.execPath, args: [fixture, value] }; }
 function run(extra: Partial<Parameters<typeof runCodex>[0]> = {}) {
-  return runCodex({ prompt: "x", sandbox: "read-only", idleTimeoutMs: 1500, timeoutMs: 8000, cpuSampler: async () => false, ...extra });
+  return runCodex({ prompt: "x", sandbox: "read-only", idleTimeoutMs: 1500, timeoutMs: 8000, evidenceSampler: async () => ({ cpuDeltaMs: 42, descendantCount: 2 }), ...extra });
 }
 
-test("command stall records the command, timestamp, and live inflight item", async () => {
-  mode("command");
-  const progress: CodexProgress[] = [];
-  const result = await run({ onProgress: (p) => progress.push(p) });
-  assert.equal(result.exitKind, "stalled");
-  assert.equal(result.stalled, true);
-  assert.equal(result.stall?.kind, "command");
-  assert.equal(result.stall?.command, "python -m unittest hung");
-  assert(result.stall!.commandStartedAt! > 0);
-  assert(result.stall!.idleMs >= 1500);
-  assert.match(result.error!, /stalled: no codex output.*python -m unittest/);
-  assert(progress.some((p) => p.inflight?.id === "cmd-1" && p.codexPid && p.lastEventAt));
+test("command rules are case insensitive, first match wins, invalid regex is ignored", () => {
+  assert.deepEqual(commandThreshold("NPM TEST", 600, [{ match: "[", idle_s: 1 }, { match: "npm (run )?test", idle_s: 1800 }, { match: "npm", idle_s: 5 }]), { seconds: 1800, matchedRule: "npm (run )?test" });
+  assert.equal(commandThreshold("build", 600, [{ match: "[", idle_s: 1 }]).seconds, 600);
+  assert.equal(commandThreshold("pytest", 0, [{ match: "pytest", idle_s: 1800 }]).seconds, 0);
 });
 
-test("silent stall and CPU sampling failures are best effort", async () => {
-  mode("silent");
-  const result = await run({ cpuSampler: async () => { throw new Error("unavailable"); } });
-  assert.equal(result.stall?.kind, "silent");
-  assert.equal(result.ok, false);
+test("suspicions never kill and sampler failure still wakes", async () => {
+  for (const fails of [false, true]) {
+    mode("delayed");
+    const progress: CodexProgress[] = [];
+    const result = await run({ stall: { silent_s: 2, command_s: 0.1 }, onProgress: p => progress.push(p),
+      evidenceSampler: async () => { if (fails) throw Error("unavailable"); return { cpuDeltaMs: 42 }; } });
+    assert.equal(result.exitKind, "completed");
+    assert.equal(result.stalled, false);
+    const s = progress.find(p => p.suspicion)?.suspicion;
+    assert.equal(s?.command, "python -m unittest hung");
+    assert.equal(s?.wakes, 1);
+    assert(s!.idleMs >= 100);
+    assert.equal(s?.evidence.cpuDeltaMs, fails ? undefined : 42);
+    assert(progress.at(-1)?.suspicion === undefined);
+  }
 });
 
-test("a non-command in-flight item still uses the silent idle window", async () => {
-  mode("tool");
-  const result = await run();
-  assert.equal(result.exitKind, "stalled");
-  assert.equal(result.stall?.kind, "silent");
+test("silent and non-command items wake without CPU extensions", async () => {
+  for (const value of ["silent", "tool"]) {
+    mode(value);
+    let samples = 0;
+    let kind: string | undefined;
+    const result = await run({ idleTimeoutMs: 400, timeoutMs: 1100, evidenceSampler: async () => { samples++; return { cpuDeltaMs: 5000 }; },
+      onProgress: p => { if (p.suspicion) kind = p.suspicion.kind; } });
+    assert.equal(result.exitKind, "timeout");
+    assert.equal(kind, "silent");
+    assert.equal(samples, 1);
+  }
 });
 
-test("CPU activity extends once, bounded even when both samples are busy", async () => {
-  mode("command");
-  let samples = 0;
-  const result = await run({ cpuSampler: async () => { samples++; return true; } });
-  assert.equal(samples, 2);
-  assert.equal(result.exitKind, "stalled");
-  assert(result.stall!.idleMs >= 3000);
-});
-
-test("fresh stdout prevents idle confirmation", async () => {
-  mode("output");
-  const result = await run({ cpuSampler: async () => { throw new Error("should not need CPU samples"); } });
+test("fresh stdout resets suspicion and the backoff", async () => {
+  mode("reset");
+  const control = { lastObservedAt: Date.now() };
+  const wakes: number[] = [];
+  const result = await run({ idleTimeoutMs: 100, stallControl: control, onProgress: p => {
+    if (p.suspicion && wakes.length < 2) wakes.push(p.suspicion.wakes);
+  } });
   assert.equal(result.exitKind, "completed");
+  assert.deepEqual(wakes, [1, 1]);
+});
+
+test("sync hands off the same task and returns its full outcome after completion", async () => {
+  mode("delayed");
+  const command = `"${process.execPath}" -e "console.log('checked')"`;
+  const task = await delegateSync({ cwd: root, prompt: "x", sandbox: "read-only", stall: { command_s: 0.1 }, checks: [command] }, undefined, async () => ({ cpuDeltaMs: 100 }));
+  assert.equal(task.status, "running");
+  assert.equal(getTask(task.id), task);
+  assert(listTasks().includes(task));
+  assert.match(formatSuspicion(task), /^status: suspected_stall \(still running, not killed\)\nnext: judge from the evidence;/);
+  assert.match(formatSuspicion(task), /session_id: watchdog-session/);
+  await waitTask(task, 5, 5);
+  assert.equal(task.status, "done");
+  assert(task.outcome?.checks?.[0]?.ok);
+  assert.match(formatOutcome(task.outcome!), /host checks.*\n  PASS/s);
+  assert(task.outcome?.changes !== undefined || task.outcome?.result.toolCalls.length);
+});
+
+test("task_result wakes early, backoffs only on waiting, and accepts explicit next window", async () => {
+  mode("command");
+  const task = startTask({ cwd: root, prompt: "x", sandbox: "read-only", stall: { command_s: 0.1 } }, true, async () => ({}));
+  try {
+    const started = Date.now();
+    await waitTask(task, 5);
+    assert(Date.now() - started < 3000);
+    assert.equal(task.progress?.suspicion?.wakes, 1);
+    const first = task.progress!.suspicion!.suspectedAt;
+    await new Promise(r => setTimeout(r, 150));
+    await waitTask(task, 0);
+    assert.equal(task.progress?.suspicion?.suspectedAt, first);
+    await waitTask(task, 5);
+    assert.equal(task.progress?.suspicion?.wakes, 2);
+    assert.equal(task.progress?.suspicion?.thresholdSec, 0.2);
+    await waitTask(task, 5, 0.05);
+    assert.equal(task.progress?.suspicion?.wakes, 3);
+    assert.equal(task.progress?.suspicion?.thresholdSec, 0.05);
+    await waitTask(task, 0, 0);
+    assert.equal(task.progress?.suspicion, undefined);
+    await waitTask(task, 0.15);
+    assert.equal(task.progress?.suspicion, undefined);
+  } finally { task.controller.abort(); await task.promise; }
+});
+
+test("hard idle kills only unobserved suspected background tasks", async () => {
+  mode("command");
+  const old = config.hardIdleTimeoutSec;
+  config.hardIdleTimeoutSec = 0.25;
+  const task = startTask({ cwd: root, prompt: "x", sandbox: "read-only", stall: { command_s: 0.05 } }, true, async () => ({}));
+  try {
+    await waitTask(task, 5);
+    await new Promise(r => setTimeout(r, 150));
+    listTasks();
+    await new Promise(r => setTimeout(r, 150));
+    assert.equal(task.status, "running");
+    await task.promise;
+    assert.equal(task.outcome?.result.exitKind, "stalled");
+    assert.match(formatOutcome(task.outcome!), /next: codex hung/);
+  } finally { task.controller.abort(); await task.promise; config.hardIdleTimeoutSec = old; }
+});
+
+
+test("policy defaults survive partial overrides and call rules precede policy rules", () => {
+  const validated = validatePolicy({ stall: { command_s: 123 } }, []);
+  assert(validated.ok);
+  assert.equal(validated.policy.stall?.command_s, 123);
+  assert.equal(commandThreshold("NODE --TEST", 123, validated.policy.stall?.long_commands).seconds, 1800);
+  assert.equal(commandThreshold("NODE --TEST", 123, [{ match: "node", idle_s: 9 }, ...validated.policy.stall!.long_commands!]).seconds, 9);
+  assert(validatePolicy({ stall: { long_commands: [{ match: "[", idle_s: 3 }] } }, []).ok);
+  assert(!validatePolicy({ stall: { command_s: -1 } }, []).ok);
+});
+
+test("dashboard uses matched command windows and re-arm timestamps", () => {
+  const now = Date.now();
+  const run = { id: "test", startedAt: now - 900000, state: "running" as const,
+    lastEventAt: now - 800000, commandIdleTimeoutSec: 600,
+    inflight: { type: "command_execution", startedAt: now - 900000, command: "pytest" },
+    stallPolicy: loadPolicy().policy.stall };
+  assert.equal(deriveHealth(run, now), "quiet");
+  assert.equal(deriveHealth({ ...run, effectiveThresholdSec: 30, stallWindowSince: now - 1000 }, now), "active");
+});
+
+test("cancelling a converted editing run keeps Stop redirect pending semantics", async () => {
+  mode("command");
+  const cwd = join(root, "pending-work");
+  mkdirSync(cwd);
+  const task = await delegateSync({ cwd, prompt: "x", stall: { silent_s: 3, command_s: 0.1 } }, undefined, async () => ({}));
+  task.controller.abort();
+  await task.promise;
+  assert.equal(loadPending(cwd)?.sessionId, "watchdog-session");
+  assert.equal(loadPending(cwd)?.state, "interrupted");
 });
 
 test("zero idle override disables detection; hard timeout still works", async () => {

@@ -1,24 +1,49 @@
 # Run watchdog and dashboard contract
 
-New environment variables (integer seconds; `0` disables that idle detector):
+Version 0.6.0 uses soft Codex stall suspicions: they wake the lead and **never kill**.
 
 | Variable | Default | Applies to |
 | --- | ---: | --- |
-| `CODEX_DELEGATE_IDLE_TIMEOUT` | 600 | Codex stdout silence with no in-flight command |
-| `CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT` | 1200 | One in-flight command and no stdout |
-| `CODEX_DELEGATE_CHECK_IDLE_TIMEOUT` | 300 | Host check stdout/stderr silence |
+| `CODEX_DELEGATE_IDLE_TIMEOUT` | 600 | No output with no command in flight |
+| `CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT` | 600 | Command in flight with no output |
+| `CODEX_DELEGATE_HARD_IDLE_TIMEOUT` | 3600 | Suspected background task with neither output nor task_result/task_list observation for this long |
+| `CODEX_DELEGATE_CHECK_IDLE_TIMEOUT` | 300 | Host check stdout/stderr silence (still kills hung checks) |
 
-Both delegate tools accept `idle_timeout_s?: number` (nonnegative integer), overriding
-both Codex idle windows for that call. It does not override the host check idle window.
-The existing overall Codex/check deadlines remain independent.
+`0` disables the corresponding detector; a zero base command window also disables long-command rules. Total `timeout_s`, cancellation/Stop, and server shutdown still kill.
+Both delegate tools accept `stall?: { silent_s?: number, command_s?: number,
+long_commands?: { match: string, idle_s: number }[] }`. Seconds are nonnegative integers.
+Command rules are case-insensitive JS regexes, first match wins; invalid regexes are ignored.
+Call rules precede policy.json rules. The built-in policy matches
+`unittest discover|pytest|npm (run )?test|node --test` at 1800 seconds.
+`idle_timeout_s` remains compatible and sets both base windows; explicit stall fields win.
+Policy base windows fall back to the environment defaults. Host checks are unaffected.
 
-Before stopping an idle tree, the watchdog compares two cumulative tree CPU samples
-about five seconds apart. CPU activity buys one additional idle window; it cannot
-extend indefinitely. Sampling failures are treated as no observed CPU activity.
-Windows samples use one PowerShell Toolhelp snapshot plus .NET cumulative process
-CPU times per sample (no WMI/wmic dependency); POSIX samples use `ps`. Tests inject the sampler.
-Windows termination uses `taskkill /T`, with a bounded Toolhelp snapshot/Node kill
-fallback when the Windows token denies taskkill.
+A sync `delegate` returns `status: suspected_stall (still running, not killed)` and a
+`task_id`, session/run IDs, elapsed/idle time, command (up to 300 characters), threshold,
+matched rule and evidence. The same run continues in the background, including host
+checks, report parsing and diff counts. `task_result` returns that full normal outcome
+when it finishes. `task_cancel` on a converted editing run retains Stop-to-redirect pending
+session behavior in its cwd.
+
+`task_result(task_id, wait_s?, stall_after_s?)` returns early on suspicion. An unseen
+wake is delivered once; a subsequent positive wait acknowledges it and doubles that
+item's next window from the time waiting resumes. `stall_after_s` instead sets the
+current item's next window (0 disables until new output). Polling without waiting does
+not re-arm or repeatedly sample. Any new output event clears suspicion and backoff.
+Async tasks use identical wake semantics. Active waiters and task_result/task_list
+observations prevent the hard-idle orphan guard; an unobserved suspected background
+task is killed with `exitKind: "stalled"`, retaining the existing resume hint.
+
+CPU no longer automatically extends Codex windows. At suspicion, best-effort evidence
+includes process-tree CPU delta over a short sample, descendant count, and the busiest
+descendant's PID, name, CPU delta in milliseconds, and RSS/working set in bytes.
+Sampling failure still wakes the lead. Windows uses Toolhelp plus .NET (no WMI/wmic);
+POSIX uses `ps`. Host-check CPU extension behavior remains unchanged.
+
+Live meta adds `suspicion` (suspectedAt, wakes, thresholdSec, matchedRule, evidence,
+command/idle details), `effectiveThresholdSec`, `stallWindowSince`, `matchedRule` and `stallPolicy`.
+Existing fields remain compatible. Dashboard health uses the effective command rule
+and reports a pending suspicion as `stalled`; this health label does not mean killed.
 
 The following TypeScript shapes describe the JSON fields exactly. `?` fields are
 omitted when unavailable (never serialized as `undefined`). All numeric timestamps
@@ -144,13 +169,12 @@ by short `system` markers. Unknown metadata records are also kept as system mark
 
 Finished runs have `health: "ok"` (this is liveness, not success). Running runs are
 orphaned if their server PID is dead or a present heartbeat is older than 90 seconds.
-Otherwise health uses the current check's last output/start time, or the last Codex
-event: active below 120 seconds, quiet thereafter, stalled beyond the applicable
+Otherwise health uses the current check's last output/start time, or the current Codex suspicion window (last event, or the last acknowledged wake): active below 120 seconds, quiet thereafter, stalled beyond the applicable
 enabled idle deadline. A disabled idle deadline stays quiet. Legacy runs retain
 their existing log-mtime fallback.
 
 Metadata changes are coalesced to at most one write per two seconds while running,
-with a heartbeat every 15 seconds and immediate initial/final writes. Unchanged
+with a heartbeat every 15 seconds and immediate initial/final and suspicion transition writes. Unchanged
 snapshots are not written. Background `task_result` reads phase, elapsed minutes
 since the last Codex event, and the current command directly from task memory.
 

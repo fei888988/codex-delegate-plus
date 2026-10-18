@@ -4,12 +4,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { resolve } from "node:path";
 import { z } from "zod";
 import { config, configuredModel, SANDBOXES } from "./config.ts";
-import { delegate, formatOutcome } from "./delegate.ts";
+import { formatOutcome } from "./delegate.ts";
 import { listModels } from "./models.ts";
 import { loadPolicy, tierLabel, type Policy } from "./policy.ts";
 import { watchFile } from "node:fs";
 import { listSessions } from "./sessions.ts";
-import { getTask, runningProgress, listTasks, startTask, storedTask, waitTask, type Task } from "./tasks.ts";
+import { delegateSync, formatSuspicion, getTask, runningProgress, listTasks, startTask, storedTask, waitTask, type Task } from "./tasks.ts";
 import { installExitCleanup } from "./procs.ts";
 import pkg from "../package.json" with { type: "json" };
 
@@ -31,6 +31,7 @@ function effortParam(policy: Policy) {
   );
 }
 
+const STALL_DESCRIPTION = " When the brief includes long-running commands (full test suites, training, backtests, big builds), set stall.long_commands for them. A status: suspected_stall result means Codex is still running: inspect cheaply, then task_result to keep waiting or task_cancel.";
 const DELEGATE_DESCRIPTION =
   "Run a task with an OpenAI model through the Codex CLI (`codex exec`) and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass it as written rather than restating it. Put test/build commands in `checks`. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id. A result whose first line is `status: needs_decision` (or partial/blocked) is not finished: make the decisions yourself and resume the same session_id with them in this turn; ask the user only for choices that are really theirs.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.";
 const ASYNC_DESCRIPTION =
@@ -70,7 +71,12 @@ const delegateShape = {
     .optional()
     .describe(`Shorthand: false = read-only sandbox, for reading files, reviews and questions. Default: ${config.auto}. An explicit sandbox wins.`),
   title: z.string().optional().describe("Short label shown in task_list."),
-  idle_timeout_s: z.number().int().min(0).optional().describe("Override both codex idle timeouts in seconds; 0 disables idle detection."),
+  stall: z.object({
+    silent_s: z.number().int().min(0).optional(),
+    command_s: z.number().int().min(0).optional(),
+    long_commands: z.array(z.object({ match: z.string(), idle_s: z.number().int().min(0) })).optional(),
+  }).optional().describe("Soft suspicion windows in seconds (0 disables); first case-insensitive command regex wins, call rules before policy rules; invalid regex is ignored."),
+  idle_timeout_s: z.number().int().min(0).optional().describe("Compatibility: set both soft suspicion windows; explicit stall fields win; 0 disables."),
   timeout_s: z.number().int().positive().optional().describe(`Kill the run after this many seconds. Default: ${config.timeoutSec}.`),
   checks: z
     .array(z.string())
@@ -112,7 +118,7 @@ const delegateTool = server.registerTool(
   "delegate",
   {
     title: "Delegate a task to a Codex model",
-    description: withGuidance(DELEGATE_DESCRIPTION, loadPolicy().policy),
+    description: withGuidance(DELEGATE_DESCRIPTION + STALL_DESCRIPTION, loadPolicy().policy),
     inputSchema: delegateShape,
   },
   async (input, extra) => {
@@ -131,8 +137,10 @@ const delegateTool = server.registerTool(
         }, 15000)
       : undefined;
     try {
-      const outcome = await delegate(input, extra.signal);
-      return text(formatOutcome(outcome), !outcome.result.ok);
+      const task = await delegateSync(input, extra.signal);
+      if (task.status === "running") return text(formatSuspicion(task));
+      if (task.outcome) return text(formatOutcome(task.outcome), !task.outcome.result.ok);
+      return text(task.error ?? "delegate failed", true);
     } catch (e) {
       return text(String(e instanceof Error ? e.message : e), true);
     } finally {
@@ -146,7 +154,7 @@ function taskSummary(t: Task): string {
   const model = t.outcome?.model ?? t.input.model ?? "(default)";
   // A finished task whose report isn't "done" (needs_decision, partial, blocked) is waiting on the lead.
   const report = t.outcome?.report?.status;
-  const status = t.status === "done" && report && report !== "done" ? `${report} ← needs you` : t.status;
+  const status = t.status === "done" && report && report !== "done" ? `${report} ← needs you` : t.status === "running" && t.progress?.suspicion ? "suspected_stall" : t.status;
   return `${t.id}  ${status.padEnd(9)} ${secs}s  ${model}  ${t.input.title ?? t.input.prompt.slice(0, 60).replace(/\s+/g, " ")}`;
 }
 
@@ -154,7 +162,7 @@ const asyncTool = server.registerTool(
   "delegate_async",
   {
     title: "Start a Codex task in the background",
-    description: withGuidance(ASYNC_DESCRIPTION, loadPolicy().policy),
+    description: withGuidance(ASYNC_DESCRIPTION + STALL_DESCRIPTION, loadPolicy().policy),
     inputSchema: delegateShape,
   },
   async (input) => {
@@ -167,14 +175,15 @@ server.registerTool(
   "task_result",
   {
     title: "Get a background Codex task's result",
-    description: "Return the status/result of a delegate_async task, optionally waiting up to wait_s seconds for it to finish.",
+    description: "Return a background task result; wait_s waits for completion or returns early on suspected stall. stall_after_s sets the next window for the current item; otherwise each acknowledged wake doubles it.",
     inputSchema: {
       task_id: z.string(),
+      stall_after_s: z.number().int().min(0).optional().describe("Next suspicion window for the current item in seconds; 0 disables until new output."),
       wait_s: z.number().int().min(0).max(3600).optional().describe("Seconds to wait for completion before returning (default 0)."),
     },
     annotations: { readOnlyHint: true },
   },
-  async ({ task_id, wait_s }) => {
+  async ({ task_id, wait_s, stall_after_s }) => {
     const t = getTask(task_id);
     if (!t) {
       const s = storedTask(task_id);
@@ -182,7 +191,8 @@ server.registerTool(
       if (s.status === "interrupted") return text(`task: ${s.id} (interrupted)\nthe server that ran it exited before it finished; re-run it (check git status first).`, true);
       return text(`task: ${s.id} (${s.status})\n${s.text ?? ""}`, s.status !== "done");
     }
-    await waitTask(t, wait_s ?? 0);
+    await waitTask(t, wait_s ?? 0, stall_after_s);
+    if (t.status === "running" && t.progress?.suspicion) return text(formatSuspicion(t));
     if (t.status === "running") return text(`${taskSummary(t)}\n${runningProgress(t)}\nstill running — call again later or with a larger wait_s.`);
     if (t.outcome) return text(`task: ${t.id} (${t.status})\n${formatOutcome(t.outcome)}`, t.status !== "done");
     return text(`task: ${t.id} (${t.status})\nerror: ${t.error}`, true);
@@ -249,8 +259,8 @@ watchFile(config.policyFile, { interval: 2000, persistent: false }, () => {
   const { policy, error } = loadPolicy();
   if (error) console.error(`codex-delegate: ${error}`);
   const paramsSchema = { ...delegateShape, effort: effortParam(policy) };
-  delegateTool.update({ description: withGuidance(DELEGATE_DESCRIPTION, policy), paramsSchema });
-  asyncTool.update({ description: withGuidance(ASYNC_DESCRIPTION, policy), paramsSchema });
+  delegateTool.update({ description: withGuidance(DELEGATE_DESCRIPTION + STALL_DESCRIPTION, policy), paramsSchema });
+  asyncTool.update({ description: withGuidance(ASYNC_DESCRIPTION + STALL_DESCRIPTION, policy), paramsSchema });
 });
 
 await server.connect(new StdioServerTransport());

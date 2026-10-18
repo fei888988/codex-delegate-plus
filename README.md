@@ -29,7 +29,7 @@ Claude ▸ 查看精简报告和主机测试结果，抽查差异并汇报
 - 取消、超时或进程退出时终止整个子进程树；同一目录一次只允许一个写入任务；异步结果会持久化到磁盘。
 - 停止后可重定向任务：停止委派并修改要求后，同一目录里的下一次 `delegate` 会在原 Codex 会话上继续，保留上下文和已有的部分改动。使用 `fresh: true` 可改为全新会话。记录保存在 `<runs dir>/pending/`。
 - 实时运行观测：仪表板显示近 14 天活动、Codex 运行时间线、进度和健康状态（`active`、`quiet`、`stalled`、`orphaned`）。
-- 空闲看门狗：分别设置 Codex 输出、正在执行的命令和主机检查的无输出期限；终止前会短暂采样整个进程树的 CPU 活动，避免把仍在工作的任务误判为卡住。
+- Codex 空闲期限只唤醒 Claude，返回 `status: suspected_stall` 和进程证据，任务继续运行；用 `task_result` 继续等或 `task_cancel` 停止。主机检查的空闲终止机制不变。
 
 ## 工作原理
 
@@ -140,7 +140,8 @@ claude mcp add codex -s user -- node /path/to/codex-delegate-plus/dist/index.js
 - `prompt`、`model`、`effort` 和 `fast`
 - `cwd` 和 `images`（截图、模型图等）
 - `session_id` 和 `fork`，用于继续已有会话
-- `idle_timeout_s`，覆盖本次调用的两个 Codex 输出空闲时限
+- `stall: { silent_s, command_s, long_commands: [{ match, idle_s }] }` 设置软怀疑期限；完整测试、训练、回测、大构建应配置命令规则。调用规则优先于 policy.json，默认完整测试规则为 1800 秒。
+- `idle_timeout_s` 兼容设置两个基础期限，显式 `stall` 字段优先。`task_result` 在怀疑卡住时提前返回；`stall_after_s` 设置下一窗口，否则每次确认后继续等待将窗口翻倍，新输出重置。
 - `sandbox` 或 `auto`、`title` 和 `timeout_s`
 - `checks`：Codex 完成后由主机运行的命令
 - `structured: false`：不使用 JSON 报告，改为自由格式回答
@@ -176,7 +177,8 @@ claude mcp add codex -s user -- node /path/to/codex-delegate-plus/dist/index.js
 | `CODEX_DELEGATE_CONTRACT` | `true` | 是否将工作约定追加到每份任务说明。 |
 | `CODEX_DELEGATE_CHECK_TIMEOUT` | `600` | 每条主机检查命令的最长运行秒数。 |
 | `CODEX_DELEGATE_IDLE_TIMEOUT` | `600` | Codex 没有正在执行的命令时，允许标准输出静默的秒数；`0` 表示禁用。 |
-| `CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT` | `1200` | 命令执行期间允许无输出的秒数；`0` 表示禁用。 |
+| `CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT` | `600` | 命令执行期间允许无输出的秒数；`0` 表示禁用。 |
+| `CODEX_DELEGATE_HARD_IDLE_TIMEOUT` | `3600` | 后台疑似卡住任务既无输出又无人调用 task_result/task_list 达到此期限才终止；`0` 禁用。 |
 | `CODEX_DELEGATE_CHECK_IDLE_TIMEOUT` | `300` | 主机检查命令允许无输出的秒数；`0` 表示禁用。 |
 | `CODEX_DELEGATE_RUNS_DIR` | `~/.codex-delegate/runs` | 保存任务说明、事件日志、最终消息和异步任务结果的目录。 |
 | `CODEX_DELEGATE_FAST` | 来自 `config.toml` | 默认 `fast` 值。 |

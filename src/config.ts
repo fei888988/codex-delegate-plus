@@ -143,7 +143,8 @@ export const config = {
   timeoutSec: int(process.env.CODEX_DELEGATE_TIMEOUT, 1800),
   checkTimeoutSec: int(process.env.CODEX_DELEGATE_CHECK_TIMEOUT, 600),
   idleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_IDLE_TIMEOUT, 600),
-  commandIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT, 1200),
+  commandIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT, 600),
+  hardIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_HARD_IDLE_TIMEOUT, 3600),
   checkIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_CHECK_IDLE_TIMEOUT, 300),
   // What goes back into the caller's context. The full event log stays on disk.
   maxOutputChars: int(process.env.CODEX_DELEGATE_MAX_OUTPUT, 6000),

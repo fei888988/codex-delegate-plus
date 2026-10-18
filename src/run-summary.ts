@@ -1,3 +1,5 @@
+import type { StallPolicy } from "./watchdog.ts";
+import type { Suspicion } from "./codex.ts";
 import type { CheckResult } from "./checks.ts";
 import type { RunResult } from "./codex.ts";
 import type { Sandbox } from "./config.ts";
@@ -22,6 +24,11 @@ export interface RunSummary {
   errorKind?: RunResult["errorKind"];
   stall?: RunResult["stall"];
   checksStartedAt?: number;
+  suspicion?: Suspicion;
+  stallWindowSince?: number;
+  effectiveThresholdSec?: number;
+  matchedRule?: string;
+  stallPolicy?: StallPolicy;
   idleTimeoutSec?: number;
   commandIdleTimeoutSec?: number;
   checkIdleTimeoutSec?: number;
