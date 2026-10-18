@@ -1,6 +1,6 @@
 {
   "name": "claude-codex-delegate",
-  "version": "0.7.1",
+  "version": "0.10.0",
   "description": "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna…) while staying the orchestrator.",
   "type": "module",
   "license": "MIT",
@@ -13,7 +13,7 @@
   "scripts": {
     "start": "node src/index.ts",
     "dashboard": "node src/dashboard.ts",
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --banner:js=\"import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\"",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --banner:js=\"import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\" && node -e \"require('node:fs').copyFileSync('src/longrun.mjs','dist/longrun.mjs')\"",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts",
     "check": "npm run typecheck && npm test && npm run build"

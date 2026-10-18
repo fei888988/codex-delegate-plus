@@ -19,6 +19,7 @@ const fixture = join(import.meta.dirname, "fixtures", "watchdog-codex.mjs");
 config.runsDir = join(root, "runs");
 config.policyFile = join(root, "policy.json");
 after(() => { Object.assign(config, original); rmSync(root, { recursive: true, force: true }); });
+config.engine = "exec";
 function mode(value: string) { config.codex = { cmd: process.execPath, args: [fixture, value] }; }
 function run(extra: Partial<Parameters<typeof runCodex>[0]> = {}) {
   return runCodex({ prompt: "x", sandbox: "read-only", idleTimeoutMs: 1500, timeoutMs: 8000, evidenceSampler: async () => ({ cpuDeltaMs: 42, descendantCount: 2 }), ...extra });
@@ -236,6 +237,10 @@ test("delegate metadata and in-memory tasks expose codex/checks/done phases", as
   for (const errorKind of ["quota", "auth", "network", "rate_limit"] as const) {
     const text = formatOutcome({ ...outcome, result: { ...outcome.result, ok: false, exitKind: "api_error", errorKind } });
     assert.match(text, new RegExp(`^status: error \\(api_error/${errorKind}\\)\\nnext: `));
-    assert(text.includes(errorKind === "quota" || errorKind === "auth" ? "environment problem: tell the user, don't take over" : "transient: retry once with the same session_id"));
+    assert(text.includes({ quota: "codex is out of quota", auth: "codex is not logged in" }[errorKind as string] ?? "transient: retry once with the same session_id"));
+    if (errorKind === "quota" || errorKind === "auth") assert.match(text, /STOP/);
   }
+  const quota = formatOutcome({ ...outcome, result: { ...outcome.result, ok: false, exitKind: "api_error", errorKind: "quota",
+    error: "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro) or try again at 10:57 PM." } });
+  assert.match(quota, /out of quota until 10:57 PM\. STOP now: do not continue the delegated work yourself, do not sleep or poll/);
 });

@@ -32,7 +32,7 @@ before(async () => {
   spawnSync("git", ["init", "-q"], { cwd: dir });
   server = spawn(process.execPath, [join(import.meta.dirname, "..", "src", "index.ts")], {
     cwd: dir,
-    env: { ...process.env, CODEX_BIN: join(import.meta.dirname, "fixtures", "fake-codex.mjs"), CODEX_DELEGATE_RUNS_DIR: join(dir, "runs"), CODEX_DELEGATE_POLICY: join(dir, "policy.json") },
+    env: { ...process.env, CODEX_BIN: join(import.meta.dirname, "fixtures", "fake-codex.mjs"), CODEX_DELEGATE_ENGINE: "exec", CODEX_DELEGATE_RUNS_DIR: join(dir, "runs"), CODEX_DELEGATE_POLICY: join(dir, "policy.json") },
   });
   let buf = "";
   server.stdout.setEncoding("utf8").on("data", (d: string) => {
@@ -127,7 +127,7 @@ test("cancelling a tool call (the Stop button) kills the codex process", async (
 async function busyServer() {
   const other = spawn(process.execPath, [join(import.meta.dirname, "..", "src", "index.ts")], {
     cwd: dir,
-    env: { ...process.env, CODEX_BIN: join(import.meta.dirname, "fixtures", "fake-codex.mjs"), CODEX_DELEGATE_RUNS_DIR: join(dir, "runs"), CODEX_DELEGATE_POLICY: join(dir, "policy.json") },
+    env: { ...process.env, CODEX_BIN: join(import.meta.dirname, "fixtures", "fake-codex.mjs"), CODEX_DELEGATE_ENGINE: "exec", CODEX_DELEGATE_RUNS_DIR: join(dir, "runs"), CODEX_DELEGATE_POLICY: join(dir, "policy.json") },
   });
   const send = (m: object) => other.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...m })}\n`);
   send({ id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t2", version: "1" } } });

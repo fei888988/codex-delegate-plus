@@ -8,6 +8,7 @@ import { after, before, test } from "node:test";
 // config.ts reads the environment at import time, so set it up before loading the modules.
 const runs = mkdtempSync(join(tmpdir(), "cd-runs-"));
 process.env.CODEX_BIN = join(import.meta.dirname, "fixtures", "fake-codex.mjs");
+process.env.CODEX_DELEGATE_ENGINE = "exec";
 process.env.CODEX_DELEGATE_RUNS_DIR = runs;
 process.env.CODEX_DELEGATE_POLICY = join(runs, "policy.json");
 const { delegate, formatOutcome } = await import("../src/delegate.ts");
@@ -165,7 +166,7 @@ test("the policy file is read per call: custom tiers, guidance and the model all
     const o = await delegate({ cwd: repo, prompt: "x", effort: "cheap", fresh: true });
     assert.equal(o.model, "gpt-6-luna");
     assert.equal(o.effort, "low");
-    assert.match(promptOf(), /SPEND LITTLE\n\nCommand logs/);
+    assert.match(promptOf(), /SPEND LITTLE\n\nLong commands \(added by the server\)/);
     await assert.rejects(delegate({ cwd: repo, prompt: "x", effort: "cheap", model: "gpt-6.1-sol", fresh: true }), /not allowed by the delegation policy/);
     writeFileSync(file, "{ broken");
     const fallback = await delegate({ cwd: repo, prompt: "x", effort: "luna-xhigh", fresh: true });
@@ -215,7 +216,9 @@ test("denials lead the result and are carried into resumed prompts; successful l
   const next = await delegate({ cwd: repo, prompt: "fix it", session_id: first.result.sessionId });
   const prompt = readFileSync(join(next.runDir!, "prompt.md"), "utf8");
   assert.match(prompt, /^Previous attempt diagnosis\nexit: completed; denied paths: D:\/outside/);
-  assert.match(prompt, /Command logs \(added by the server\)/);
+  assert.match(prompt, /Long commands \(added by the server\): run every command .* through the launcher/);
+  assert.match(prompt, /node ".+longrun\.mjs" ".+" run <n> -- <program>/);
+  assert(existsSync(join(next.runDir!, "longrun.mjs")), "the launcher is installed in the run directory");
 });
 
 test("inflight trend sampler persists a ring; inspect is read-only and wake includes logs", async (t) => {

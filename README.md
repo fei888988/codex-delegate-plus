@@ -132,7 +132,12 @@ claude mcp add codex -s user -- node /path/to/codex-delegate-plus/dist/index.js
 | `list_models` | 列出账号可用的 Codex 模型和推理强度；可选传入 `filter`。 |
 | `delegate` | 执行任务并等待完成。返回报告、`session_id`、token 用量、各文件 Git 改动和主机检查结果。 |
 | `delegate_async` | 与 `delegate` 相同，但会立即返回 `task_id`。适合长任务和并行委派。 |
-| `task_result` / `task_list` / `task_cancel` | 获取任务结果（可传 `wait_s`）、列出任务或停止后台任务。 |
+| `task_result` / `task_list` / `task_cancel` | 获取任务结果（可传 `wait_s`）、列出任务或停止后台任务（先发 `turn/interrupt`，会话可继续）。 |
+| `task_steer` | 给运行中的任务追加指令（App Server 的 `turn/steer`）。默认 Codex 在下一步读取，保留上下文和已做的改动。`now: true` 立刻打断 Codex 的思考让它读指令，但它通过启动器跑的长命令**继续运行**；插话里说明要不要停、先查什么。Codex 必须对这条命令负责（等它跑完或停掉），结束时还在跑的会被提醒两次，仍不处理则由服务器停掉并在结果里标为"被遗忘"。`kill: true` 连长命令一起停。要整个停掉用 `task_cancel`。 |
+
+长命令启动器：服务器给每次运行放一个 `longrun.mjs`，并要求 Codex 用它跑超过约 1 分钟的命令（`node longrun.mjs <runDir> run <n> -- 程序 参数…`）。它和直接运行一样阻塞并输出，另外把输出写到 `cmd-<n>.log`、末尾写 `EXIT=<退出码>`，并让命令脱离 Codex 的进程树，所以打断 Codex 不会连带杀掉它。`status` / `wait` / `stop <n>` 用于查看、重新等待、停止。运行结束时没人处理的长命令一律由服务器停止并报告。
+
+`checkpoints: true`（`delegate` / `delegate_async`）：长任务里 Codex 在可能改变方向的节点（调查完准备动手、发现与需求矛盾、耗时或难回退的步骤之前）把阶段报告写到运行目录的 `checkpoint-<n>.md`，然后继续干活。服务器约每 2 秒检查一次，新报告一出现，`delegate` 或带 `wait_s` 的 `task_result` 就提前返回 `status: checkpoint` 和报告内容；Claude 看完决定继续等（`task_result`）还是插话（`task_steer`）。同步 `delegate` 因此也能在节点上插话。
 | `list_sessions` | 列出指定目录的近期 Codex 会话，便于继续已有会话。 |
 
 `delegate` 和 `delegate_async` 支持这些参数：
@@ -164,6 +169,8 @@ claude mcp add codex -s user -- node /path/to/codex-delegate-plus/dist/index.js
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `CODEX_BIN` | 自动检测 | Codex 可执行文件路径。 |
+| `CODEX_DELEGATE_CHECKPOINT_POLL_MS` | `2000` | 检查新阶段报告文件的间隔（毫秒）。 |
+| `CODEX_DELEGATE_ENGINE` | `app-server` | 执行引擎。`app-server` 通过 JSON-RPC 驱动 Codex，支持 `task_steer` 插话；`exec` 回退到一次性的 `codex exec --json`（不能插话）。 |
 | `CODEX_HOME` | `~/.codex` | 模型缓存和会话目录；与 Codex 本身使用的变量相同。 |
 | `CODEX_DELEGATE_DEFAULT_MODEL` | 来自 `config.toml` | 未指定 `model` 时使用的模型；未设置时读取 `config.toml`。 |
 | `CODEX_DELEGATE_READ_MODEL` | 与默认模型相同 | 只读任务未指定 `model` 时使用的模型。 |

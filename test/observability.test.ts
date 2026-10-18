@@ -26,6 +26,10 @@ test("sandbox mapping: write and legacy choices follow the toggle, explicit sand
   assert.equal(effectiveSandbox("write", false, false), "danger-full-access");
   assert.equal(effectiveSandbox("read-only", true, true), "read-only");
   assert.deepEqual(buildArgs({ prompt: "x", sandbox: "workspace-write", addDirs: ["D:/run", "D:/other"] }).slice(-6), ["--add-dir", "D:/run", "--add-dir", "D:/other", "--", "-"]);
+  // `exec resume` rejects --add-dir (run 20261018T110048 crashed on it).
+  const resumed = buildArgs({ prompt: "x", sessionId: "s", sandbox: "workspace-write", addDirs: ["D:/run"] });
+  assert(!resumed.includes("--add-dir"));
+  assert(resumed.includes(`sandbox_workspace_write.writable_roots=["D:/run"]`));
 });
 
 test("old policies default sandbox off, retention merges and rejects invalid values", () => {

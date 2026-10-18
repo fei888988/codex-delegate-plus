@@ -64,10 +64,11 @@ export function logReport(dir: string, maxBytes = 1500): string {
 export function trimCommandLogs(dir: string, maxMB: number) {
   for (const log of commandLogs(dir)) if (log.bytes > maxMB * 1024 * 1024) writeFileSync(log.file, tailFile(log.file, Math.floor(maxMB * 1024 * 1024)));
 }
-export function finishCommandLogs(dir: string, success: boolean): Record<string, string> | undefined {
+/** `keep`: logs the result points the lead to (commands kept across a redirect) are not removed. */
+export function finishCommandLogs(dir: string, success: boolean, keep: string[] = []): Record<string, string> | undefined {
   if (!success) return undefined;
   const tails: Record<string, string> = {};
-  for (const log of commandLogs(dir)) { tails[log.name] = tailFile(log.file, 2048); rmSync(log.file); }
+  for (const log of commandLogs(dir)) { tails[log.name] = tailFile(log.file, 2048); if (!keep.includes(log.name)) rmSync(log.file); }
   return tails;
 }
 

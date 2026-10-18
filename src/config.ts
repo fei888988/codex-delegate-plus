@@ -122,8 +122,12 @@ export function clampEffort(effort: string | undefined, allowed: string[] | unde
   return rank > Math.max(...ranks) ? allowed.at(-1) : allowed[0];
 }
 
+/** `app-server` drives codex over JSON-RPC (steerable turns); `exec` is the one-shot `codex exec --json`. */
+export type Engine = "app-server" | "exec";
+
 export const config = {
   codex: resolveCodex(),
+  engine: (process.env.CODEX_DELEGATE_ENGINE === "exec" ? "exec" : "app-server") as Engine,
   // Levels the lead may choose from; anything else is clamped into this range.
   efforts: allowedEfforts(process.env.CODEX_DELEGATE_EFFORTS),
   codexHome,
@@ -146,6 +150,8 @@ export const config = {
   commandIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT, 600),
   hardIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_HARD_IDLE_TIMEOUT, 3600),
   checkIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_CHECK_IDLE_TIMEOUT, 300),
+  // How often a run with checkpoints looks for new checkpoint-<n>.md files.
+  checkpointPollMs: int(process.env.CODEX_DELEGATE_CHECKPOINT_POLL_MS, 2000),
   // What goes back into the caller's context. The full event log stays on disk.
   maxOutputChars: int(process.env.CODEX_DELEGATE_MAX_OUTPUT, 6000),
   runsDir: process.env.CODEX_DELEGATE_RUNS_DIR || join(homedir(), ".codex-delegate", "runs"),

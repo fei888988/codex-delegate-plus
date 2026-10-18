@@ -1,14 +1,17 @@
 import { extractDenials, type Denials, type CommandTiming } from "./observability.ts";
 import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, readFileSync } from "node:fs";
+import { APP_SERVER_ARGS, AppServerTurn, type LiveTurn, type RateLimits, type SteerRecord } from "./appserver.ts";
 import { config, type Sandbox } from "./config.ts";
+import type { KeptCommand } from "./longruns.ts";
 import { stop, track } from "./procs.ts";
 import { softWatchdog, commandThreshold, type StallPolicy, type CpuEvidence, type EvidenceSampler } from "./watchdog.ts";
 
 export interface InflightItem { id: string; type: string; command?: string; startedAt: number }
 export interface Suspicion extends Stall { suspectedAt: number; wakes: number; thresholdSec: number; matchedRule?: string; evidence: CpuEvidence }
-export interface StallControl { evidenceSampler?: EvidenceSampler; rearm?: (seconds?: number) => void; background?: boolean; lastObservedAt: number; waiting?: number }
-export interface CodexProgress { commands?: CommandTiming[]; denials?: Denials; stallWindowSince?: number; suspicion?: Suspicion; effectiveThresholdSec?: number; matchedRule?: string; codexPid?: number; lastEventAt: number; inflight?: InflightItem }
+/** `live` is set while an app-server turn runs, so task_steer / task_cancel can reach it. */
+export interface StallControl { evidenceSampler?: EvidenceSampler; rearm?: (seconds?: number) => void; background?: boolean; lastObservedAt: number; waiting?: number; live?: LiveTurn }
+export interface CodexProgress { commands?: CommandTiming[]; denials?: Denials; stallWindowSince?: number; suspicion?: Suspicion; effectiveThresholdSec?: number; matchedRule?: string; codexPid?: number; lastEventAt: number; inflight?: InflightItem; turnId?: string; steers?: SteerRecord[]; kept?: KeptCommand[] }
 export interface Stall { kind: "silent" | "command"; idleMs: number; command?: string; commandStartedAt?: number }
 export type ExitKind = "completed" | "timeout" | "stalled" | "cancelled" | "crashed" | "api_error";
 export type ErrorKind = "quota" | "rate_limit" | "auth" | "network" | "context" | "other";
@@ -49,6 +52,8 @@ export interface RunOptions {
   outputSchemaFile?: string;
   /** Raw `--json` event stream, kept for later inspection instead of being returned. */
   logFile?: string;
+  /** The run directory (command logs, longrun.mjs); app-server keeps launcher commands across a redirect. */
+  runDir?: string;
   /** Called once, as soon as codex reports the session (thread) id. */
   onSession?: (id: string) => void;
   /** Called with the codex process id right after it starts. */
@@ -88,6 +93,12 @@ export interface RunResult {
   exitKind: ExitKind;
   errorKind?: ErrorKind;
   durationMs: number;
+  /** App-server only: lead messages sent into the running turn. */
+  steers?: SteerRecord[];
+  /** App-server only: the account's latest usage window. */
+  rateLimits?: RateLimits;
+  /** App-server only: long commands kept running across a redirect, and what became of them. */
+  kept?: KeptCommand[];
 }
 
 const toml = (v: string) => JSON.stringify(v);
@@ -108,7 +119,9 @@ export function buildArgs(o: RunOptions): string[] {
   if (o.fast !== undefined) args.push("-c", `service_tier=${toml(o.fast ? "priority" : "default")}`);
   if (o.lastMessageFile) args.push("-o", o.lastMessageFile);
   if (o.outputSchemaFile) args.push("--output-schema", o.outputSchemaFile);
-  for (const dir of o.addDirs ?? []) args.push("--add-dir", dir);
+  // `exec resume` rejects --add-dir; the same writable roots go through config there.
+  if (o.sessionId && o.addDirs?.length) args.push("-c", `sandbox_workspace_write.writable_roots=[${o.addDirs.map(toml).join(",")}]`);
+  else for (const dir of o.addDirs ?? []) args.push("--add-dir", dir);
   for (const img of o.images ?? []) args.push("-i", img);
   // The prompt goes through stdin ("-"): no argv length limit (Windows caps a command line at ~32K)
   // and the brief doesn't show up in process listings. "--" ends -i's list of files.
@@ -188,6 +201,10 @@ export class EventCollector {
       case "turn.failed":
         this.error(e.error?.message ?? e.error);
         break;
+      case "turn.redirected":
+        // The interrupted turn's commands never complete; they must not hold the stall window.
+        this.inflight.clear();
+        break;
       case "error":
         this.error(e.message);
         break;
@@ -251,8 +268,9 @@ function readFinal(file: string | undefined): string | undefined {
 export function runCodex(o: RunOptions): Promise<RunResult> {
   const started = Date.now();
   const collector = new EventCollector();
+  const appServer = config.engine === "app-server";
   return new Promise((resolve) => {
-    const child = spawn(config.codex.cmd, [...config.codex.args, ...buildArgs(o)], {
+    const child = spawn(config.codex.cmd, [...config.codex.args, ...(appServer ? APP_SERVER_ARGS : buildArgs(o))], {
       cwd: o.cwd,
       env: { ...process.env, ...o.env },
       stdio: ["pipe", "pipe", "pipe"],
@@ -266,11 +284,20 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
         o.onSpawn?.(child.pid);
       } catch {}
     }
-    // The brief is read from stdin; closing it is also what tells codex the prompt is complete.
     child.stdin.on("error", () => {});
-    child.stdin.end(o.prompt);
     const log = o.logFile ? createWriteStream(o.logFile) : undefined;
     log?.on("error", () => {});
+    // exec: the brief is read from stdin; closing it is also what tells codex the prompt is complete.
+    // app-server: stdin carries JSON-RPC; the turn's events are translated into exec event lines.
+    let exitTimer: ReturnType<typeof setTimeout> | undefined;
+    const turn = appServer ? new AppServerTurn(child, o, {
+      emit: (event) => { const line = JSON.stringify(event); log?.write(`${line}\n`); collector.push(line); alive(); },
+      activity: () => { collector.lastEventAt = Date.now(); alive(); },
+      // Codex is done with the turn: let the server exit, and make sure it does.
+      done: () => { child.stdin.end(); exitTimer ??= setTimeout(() => stop(child), 5000); exitTimer.unref?.(); },
+    }) : undefined;
+    if (!turn) child.stdin.end(o.prompt);
+    if (turn && o.stallControl) o.stallControl.live = turn;
     let buf = "";
     let stderr = "";
     let timedOut = false;
@@ -284,8 +311,11 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
     const progress = () => {
       try { o.onProgress?.({ commands: [...collector.commands], denials: collector.denials, codexPid: child.pid, lastEventAt: collector.lastEventAt,
         inflight: [...collector.inflight.values()].find(it => it.type === "command_execution") ?? collector.inflight.values().next().value,
-        suspicion, stallWindowSince: idleWindow().since, effectiveThresholdSec: idleWindow().timeoutMs / 1000, matchedRule: selectedRule() }); } catch {}
+        suspicion, stallWindowSince: idleWindow().since, effectiveThresholdSec: idleWindow().timeoutMs / 1000, matchedRule: selectedRule(),
+        turnId: turn?.turnId, steers: turn?.steers.length ? [...turn.steers] : undefined, kept: turn?.kept.length ? turn.kept : undefined }); } catch {}
     };
+    // New output resets the stall window.
+    const alive = () => { suspicion = undefined; wakes = 0; threshold = undefined; windowSince = undefined; watchdog.touch(); progress(); announce(); };
     let announced = false;
     const announce = () => {
       if (announced || !collector.sessionId) return;
@@ -299,6 +329,13 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
       watchdog.dispose();
       if (timer) clearTimeout(timer);
       stop(child);
+    };
+    // A Stop interrupts the turn first, so codex records it cleanly and the session resumes well.
+    const cancel = () => {
+      if (!turn || turn.finished || !turn.turnId) return kill();
+      watchdog.dispose();
+      void turn.interrupt();
+      exitTimer ??= setTimeout(kill, 5000);
     };
     const command = () => [...collector.inflight.values()].find(it => it.type === "command_execution");
     const selection = () => commandThreshold(command()?.command ?? "", o.stall?.command_s ?? (o.idleTimeoutMs === undefined ? config.commandIdleTimeoutSec : o.idleTimeoutMs / 1000), o.stall?.long_commands);
@@ -335,35 +372,43 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
           kill();
         }, o.timeoutMs)
       : undefined;
-    o.signal?.addEventListener("abort", kill, { once: true });
+    o.signal?.addEventListener("abort", cancel, { once: true });
     if (o.signal?.aborted) kill();
 
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-      log?.write(chunk);
+      if (!turn) log?.write(chunk);
       buf += chunk;
       let i: number;
       let sawLine = false;
       while ((i = buf.indexOf("\n")) >= 0) {
         sawLine = true;
-        collector.push(buf.slice(0, i));
+        const line = buf.slice(0, i);
+        if (turn) turn.line(line);
+        else collector.push(line);
         buf = buf.slice(i + 1);
       }
-      if (sawLine) { suspicion = undefined; wakes = 0; threshold = undefined; windowSince = undefined; watchdog.touch(); progress(); }
-      announce();
+      if (sawLine && !turn) alive();
     });
+    if (turn && !o.signal?.aborted) void turn.run();
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
       stderr = (stderr + chunk).slice(-8000);
     });
 
+    const stderrTail = () => stderr.split("\n")
+      .filter((l) => l.trim() && !l.startsWith("Reading additional input") && !/unrecognized configuration|is ignored\.$/.test(l))
+      .slice(-5).join("\n");
     const finish = (exitCode: number | null, spawnError?: string) => {
       if (settled) return;
       settled = true;
       clearInterval(orphanTimer);
+      clearTimeout(exitTimer);
       if (control) control.rearm = undefined;
       watchdog.dispose();
-      o.signal?.removeEventListener("abort", kill);
+      o.signal?.removeEventListener("abort", cancel);
       if (timer) clearTimeout(timer);
-      if (buf) collector.push(buf);
+      if (buf) turn ? turn.line(buf) : collector.push(buf);
+      // The turn object stays readable on `live` (steers, finished) until the task is collected.
+      if (turn) turn.finished = true;
       progress();
       announce();
       if (stderr.trim()) log?.write(`\n# stderr (tail)\n${stderr}\n`);
@@ -373,24 +418,22 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
       if (timedOut) errors.push(`timed out after ${Math.round((o.timeoutMs ?? 0) / 1000)}s`);
       else if (o.signal?.aborted) errors.push("cancelled");
       if (stall) errors.push(`stalled: no codex output for ${Math.round(stall.idleMs / 60000)}m${stall.command ? ` while running: ${stall.command.slice(0, 200)}` : " (model silent)"}`);
-      if (exitCode && !errors.length) {
-        const tail = stderr
-          .split("\n")
-          .filter((l) => l.trim() && !l.startsWith("Reading additional input"))
-          .slice(-5)
-          .join("\n");
-        errors.push(tail || `exit code ${exitCode}`);
-      }
+      // app-server: after turn.completed the exit code is ours (stdin closed or the fallback stop).
+      if (exitCode && !errors.length && !(turn && collector.turns)) errors.push(stderrTail() || `exit code ${exitCode}`);
       const exitKind: ExitKind = timedOut ? "timeout" : stall ? "stalled" : o.signal?.aborted ? "cancelled"
         : spawnError ? "crashed" : collector.errors.length ? "api_error"
-        : exitCode !== 0 || !collector.turns ? "crashed" : "completed";
-      if (exitKind === "crashed" && !errors.length) errors.push("codex exited without turn.completed");
+        : (exitCode !== 0 && !turn) || !collector.turns ? "crashed" : "completed";
+      if (exitKind === "crashed" && !errors.length) errors.push(stderrTail() || "codex exited without turn.completed");
       const error = errors.join("; ") || undefined;
       resolve({
         denials: collector.denials, commands: collector.commands,
         ok: exitKind === "completed",
         exitKind,
-        errorKind: error ? classifyError(error) : undefined,
+        // Structured codexErrorInfo beats matching the message text.
+        errorKind: error ? turn?.errorKinds[0] ?? classifyError(error) : undefined,
+        steers: turn?.steers.length ? turn.steers : undefined,
+        rateLimits: turn?.rateLimits,
+        kept: turn?.kept.length ? turn.kept : undefined,
         stalled: !!stall,
         stall,
         sessionId: collector.sessionId,

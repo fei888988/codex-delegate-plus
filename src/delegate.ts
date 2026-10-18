@@ -10,6 +10,8 @@ import { classifyError, runCodex, type RunResult, type StallControl } from "./co
 import { diffSnapshots, diffStat, snapshot, type FileStat } from "./git.ts";
 import { resolveModelOrThrow } from "./models.ts";
 import { findTier, loadPolicy, type Retention } from "./policy.ts";
+import { checkpointContract, scanCheckpoints } from "./checkpoints.ts";
+import { installLauncher, reapLongruns, refresh, trackRunDir, type KeptCommand } from "./longruns.ts";
 import { clearPending, continuationPreamble, loadPending, savePending, type PendingRun } from "./pending.ts";
 import { parseReport, READ_CONTRACT, renderReport, REPORT_SCHEMA, WRITE_CONTRACT, type Report } from "./report.ts";
 import { version, type RunSummary } from "./run-summary.ts";
@@ -36,6 +38,8 @@ export interface DelegateInput {
   structured?: boolean;
   /** Start a new session even if an interrupted run in this cwd could be continued. */
   fresh?: boolean;
+  /** Ask codex for stage reports at direction-changing points; each one wakes the lead. */
+  checkpoints?: boolean;
 }
 
 export interface DelegateOutcome {
@@ -55,6 +59,7 @@ export interface DelegateOutcome {
   checks?: CheckResult[];
   /** The interrupted run this one continued. */
   continued?: PendingRun;
+  checkpoints?: RunSummary["checkpoints"];
 }
 
 function newRunDir(): string | undefined {
@@ -167,7 +172,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
     title: input.title, cwd, model, effort, tier, fast, sandbox, resumed: !!input.session_id,
     sessionId: input.session_id, continuedFrom: continued?.sessionId,
     prompt: input.prompt.slice(0, 2000), version,
-    phase: "codex", pid: process.pid, heartbeatAt: Date.now(), lastEventAt: Date.now(),
+    phase: "codex", engine: config.engine, pid: process.pid, heartbeatAt: Date.now(), lastEventAt: Date.now(),
     idleTimeoutSec: input.stall?.silent_s ?? config.idleTimeoutSec,
     commandIdleTimeoutSec: input.stall?.command_s ?? config.commandIdleTimeoutSec,
     checkIdleTimeoutSec: config.checkIdleTimeoutSec,
@@ -213,11 +218,34 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
   sampler.unref();
   const heartbeat = setInterval(() => { meta.heartbeatAt = Date.now(); progress(); }, 15000);
   heartbeat.unref();
+  // New checkpoint files go into meta at once (progress() notifies waiting task_result calls).
+  const seenCheckpoints = new Set<number>();
+  const pollCheckpoints = () => {
+    if (!runDir || !input.checkpoints) return;
+    const found = scanCheckpoints(runDir, seenCheckpoints);
+    if (!found.length) return;
+    for (const c of found) seenCheckpoints.add(c.n);
+    meta.checkpoints = [...(meta.checkpoints ?? []), ...found.map(({ n, at, title }) => ({ n, at, title }))];
+    progress();
+    writeMeta();
+  };
+  const checkpointTimer = setInterval(pollCheckpoints, config.checkpointPollMs);
+  checkpointTimer.unref();
   try {
     let prompt = previousDiagnosis(config.runsDir, input.session_id) + (continued ? continuationPreamble(continued) : "") + input.prompt;
     if (config.contract) prompt += readOnly ? READ_CONTRACT : WRITE_CONTRACT;
     if (codexGuidance) prompt += `\n\n${codexGuidance}`;
-    if (runDir) prompt += `\n\nCommand logs (added by the server): for commands likely to run longer than ~1 minute, tee output to ${join(runDir, "cmd-<n>.log")} (use a new n per command). Absolute run directory: ${runDir}.`;
+    if (runDir && input.checkpoints) prompt += checkpointContract(runDir);
+    const launcher = runDir && installLauncher(runDir);
+    if (runDir) trackRunDir(runDir);
+    if (runDir && launcher) {
+      prompt += `\n\nLong commands (added by the server): run every command likely to take longer than ~1 minute through the launcher, with a new n per command (1, 2, 3 …):
+  node "${launcher}" "${runDir}" run <n> -- <program> <args…>
+  node "${launcher}" "${runDir}" run <n> "<one shell command string, for pipes/redirects>"
+It streams the output, blocks until the command ends and exits with its exit code, so use it exactly like running the command directly (one blocking call; fine under any long-script rules you follow). It also writes ${join(runDir, "cmd-<n>.log")} ending in EXIT=<code>, and keeps the command alive if your turn is interrupted, so the lead can talk to you without killing the job. Don't wrap it in tee. Absolute run directory: ${runDir}.`;
+    } else if (runDir) {
+      prompt += `\n\nCommand logs (added by the server): for commands likely to run longer than ~1 minute, tee output to ${join(runDir, "cmd-<n>.log")} (use a new n per command). Absolute run directory: ${runDir}.`;
+    }
     let outputSchemaFile: string | undefined;
     if (runDir) {
       writeFileSync(join(runDir, "prompt.md"), prompt);
@@ -266,6 +294,9 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
         const it = info.inflight;
         if (info.suspicion) meta.lastEvidence = info.suspicion.evidence;
         if (it?.type === "command_execution") meta.lastInflight = { command: it.command, startedAt: it.startedAt };
+        if (info.turnId) meta.turnId = info.turnId;
+        if (info.steers) meta.steers = info.steers.map(({ at, text, consumedAt, redirect }) => ({ at, text, consumedAt, redirect }));
+        if (info.kept) meta.kept = info.kept;
         Object.assign(meta, { commands: info.commands, denials: info.denials, codexPid: info.codexPid, lastEventAt: info.lastEventAt,
           suspicion: info.suspicion, stallWindowSince: info.stallWindowSince, effectiveThresholdSec: info.effectiveThresholdSec, matchedRule: info.matchedRule,
           inflight: it && { type: it.type, command: it.command, startedAt: it.startedAt } });
@@ -290,7 +321,23 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
       lastMessageFile: runDir && join(runDir, "last-message.txt"),
       outputSchemaFile,
       logFile: runDir && join(runDir, "events.jsonl"),
+      runDir,
     });
+    // Nothing the run started may outlive it unnoticed: stop what is still running and say so.
+    if (runDir) {
+      const leftover = reapLongruns(runDir, signal?.aborted ? "task cancelled" : "the codex run ended");
+      const forgotten = leftover.filter((n) => !result.kept?.some((k) => k.n === n && k.outcome !== "running"));
+      if (forgotten.length) notes.push(`background command(s) ${forgotten.map((n) => `cmd-${n}`).join(", ")} were still running when codex finished; the server stopped them (logs in the run directory)`);
+      if (result.kept) result.kept = result.kept.map((k) => leftover.includes(k.n) && k.outcome === "running" ? { ...k, outcome: "killed_forgotten" as const } : refresh(runDir, k));
+    }
+    clearInterval(checkpointTimer);
+    if (runDir && input.checkpoints) {
+      // A checkpoint written just before the end is still listed; the mtime guard no longer applies.
+      for (const c of scanCheckpoints(runDir, seenCheckpoints, Infinity)) {
+        seenCheckpoints.add(c.n);
+        meta.checkpoints = [...(meta.checkpoints ?? []), { n: c.n, at: c.at, title: c.title }];
+      }
+    }
     Object.assign(meta, { exitKind: result.exitKind, errorKind: result.errorKind, stall: result.stall,
       inflight: undefined, suspicion: undefined, error: result.error });
     progress();
@@ -309,7 +356,10 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
     if (structured && !report && result.ok) notes.push("codex did not return the JSON report; showing its raw final message");
 
     let checks: CheckResult[] | undefined;
-    if (input.checks?.length && !signal?.aborted) {
+    // Out of quota or logged out: report at once instead of spending minutes on checks first.
+    const envStop = !result.ok && (result.errorKind === "quota" || result.errorKind === "auth");
+    if (envStop && input.checks?.length) notes.push(`host checks skipped: codex stopped on ${result.errorKind}`);
+    if (input.checks?.length && !signal?.aborted && !envStop) {
       meta.phase = "checks";
       meta.checksStartedAt = Date.now();
       meta.checks = [];
@@ -332,7 +382,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
       notes: [...notes, ...result.warnings],
       error: result.error, toolCalls: result.toolCalls.length,
     });
-    return { model, effort, tier, fast, sandbox, resumed: !!input.session_id, cwd, notes, result, report, runDir, changes, checks, continued };
+    return { model, effort, tier, fast, sandbox, resumed: !!input.session_id, cwd, notes, result, report, runDir, changes, checks, continued, checkpoints: meta.checkpoints };
   } catch (error) {
     meta.state = signal?.aborted ? "interrupted" : "error";
     meta.error = error instanceof Error ? error.message : String(error);
@@ -341,12 +391,13 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
     throw error;
   } finally {
     clearInterval(heartbeat);
+    clearInterval(checkpointTimer);
     clearInterval(sampler);
     sampleController.abort();
     if (runDir) {
       try {
         trimCommandLogs(runDir, r.retention.cmdLogMaxMB);
-        meta.cmdLogTails = finishCommandLogs(runDir, meta.state === "ok" && !meta.checks?.some(c => c.ok === false));
+        meta.cmdLogTails = finishCommandLogs(runDir, meta.state === "ok" && !meta.checks?.some(c => c.ok === false), (meta.kept ?? []).map((k) => `cmd-${k.n}.log`));
       } catch {}
       try { rmSync(join(runDir, "tmp"), { recursive: true, force: true }); } catch {}
     }
@@ -398,6 +449,29 @@ const REPORT_NEXT: Record<Exclude<Report["status"], "done">, string> = {
   blocked: "codex could not proceed: read the reason; fix the environment or brief and resume, or ask the user if it needs them",
 };
 
+const KEPT_OUTCOME: Record<KeptCommand["outcome"], string> = {
+  running: "STILL RUNNING",
+  exited: "finished",
+  stopped: "stopped by codex",
+  gone: "ended (exit code unknown)",
+  killed_cancel: "stopped: task cancelled",
+  killed_forgotten: "STOPPED BY THE SERVER: codex ended without dealing with it; check whether it should be rerun",
+};
+
+/** Long commands kept alive across a redirect: each one must have an outcome. */
+export function renderKept(kept: KeptCommand[]): string {
+  return ["background commands kept across a redirect:", ...kept.map((k) =>
+    `  cmd-${k.n}: ${KEPT_OUTCOME[k.outcome]}${k.exitCode !== undefined ? ` (exit ${k.exitCode})` : ""} | ${k.command.replace(/\s+/g, " ").slice(0, 160)} | log ${k.log}`)].join("\n");
+}
+
+/** When the usage window reopens: from the rate-limit snapshot, else the "try again at …" in the message. */
+function quotaReset(r: RunResult): string | undefined {
+  const said = r.error?.match(/try again (?:at|in) ([^.;]+)/i)?.[1]?.trim();
+  if (said) return said;
+  const at = r.rateLimits?.resetsAt;
+  return at ? new Date(at * 1000).toLocaleString() : undefined;
+}
+
 export function formatOutcome(o: DelegateOutcome): string {
   const r = o.result;
   const model = o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`);
@@ -408,8 +482,10 @@ export function formatOutcome(o: DelegateOutcome): string {
     `duration: ${(r.durationMs / 1000).toFixed(0)}s, codex tokens in/cached/out: ${r.tokens.input}/${r.tokens.cachedInput}/${r.tokens.output}`,
   ];
   if (r.exitKind !== "completed") {
-    const hint = r.errorKind === "quota" || r.errorKind === "auth"
-      ? "environment problem: tell the user, don't take over"
+    const hint = r.errorKind === "quota"
+      ? `codex is out of quota${quotaReset(r) ? ` until ${quotaReset(r)}` : ""}. STOP now: do not continue the delegated work yourself, do not sleep or poll for the reset. End your turn with what codex finished (git changes below), what is left, and ask the user whether to wait for the reset, have you take over the rest, or something else. Resume later with session_id.`
+      : r.errorKind === "auth"
+        ? "codex is not logged in or its credentials were rejected. STOP: tell the user (they run `codex login`), don't take over the work."
       : r.exitKind === "stalled"
         ? `codex hung on ${r.stall?.command?.replace(/\s+/g, " ").slice(0, 200) ?? "a silent model turn"}; the session keeps context: resume with session_id and tell it the command hung (run it with a timeout / fix the hang)`
         : (r.exitKind === "crashed" || r.exitKind === "api_error") && (r.errorKind === "network" || r.errorKind === "rate_limit")
@@ -423,6 +499,18 @@ export function formatOutcome(o: DelegateOutcome): string {
   }
   if (o.continued) {
     lines.push(`continued: the interrupted run in this cwd (session ${o.continued.sessionId}); codex kept its context and partial edits and was told your new message wins. Pass fresh: true to start over instead.`);
+  }
+  if (r.kept?.length) lines.push(renderKept(r.kept));
+  if (o.checkpoints?.length) {
+    lines.push(`checkpoints (stage reports in the run log): ${o.checkpoints.map((c) => `${c.n}. ${c.title}`).join("; ")}`);
+  }
+  if (r.steers?.length) {
+    const unread = r.steers.filter((s) => !s.consumedAt).length;
+    lines.push(`steered: ${r.steers.length} message(s) sent into the turn${unread ? `; ${unread} not read by codex before it finished: resend with session_id` : ", all read by codex"}`);
+  }
+  const used = r.rateLimits?.usedPercent;
+  if (used !== undefined && used >= 80 && r.errorKind !== "quota") {
+    lines.push(`note: codex usage window ${used}% used${quotaReset(r) ? `, resets ${quotaReset(r)}` : ""}; keep further briefs small or tell the user`);
   }
   for (const n of [...o.notes, ...r.warnings]) lines.push(`note: ${n}`);
   if (r.error) lines.push(`error: ${truncate(r.error, 1500)}`);

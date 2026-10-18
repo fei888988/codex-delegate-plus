@@ -18,6 +18,13 @@ function killWindowsTree(pid: number) {
   for (const id of [...ids].reverse()) { try { process.kill(id, "SIGKILL"); } catch {} }
 }
 
+/** Kills a process we did not spawn ourselves (a command codex left running) and its descendants. */
+export function killPidTree(pid: number) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  if (process.platform === "win32") return killWindowsTree(pid);
+  try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch {} }
+}
+
 /** Kills a child and everything it started (codex spawns shells, test runners, dev servers…). */
 export function killTree(child: ChildProcess, force = false) {
   if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
@@ -69,11 +76,16 @@ export function killOrphan(pid: number) {
   } catch {}
 }
 
+const exitHooks: (() => void)[] = [];
+/** Synchronous cleanup to run when this server exits (installExitCleanup). */
+export function onExit(hook: () => void) { exitHooks.push(hook); }
+
 let installed = false;
 export function installExitCleanup() {
   if (installed) return;
   installed = true;
   const cleanup = () => {
+    for (const hook of exitHooks) { try { hook(); } catch {} }
     for (const c of live) killTree(c, true);
   };
   process.once("exit", cleanup);

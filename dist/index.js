@@ -7275,12 +7275,12 @@ ${tailFile(log.file, maxBytes).split(/\r?\n/).slice(-15).join("\n")}` : "cmd log
 function trimCommandLogs(dir2, maxMB) {
   for (const log of commandLogs(dir2)) if (log.bytes > maxMB * 1024 * 1024) writeFileSync(log.file, tailFile(log.file, Math.floor(maxMB * 1024 * 1024)));
 }
-function finishCommandLogs(dir2, success2) {
+function finishCommandLogs(dir2, success2, keep = []) {
   if (!success2) return void 0;
   const tails = {};
   for (const log of commandLogs(dir2)) {
     tails[log.name] = tailFile(log.file, 2048);
-    rmSync(log.file);
+    if (!keep.includes(log.name)) rmSync(log.file);
   }
   return tails;
 }
@@ -7354,10 +7354,10 @@ function alive(pid) {
 function dirBytes(dir2) {
   return entries(dir2).reduce((sum, e) => sum + (e.isDirectory() ? dirBytes(join(dir2, e.name)) : e.isFile() ? lstatSync(join(dir2, e.name)).size : 0), 0);
 }
-function cleanupRuns(runsDir, retention, active = /* @__PURE__ */ new Set(), now = Date.now()) {
+function cleanupRuns(runsDir, retention, active2 = /* @__PURE__ */ new Set(), now = Date.now()) {
   const runs = entries(runsDir).filter((e) => e.isDirectory() && e.name !== "pending" && e.name !== "tasks").map((e) => {
     const dir2 = join(runsDir, e.name), meta3 = readMeta(dir2);
-    return { dir: dir2, meta: meta3, age: now - (meta3?.endedAt ?? meta3?.startedAt ?? lstatSync(dir2).mtimeMs), bytes: dirBytes(dir2), protected: active.has(e.name) || meta3?.state === "running" && (alive(meta3.pid) || alive(meta3.codexPid) || (meta3.heartbeatAt !== void 0 ? now - meta3.heartbeatAt < 9e4 : meta3.pid === void 0 && meta3.codexPid === void 0)) };
+    return { dir: dir2, meta: meta3, age: now - (meta3?.endedAt ?? meta3?.startedAt ?? lstatSync(dir2).mtimeMs), bytes: dirBytes(dir2), protected: active2.has(e.name) || meta3?.state === "running" && (alive(meta3.pid) || alive(meta3.codexPid) || (meta3.heartbeatAt !== void 0 ? now - meta3.heartbeatAt < 9e4 : meta3.pid === void 0 && meta3.codexPid === void 0)) };
   }).sort((a, b) => b.age - a.age);
   let total = dirBytes(runsDir);
   for (const r of runs) {
@@ -36760,6 +36760,7 @@ function clampEffort(effort, allowed) {
 }
 var config2 = {
   codex: resolveCodex(),
+  engine: process.env.CODEX_DELEGATE_ENGINE === "exec" ? "exec" : "app-server",
   // Levels the lead may choose from; anything else is clamped into this range.
   efforts: allowedEfforts(process.env.CODEX_DELEGATE_EFFORTS),
   codexHome,
@@ -36782,6 +36783,8 @@ var config2 = {
   commandIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT, 600),
   hardIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_HARD_IDLE_TIMEOUT, 3600),
   checkIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_CHECK_IDLE_TIMEOUT, 300),
+  // How often a run with checkpoints looks for new checkpoint-<n>.md files.
+  checkpointPollMs: int2(process.env.CODEX_DELEGATE_CHECKPOINT_POLL_MS, 2e3),
   // What goes back into the caller's context. The full event log stays on disk.
   maxOutputChars: int2(process.env.CODEX_DELEGATE_MAX_OUTPUT, 6e3),
   runsDir: process.env.CODEX_DELEGATE_RUNS_DIR || join2(homedir(), ".codex-delegate", "runs"),
@@ -37007,9 +37010,9 @@ function softWatchdog(pid, window, suspected, sample = sampleTreeEvidence) {
 }
 
 // src/delegate.ts
-import { randomUUID } from "node:crypto";
-import { existsSync as existsSync4, mkdirSync as mkdirSync3, rmSync as rmSync3, writeFileSync as writeFileSync4 } from "node:fs";
-import { basename, isAbsolute, join as join6, relative as relative2, resolve } from "node:path";
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { existsSync as existsSync5, mkdirSync as mkdirSync3, rmSync as rmSync3, writeFileSync as writeFileSync6 } from "node:fs";
+import { basename, isAbsolute, join as join9, relative as relative2, resolve } from "node:path";
 
 // src/checks.ts
 import { spawn } from "node:child_process";
@@ -37038,6 +37041,18 @@ function killWindowsTree(pid) {
   for (const id of [...ids].reverse()) {
     try {
       process.kill(id, "SIGKILL");
+    } catch {
+    }
+  }
+}
+function killPidTree(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  if (process.platform === "win32") return killWindowsTree(pid);
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL");
     } catch {
     }
   }
@@ -37084,11 +37099,21 @@ function killOrphan(pid) {
   } catch {
   }
 }
+var exitHooks = [];
+function onExit(hook) {
+  exitHooks.push(hook);
+}
 var installed = false;
 function installExitCleanup() {
   if (installed) return;
   installed = true;
   const cleanup2 = () => {
+    for (const hook of exitHooks) {
+      try {
+        hook();
+      } catch {
+      }
+    }
     for (const c of live) killTree(c, true);
   };
   process.once("exit", cleanup2);
@@ -37187,7 +37212,537 @@ async function runChecks(commands, cwd, timeoutMs, signal, options = {}) {
 
 // src/codex.ts
 import { spawn as spawn2 } from "node:child_process";
-import { createWriteStream, existsSync as existsSync2, readFileSync as readFileSync3 } from "node:fs";
+import { createWriteStream, existsSync as existsSync3, readFileSync as readFileSync5 } from "node:fs";
+
+// src/appserver.ts
+import { randomUUID } from "node:crypto";
+import { readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
+import { join as join4 } from "node:path";
+
+// src/longruns.ts
+import { appendFileSync, copyFileSync, existsSync as existsSync2, readdirSync as readdirSync2, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname, join as join3 } from "node:path";
+import { fileURLToPath } from "node:url";
+var LAUNCHER = "longrun.mjs";
+function installLauncher(runDir) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = [join3(here, LAUNCHER), join3(here, "..", "src", LAUNCHER)].find((f) => existsSync2(f));
+  if (!src) return void 0;
+  const dest = join3(runDir, LAUNCHER);
+  try {
+    copyFileSync(src, dest);
+    return dest;
+  } catch {
+    return void 0;
+  }
+}
+var int3 = (f) => {
+  try {
+    const v = Number.parseInt(readFileSync3(f, "utf8"), 10);
+    return Number.isFinite(v) ? v : void 0;
+  } catch {
+    return void 0;
+  }
+};
+var alive2 = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e?.code === "EPERM";
+  }
+};
+function longrunState(runDir, n) {
+  const code = int3(join3(runDir, `cmd-${n}.exit`));
+  if (code !== void 0) return existsSync2(join3(runDir, `cmd-${n}.stopping`)) ? { state: "stopped" } : { state: "exited", code };
+  const pid = int3(join3(runDir, `cmd-${n}.pid`));
+  if (pid === void 0) return { state: "unknown" };
+  return alive2(pid) ? { state: "running", pid } : { state: "gone" };
+}
+function stopLongrun(runDir, n, why) {
+  const s = longrunState(runDir, n);
+  if (s.state !== "running") return false;
+  try {
+    writeFileSync2(join3(runDir, `cmd-${n}.stopping`), why);
+  } catch {
+  }
+  killPidTree(s.pid);
+  try {
+    appendFileSync(join3(runDir, `cmd-${n}.log`), `
+EXIT=stopped (${why})
+`);
+    writeFileSync2(join3(runDir, `cmd-${n}.exit`), "137");
+  } catch {
+  }
+  return true;
+}
+function longrunCommand(runDir, n) {
+  try {
+    const { program, args } = JSON.parse(readFileSync3(join3(runDir, `cmd-${n}.json`), "utf8"));
+    const a = args ?? [];
+    const script = a.find((x) => /cmd-\d+\.(ps1|sh)$/.test(x));
+    if (script) return readFileSync3(script, "utf8").split(/\r?\n/)[0] ?? program;
+    return [program, ...a].join(" ");
+  } catch {
+    return `cmd-${n}`;
+  }
+}
+function refresh(runDir, k) {
+  if (k.outcome !== "running") return k;
+  const s = longrunState(runDir, k.n);
+  if (s.state === "exited") return { ...k, outcome: "exited", exitCode: s.code };
+  if (s.state === "stopped") return { ...k, outcome: "stopped" };
+  if (s.state === "gone") return { ...k, outcome: "gone" };
+  return k;
+}
+function runningLongruns(runDir) {
+  let names = [];
+  try {
+    names = readdirSync2(runDir);
+  } catch {
+  }
+  return names.map((f) => Number(/^cmd-(\d+)\.pid$/.exec(f)?.[1])).filter((n) => Number.isInteger(n) && longrunState(runDir, n).state === "running");
+}
+function reapLongruns(runDir, why) {
+  const killed = runningLongruns(runDir).filter((n) => stopLongrun(runDir, n, why));
+  active.delete(runDir);
+  return killed;
+}
+var active = /* @__PURE__ */ new Set();
+function trackRunDir(runDir) {
+  active.add(runDir);
+}
+onExit(() => {
+  for (const dir2 of [...active]) reapLongruns(dir2, "server exited");
+});
+function keptPreamble(runDir, kept, killed) {
+  const launcher = join3(runDir, LAUNCHER);
+  const lines = ["[codex-delegate] The lead interrupted your previous step to give you a new instruction (below)."];
+  for (const k of kept) {
+    lines.push(`- Still running, NOT stopped: cmd-${k.n} \`${k.command.replace(/\s+/g, " ").slice(0, 200)}\` (log ${k.log}). It is the same job you started; do not start it again.`);
+  }
+  for (const c of killed) lines.push(`- Stopped (it was not started through ${LAUNCHER}, so it could not be kept): \`${c.replace(/\s+/g, " ").slice(0, 200)}\`; check what it left behind.`);
+  if (kept.length) lines.push(
+    "The still-running command(s) are your responsibility. Read the instruction first, then for each one decide explicitly:",
+    `  - keep it and look at its progress: node "${launcher}" "${runDir}" status <n>   (alive/exit code + log tail)`,
+    `  - wait for it to finish: node "${launcher}" "${runDir}" wait <n>   (blocks, streams new output, exits with its code; one blocking call is fine under your long-script rules)`,
+    `  - stop it: node "${launcher}" "${runDir}" stop <n>`,
+    "Do not start it again while it runs. Do not end your turn while it is still running unless you stopped it; the final report must say what became of it (finished with exit code / stopped and why)."
+  );
+  lines.push("", "Instruction from the lead:");
+  return `${lines.join("\n")}
+`;
+}
+function keptReminder(runDir, kept) {
+  const launcher = join3(runDir, LAUNCHER);
+  return [
+    "[codex-delegate] You ended your turn, but these commands you are responsible for are still running:",
+    ...kept.map((k) => `- cmd-${k.n} \`${k.command.replace(/\s+/g, " ").slice(0, 200)}\` (log ${k.log})`),
+    `Deal with each now: wait for it (node "${launcher}" "${runDir}" wait <n>) or stop it (\u2026 stop <n>) if it is no longer needed. Then give your final report again, saying what became of each. If you end the turn with them still running, the server will stop them and report them as forgotten.`
+  ].join("\n");
+}
+
+// src/appserver.ts
+var MAX_REMINDERS = 2;
+var APP_SERVER_ARGS = ["app-server", "-c", `approval_policy="never"`];
+function threadConfig(o) {
+  const c = {};
+  if (o.effort) c.model_reasoning_effort = o.effort;
+  if (o.sandbox === "workspace-write" && o.addDirs?.length) c["sandbox_workspace_write.writable_roots"] = o.addDirs;
+  return c;
+}
+function threadParams(o) {
+  return {
+    cwd: o.cwd ?? null,
+    sandbox: o.sandbox,
+    approvalPolicy: "never",
+    ...o.model ? { model: o.model } : {},
+    ...o.fast !== void 0 ? { serviceTier: o.fast ? "priority" : "default" } : {},
+    config: threadConfig(o)
+  };
+}
+function kindFromInfo(info) {
+  const key = typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : void 0;
+  if (!key) return void 0;
+  if (/usageLimit|sessionBudget/i.test(key)) return "quota";
+  if (/rateLimit/i.test(key)) return "rate_limit";
+  if (/unauthorized/i.test(key)) return "auth";
+  if (/contextWindow/i.test(key)) return "context";
+  if (/serverOverloaded|internalServerError|ConnectionFailed|StreamDisconnected|TooManyFailedAttempts/i.test(key)) return "network";
+  return void 0;
+}
+var snake = (s) => s.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+function execItem(it) {
+  switch (it?.type) {
+    case "commandExecution":
+      return {
+        id: it.id,
+        type: "command_execution",
+        command: it.command,
+        aggregated_output: it.aggregatedOutput ?? void 0,
+        exit_code: it.exitCode,
+        status: it.status
+      };
+    case "fileChange":
+      return { id: it.id, type: "file_change", status: it.status, changes: (it.changes ?? []).map((c) => ({ path: c.path, kind: c.kind?.type ?? c.kind })) };
+    case "agentMessage":
+      return { id: it.id, type: "agent_message", text: it.text };
+    case "mcpToolCall":
+      return { id: it.id, type: "mcp_tool_call", server: it.server, tool: it.tool, status: it.status };
+    case "webSearch":
+      return { id: it.id, type: "web_search", query: it.query, status: "completed" };
+    default:
+      return { id: it?.id, type: snake(String(it?.type ?? "unknown")) };
+  }
+}
+var OPT_OUT = [
+  "item/agentMessage/delta",
+  "item/reasoning/textDelta",
+  "item/reasoning/summaryTextDelta",
+  "item/reasoning/summaryPartAdded",
+  "item/plan/delta",
+  "item/fileChange/outputDelta",
+  "item/fileChange/patchUpdated",
+  "turn/diff/updated",
+  "turn/moderationMetadata",
+  "rawResponseItem/completed",
+  "rawResponse/completed",
+  "thread/readState/changed"
+];
+var AppServerTurn = class {
+  threadId;
+  turnId;
+  finished = false;
+  steers = [];
+  rateLimits;
+  errorKinds = [];
+  nextId = 1;
+  pending = /* @__PURE__ */ new Map();
+  closed = false;
+  lastText;
+  usageBase;
+  usage = { input: 0, cached: 0, output: 0, reasoning: 0 };
+  lastActivity = 0;
+  waiters = /* @__PURE__ */ new Map();
+  outputSchema;
+  /** Command item id → OS pid of its shell and the command line, while the command runs. */
+  running = /* @__PURE__ */ new Map();
+  redirecting;
+  keptCommands = [];
+  reminders = 0;
+  child;
+  o;
+  hooks;
+  constructor(child, o, hooks) {
+    this.child = child;
+    this.o = o;
+    this.hooks = hooks;
+    child.stdin.on("error", () => {
+    });
+    child.on("close", () => {
+      this.closed = true;
+      for (const p of this.pending.values()) p.reject(new Error("codex app-server exited"));
+      this.pending.clear();
+    });
+  }
+  send(msg) {
+    if (!this.closed) this.child.stdin.write(`${JSON.stringify(msg)}
+`);
+  }
+  rpc(method, params) {
+    if (this.closed) return Promise.reject(new Error("codex app-server exited"));
+    const id = this.nextId++;
+    return new Promise((resolve4, reject) => {
+      this.pending.set(id, { resolve: resolve4, reject });
+      this.send({ id, method, params });
+    });
+  }
+  ping() {
+    const now = Date.now();
+    if (now - this.lastActivity < 1e3) return;
+    this.lastActivity = now;
+    this.hooks.activity();
+  }
+  /** Feed one stdout line from the app-server. */
+  line(raw) {
+    let m;
+    try {
+      m = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (m.id !== void 0 && !m.method) {
+      const p = this.pending.get(m.id);
+      this.pending.delete(m.id);
+      if (m.error) p?.reject(new Error(m.error.message ?? JSON.stringify(m.error)));
+      else p?.resolve(m.result);
+      return;
+    }
+    if (m.id !== void 0) return this.send({ id: m.id, error: { code: -32601, message: `codex-delegate cannot answer ${m.method}` } });
+    this.notify(m.method, m.params ?? {});
+  }
+  notify(method, p) {
+    if (method === "account/rateLimits/updated") {
+      const r = p.rateLimits ?? {};
+      this.rateLimits = {
+        usedPercent: r.primary?.usedPercent,
+        resetsAt: r.primary?.resetsAt ?? void 0,
+        windowMins: r.primary?.windowDurationMins ?? void 0,
+        secondaryUsedPercent: r.secondary?.usedPercent,
+        secondaryResetsAt: r.secondary?.resetsAt ?? void 0
+      };
+      return;
+    }
+    if (p.threadId && this.threadId && p.threadId !== this.threadId) return this.ping();
+    switch (method) {
+      case "item/started":
+        if (p.item?.type === "commandExecution" && Number(p.item.processId) > 0) this.running.set(p.item.id, { pid: Number(p.item.processId), command: String(p.item.command ?? "") });
+        if (p.item?.type !== "userMessage") this.hooks.emit({ type: "item.started", item: execItem(p.item) });
+        else this.ping();
+        return;
+      case "item/completed": {
+        const it = p.item ?? {};
+        this.running.delete(it.id);
+        if (it.type === "userMessage") return this.consumed(it.clientId);
+        if (it.type === "agentMessage" && typeof it.text === "string") this.lastText = it.text;
+        this.hooks.emit({ type: "item.completed", item: execItem(it) });
+        return;
+      }
+      case "item/commandExecution/outputDelta":
+      case "command/exec/outputDelta":
+      case "item/mcpToolCall/progress":
+        return this.ping();
+      case "thread/tokenUsage/updated":
+        this.tokens(p.tokenUsage);
+        return this.ping();
+      case "turn/started":
+        this.turnId ??= p.turn?.id;
+        return this.ping();
+      case "turn/completed":
+        if (!this.turnId || p.turn?.id === this.turnId) this.complete(p.turn ?? {});
+        return;
+      case "error":
+        if (p.willRetry) return this.ping();
+        this.fail(p.error);
+        return;
+      case "warning":
+      case "configWarning":
+        if (typeof p.message === "string" || typeof p.summary === "string") this.hooks.emit({ type: "item.completed", item: { type: "error", message: p.message ?? p.summary } });
+        return;
+      default:
+        this.ping();
+    }
+  }
+  tokens(u) {
+    const t = u?.total, l = u?.last;
+    if (!t) return;
+    this.usageBase ??= {
+      inputTokens: t.inputTokens - (l?.inputTokens ?? 0),
+      cachedInputTokens: t.cachedInputTokens - (l?.cachedInputTokens ?? 0),
+      outputTokens: t.outputTokens - (l?.outputTokens ?? 0),
+      reasoningOutputTokens: t.reasoningOutputTokens - (l?.reasoningOutputTokens ?? 0)
+    };
+    const b = this.usageBase;
+    this.usage = {
+      input: t.inputTokens - b.inputTokens,
+      cached: t.cachedInputTokens - b.cachedInputTokens,
+      output: t.outputTokens - b.outputTokens,
+      reasoning: t.reasoningOutputTokens - b.reasoningOutputTokens
+    };
+  }
+  fail(error62) {
+    const kind = kindFromInfo(error62?.codexErrorInfo);
+    if (kind) this.errorKinds.push(kind);
+    this.hooks.emit({ type: "error", message: error62?.message ?? "codex turn failed" });
+  }
+  complete(turn) {
+    if (this.finished) return;
+    const runDir = this.o.runDir;
+    if (turn.status === "interrupted") {
+      const redirect = this.redirecting;
+      this.redirecting = void 0;
+      const running = [...this.running.values()];
+      this.running.clear();
+      const kept = [];
+      const killed = [];
+      const tracked = new Set(this.keptCommands.filter((k) => k.outcome === "running").map((k) => k.n));
+      const live2 = runDir ? runningLongruns(runDir).filter((n) => !tracked.has(n)) : [];
+      for (const r of running) {
+        killPidTree(r.pid);
+        if (!/longrun\.mjs/i.test(r.command)) killed.push(r.command);
+      }
+      for (const n of live2) {
+        if (redirect && !redirect.kill) kept.push({ n, command: longrunCommand(runDir, n), log: join4(runDir, `cmd-${n}.log`), keptAt: Date.now(), outcome: "running" });
+        else if (stopLongrun(runDir, n, redirect ? "lead redirected with kill" : "task cancelled")) killed.push(longrunCommand(runDir, n));
+      }
+      if (redirect) {
+        this.keptCommands.push(...kept);
+        this.hooks.emit({ type: "turn.redirected", turn_id: turn.id, kept: kept.map((k) => k.n), killed });
+        return redirect.go(kept, killed);
+      }
+      if (runDir) this.keptCommands = this.keptCommands.map((k) => refresh(runDir, k)).map((k) => k.outcome === "running" && stopLongrun(runDir, k.n, "task cancelled") ? { ...k, outcome: "killed_cancel" } : k);
+    }
+    if (turn.status === "completed" && runDir) {
+      this.keptCommands = this.keptCommands.map((k) => refresh(runDir, k));
+      const open2 = this.keptCommands.filter((k) => k.outcome === "running");
+      if (open2.length && this.reminders < MAX_REMINDERS) {
+        this.reminders++;
+        this.hooks.emit({ type: "turn.reminded", kept: open2.map((k) => k.n) });
+        this.startTurn([{ type: "text", text: keptReminder(runDir, open2), text_elements: [] }]).catch((e) => this.failRun(e));
+        return;
+      }
+      this.keptCommands = this.keptCommands.map((k) => k.outcome === "running" && stopLongrun(runDir, k.n, "codex ended the run without dealing with it") ? { ...k, outcome: "killed_forgotten" } : k);
+    }
+    this.finished = true;
+    const text2 = turn.items?.filter((i) => i.type === "agentMessage").at(-1)?.text ?? this.lastText;
+    if (this.o.lastMessageFile && typeof text2 === "string") {
+      try {
+        writeFileSync3(this.o.lastMessageFile, text2);
+      } catch {
+      }
+    }
+    if (turn.status === "completed") {
+      this.hooks.emit({ type: "turn.completed", usage: {
+        input_tokens: this.usage.input,
+        cached_input_tokens: this.usage.cached,
+        output_tokens: this.usage.output,
+        reasoning_output_tokens: this.usage.reasoning
+      } });
+    } else if (turn.status === "failed") {
+      const kind = kindFromInfo(turn.error?.codexErrorInfo);
+      if (kind) this.errorKinds.push(kind);
+      this.hooks.emit({ type: "turn.failed", error: { message: turn.error?.message ?? "codex turn failed" } });
+    }
+    for (const wake of this.waiters.values()) wake();
+    this.hooks.done();
+  }
+  consumed(clientId) {
+    const rec = this.steers.find((s) => s.clientId === clientId) ?? (clientId ? void 0 : this.steers.find((s) => !s.consumedAt));
+    if (!rec || rec.consumedAt) return this.ping();
+    rec.consumedAt = Date.now();
+    this.hooks.emit({ type: "steer.consumed", client_id: rec.clientId });
+    this.waiters.get(rec.clientId)?.();
+  }
+  /** Start (or resume / fork) the thread and the turn. Failures end the run through a turn.failed event. */
+  async run() {
+    const o = this.o;
+    try {
+      await this.rpc("initialize", {
+        clientInfo: { name: "codex-delegate", title: null, version: "1" },
+        capabilities: { experimentalApi: true, requestAttestation: false, optOutNotificationMethods: OPT_OUT }
+      });
+      this.send({ method: "initialized" });
+      const params = threadParams(o);
+      const res = o.sessionId ? await this.rpc(o.fork ? "thread/fork" : "thread/resume", { threadId: o.sessionId, ...params, excludeTurns: true }) : await this.rpc("thread/start", params);
+      this.threadId = res.thread?.id;
+      this.hooks.emit({ type: "thread.started", thread_id: this.threadId });
+      if (o.outputSchemaFile) this.outputSchema = JSON.parse(readFileSync4(o.outputSchemaFile, "utf8"));
+      const input2 = [{ type: "text", text: o.prompt, text_elements: [] }];
+      for (const path of o.images ?? []) input2.push({ type: "localImage", path });
+      await this.startTurn(input2);
+    } catch (e) {
+      this.failRun(e);
+    }
+  }
+  async startTurn(input2, clientUserMessageId) {
+    const turn = await this.rpc("turn/start", {
+      threadId: this.threadId,
+      input: input2,
+      ...clientUserMessageId ? { clientUserMessageId } : {},
+      ...this.o.effort ? { effort: this.o.effort } : {},
+      ...this.outputSchema ? { outputSchema: this.outputSchema } : {}
+    });
+    this.turnId = turn.turn?.id ?? this.turnId;
+    this.hooks.emit({ type: "turn.started", turn_id: this.turnId });
+  }
+  /**
+   * Stop what codex is doing right now (including a long command) and continue the same thread with
+   * `text` as a new turn. The run stays one run: same task, same final report.
+   */
+  async redirect(text2, opts = {}) {
+    if (!this.threadId || !this.turnId) throw new Error("codex has not started its turn yet; try again in a few seconds");
+    if (this.finished) throw new Error("codex already finished this turn");
+    const record2 = { at: Date.now(), text: text2.slice(0, 500), clientId: `redirect-${randomUUID().slice(0, 8)}`, redirect: true };
+    this.steers.push(record2);
+    let outcome = { kept: [], killed: [] };
+    const stopped = new Promise((resolve4) => {
+      this.redirecting = { kill: !!opts.kill, go: (kept, killed) => {
+        outcome = { kept, killed };
+        resolve4(true);
+      } };
+      setTimeout(() => resolve4(false), opts.waitMs ?? 2e4).unref?.();
+    });
+    this.hooks.emit({ type: "steer.sent", client_id: record2.clientId, text: record2.text, redirect: true });
+    try {
+      await this.rpc("turn/interrupt", { threadId: this.threadId, turnId: this.turnId });
+    } catch (e) {
+      this.redirecting = void 0;
+      throw e;
+    }
+    if (!await stopped) {
+      this.redirecting = void 0;
+      throw new Error("codex did not stop the current turn in time; try task_cancel");
+    }
+    const preamble = this.o.runDir && (outcome.kept.length || outcome.killed.length) ? keptPreamble(this.o.runDir, outcome.kept, outcome.killed) : "";
+    try {
+      await this.startTurn([{ type: "text", text: preamble + text2, text_elements: [] }], record2.clientId);
+    } catch (e) {
+      this.failRun(e);
+      throw e;
+    }
+    return { consumed: true, record: record2, ...outcome };
+  }
+  /** Commands kept running across a redirect, with their current state. */
+  get kept() {
+    const runDir = this.o.runDir;
+    return runDir ? this.keptCommands = this.keptCommands.map((k) => refresh(runDir, k)) : this.keptCommands;
+  }
+  failRun(e) {
+    if (this.finished) return;
+    this.finished = true;
+    this.hooks.emit({ type: "turn.failed", error: { message: e instanceof Error ? e.message : String(e) } });
+    this.hooks.done();
+  }
+  async steer(text2, waitMs = 15e3) {
+    if (!this.threadId || !this.turnId) throw new Error("codex has not started its turn yet; try again in a few seconds");
+    if (this.finished) throw new Error("codex already finished this turn");
+    const record2 = { at: Date.now(), text: text2.slice(0, 500), clientId: `steer-${randomUUID().slice(0, 8)}` };
+    this.steers.push(record2);
+    let timer;
+    const seen = new Promise((resolve4) => {
+      this.waiters.set(record2.clientId, () => resolve4(true));
+      timer = setTimeout(() => resolve4(false), waitMs);
+    });
+    try {
+      await this.rpc("turn/steer", {
+        threadId: this.threadId,
+        expectedTurnId: this.turnId,
+        clientUserMessageId: record2.clientId,
+        input: [{ type: "text", text: text2, text_elements: [] }]
+      });
+    } catch (e) {
+      this.steers.splice(this.steers.indexOf(record2), 1);
+      clearTimeout(timer);
+      this.waiters.delete(record2.clientId);
+      throw e;
+    }
+    this.hooks.emit({ type: "steer.sent", client_id: record2.clientId, text: record2.text });
+    const consumed = record2.consumedAt !== void 0 || await seen;
+    clearTimeout(timer);
+    this.waiters.delete(record2.clientId);
+    return { consumed: consumed && record2.consumedAt !== void 0, record: record2 };
+  }
+  async interrupt() {
+    this.redirecting = void 0;
+    if (this.finished || !this.threadId || !this.turnId) return;
+    try {
+      await this.rpc("turn/interrupt", { threadId: this.threadId, turnId: this.turnId });
+    } catch {
+    }
+  }
+};
+
+// src/codex.ts
 function classifyError(text2) {
   if (/quota|usage limit|insufficient_quota|credits|billing|exceeded.*usage/i.test(text2)) return "quota";
   if (/rate.?limit|429|too many requests/i.test(text2)) return "rate_limit";
@@ -37211,7 +37766,8 @@ function buildArgs(o) {
   if (o.fast !== void 0) args.push("-c", `service_tier=${toml(o.fast ? "priority" : "default")}`);
   if (o.lastMessageFile) args.push("-o", o.lastMessageFile);
   if (o.outputSchemaFile) args.push("--output-schema", o.outputSchemaFile);
-  for (const dir2 of o.addDirs ?? []) args.push("--add-dir", dir2);
+  if (o.sessionId && o.addDirs?.length) args.push("-c", `sandbox_workspace_write.writable_roots=[${o.addDirs.map(toml).join(",")}]`);
+  else for (const dir2 of o.addDirs ?? []) args.push("--add-dir", dir2);
   for (const img of o.images ?? []) args.push("-i", img);
   args.push("--", "-");
   return args;
@@ -37289,6 +37845,9 @@ var EventCollector = class {
       case "turn.failed":
         this.error(e.error?.message ?? e.error);
         break;
+      case "turn.redirected":
+        this.inflight.clear();
+        break;
       case "error":
         this.error(e.message);
         break;
@@ -37333,9 +37892,9 @@ var EventCollector = class {
   }
 };
 function readFinal(file2) {
-  if (!file2 || !existsSync2(file2)) return void 0;
+  if (!file2 || !existsSync3(file2)) return void 0;
   try {
-    return readFileSync3(file2, "utf8").trim() || void 0;
+    return readFileSync5(file2, "utf8").trim() || void 0;
   } catch {
     return void 0;
   }
@@ -37343,8 +37902,9 @@ function readFinal(file2) {
 function runCodex(o) {
   const started = Date.now();
   const collector = new EventCollector();
+  const appServer = config2.engine === "app-server";
   return new Promise((resolve4) => {
-    const child = spawn2(config2.codex.cmd, [...config2.codex.args, ...buildArgs(o)], {
+    const child = spawn2(config2.codex.cmd, [...config2.codex.args, ...appServer ? APP_SERVER_ARGS : buildArgs(o)], {
       cwd: o.cwd,
       env: { ...process.env, ...o.env },
       stdio: ["pipe", "pipe", "pipe"],
@@ -37361,10 +37921,31 @@ function runCodex(o) {
     }
     child.stdin.on("error", () => {
     });
-    child.stdin.end(o.prompt);
     const log = o.logFile ? createWriteStream(o.logFile) : void 0;
     log?.on("error", () => {
     });
+    let exitTimer;
+    const turn = appServer ? new AppServerTurn(child, o, {
+      emit: (event) => {
+        const line = JSON.stringify(event);
+        log?.write(`${line}
+`);
+        collector.push(line);
+        alive4();
+      },
+      activity: () => {
+        collector.lastEventAt = Date.now();
+        alive4();
+      },
+      // Codex is done with the turn: let the server exit, and make sure it does.
+      done: () => {
+        child.stdin.end();
+        exitTimer ??= setTimeout(() => stop(child), 5e3);
+        exitTimer.unref?.();
+      }
+    }) : void 0;
+    if (!turn) child.stdin.end(o.prompt);
+    if (turn && o.stallControl) o.stallControl.live = turn;
     let buf = "";
     let stderr = "";
     let timedOut = false;
@@ -37386,10 +37967,22 @@ function runCodex(o) {
           suspicion,
           stallWindowSince: idleWindow().since,
           effectiveThresholdSec: idleWindow().timeoutMs / 1e3,
-          matchedRule: selectedRule()
+          matchedRule: selectedRule(),
+          turnId: turn?.turnId,
+          steers: turn?.steers.length ? [...turn.steers] : void 0,
+          kept: turn?.kept.length ? turn.kept : void 0
         });
       } catch {
       }
+    };
+    const alive4 = () => {
+      suspicion = void 0;
+      wakes = 0;
+      threshold = void 0;
+      windowSince = void 0;
+      watchdog.touch();
+      progress();
+      announce();
     };
     let announced = false;
     const announce = () => {
@@ -37404,6 +37997,12 @@ function runCodex(o) {
       watchdog.dispose();
       if (timer) clearTimeout(timer);
       stop(child);
+    };
+    const cancel = () => {
+      if (!turn || turn.finished || !turn.turnId) return kill();
+      watchdog.dispose();
+      void turn.interrupt();
+      exitTimer ??= setTimeout(kill, 5e3);
     };
     const command = () => [...collector.inflight.values()].find((it) => it.type === "command_execution");
     const selection = () => commandThreshold(command()?.command ?? "", o.stall?.command_s ?? (o.idleTimeoutMs === void 0 ? config2.commandIdleTimeoutSec : o.idleTimeoutMs / 1e3), o.stall?.long_commands);
@@ -37448,40 +38047,38 @@ function runCodex(o) {
       timedOut = true;
       kill();
     }, o.timeoutMs) : void 0;
-    o.signal?.addEventListener("abort", kill, { once: true });
+    o.signal?.addEventListener("abort", cancel, { once: true });
     if (o.signal?.aborted) kill();
     child.stdout.setEncoding("utf8").on("data", (chunk) => {
-      log?.write(chunk);
+      if (!turn) log?.write(chunk);
       buf += chunk;
       let i;
       let sawLine = false;
       while ((i = buf.indexOf("\n")) >= 0) {
         sawLine = true;
-        collector.push(buf.slice(0, i));
+        const line = buf.slice(0, i);
+        if (turn) turn.line(line);
+        else collector.push(line);
         buf = buf.slice(i + 1);
       }
-      if (sawLine) {
-        suspicion = void 0;
-        wakes = 0;
-        threshold = void 0;
-        windowSince = void 0;
-        watchdog.touch();
-        progress();
-      }
-      announce();
+      if (sawLine && !turn) alive4();
     });
+    if (turn && !o.signal?.aborted) void turn.run();
     child.stderr.setEncoding("utf8").on("data", (chunk) => {
       stderr = (stderr + chunk).slice(-8e3);
     });
+    const stderrTail = () => stderr.split("\n").filter((l) => l.trim() && !l.startsWith("Reading additional input") && !/unrecognized configuration|is ignored\.$/.test(l)).slice(-5).join("\n");
     const finish = (exitCode, spawnError) => {
       if (settled) return;
       settled = true;
       clearInterval(orphanTimer);
+      clearTimeout(exitTimer);
       if (control) control.rearm = void 0;
       watchdog.dispose();
-      o.signal?.removeEventListener("abort", kill);
+      o.signal?.removeEventListener("abort", cancel);
       if (timer) clearTimeout(timer);
-      if (buf) collector.push(buf);
+      if (buf) turn ? turn.line(buf) : collector.push(buf);
+      if (turn) turn.finished = true;
       progress();
       announce();
       if (stderr.trim()) log?.write(`
@@ -37494,19 +38091,20 @@ ${stderr}
       if (timedOut) errors.push(`timed out after ${Math.round((o.timeoutMs ?? 0) / 1e3)}s`);
       else if (o.signal?.aborted) errors.push("cancelled");
       if (stall) errors.push(`stalled: no codex output for ${Math.round(stall.idleMs / 6e4)}m${stall.command ? ` while running: ${stall.command.slice(0, 200)}` : " (model silent)"}`);
-      if (exitCode && !errors.length) {
-        const tail = stderr.split("\n").filter((l) => l.trim() && !l.startsWith("Reading additional input")).slice(-5).join("\n");
-        errors.push(tail || `exit code ${exitCode}`);
-      }
-      const exitKind = timedOut ? "timeout" : stall ? "stalled" : o.signal?.aborted ? "cancelled" : spawnError ? "crashed" : collector.errors.length ? "api_error" : exitCode !== 0 || !collector.turns ? "crashed" : "completed";
-      if (exitKind === "crashed" && !errors.length) errors.push("codex exited without turn.completed");
+      if (exitCode && !errors.length && !(turn && collector.turns)) errors.push(stderrTail() || `exit code ${exitCode}`);
+      const exitKind = timedOut ? "timeout" : stall ? "stalled" : o.signal?.aborted ? "cancelled" : spawnError ? "crashed" : collector.errors.length ? "api_error" : exitCode !== 0 && !turn || !collector.turns ? "crashed" : "completed";
+      if (exitKind === "crashed" && !errors.length) errors.push(stderrTail() || "codex exited without turn.completed");
       const error62 = errors.join("; ") || void 0;
       resolve4({
         denials: collector.denials,
         commands: collector.commands,
         ok: exitKind === "completed",
         exitKind,
-        errorKind: error62 ? classifyError(error62) : void 0,
+        // Structured codexErrorInfo beats matching the message text.
+        errorKind: error62 ? turn?.errorKinds[0] ?? classifyError(error62) : void 0,
+        steers: turn?.steers.length ? turn.steers : void 0,
+        rateLimits: turn?.rateLimits,
+        kept: turn?.kept.length ? turn.kept : void 0,
         stalled: !!stall,
         stall,
         sessionId: collector.sessionId,
@@ -37531,8 +38129,8 @@ ${stderr}
 // src/git.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync as readFileSync4, statSync } from "node:fs";
-import { join as join3 } from "node:path";
+import { readFileSync as readFileSync6, statSync } from "node:fs";
+import { join as join5 } from "node:path";
 function parsePorcelainZ(out) {
   const parts = out.split("\0");
   const entries2 = [];
@@ -37554,7 +38152,7 @@ function fingerprint(file2) {
     const st = statSync(file2);
     if (!st.isFile()) return "dir";
     if (st.size > MAX_HASH_BYTES) return `big:${st.size}:${st.mtimeMs}`;
-    return createHash("sha1").update(readFileSync4(file2)).digest("hex");
+    return createHash("sha1").update(readFileSync6(file2)).digest("hex");
   } catch {
     return "deleted";
   }
@@ -37563,7 +38161,7 @@ function snapshot(cwd) {
   const r = git(cwd, ["status", "--porcelain", "-z", "--untracked-files=all"]);
   if (r.status !== 0) return void 0;
   const snap = /* @__PURE__ */ new Map();
-  for (const e of parsePorcelainZ(r.stdout)) snap.set(e.path, { xy: e.xy, hash: fingerprint(join3(cwd, e.path)) });
+  for (const e of parsePorcelainZ(r.stdout)) snap.set(e.path, { xy: e.xy, hash: fingerprint(join5(cwd, e.path)) });
   return snap;
 }
 function diffSnapshots(before, after) {
@@ -37591,7 +38189,7 @@ function diffStat(cwd, changes) {
   return changes.map((c) => {
     if (c.xy === "??") {
       try {
-        const buf = readFileSync4(join3(cwd, c.path));
+        const buf = readFileSync6(join5(cwd, c.path));
         if (buf.includes(0)) return { ...c, binary: true };
         const text2 = buf.toString("utf8");
         return { ...c, added: text2 ? text2.split("\n").length - (text2.endsWith("\n") ? 1 : 0) : 0, removed: 0 };
@@ -37604,12 +38202,12 @@ function diffStat(cwd, changes) {
 }
 
 // src/models.ts
-import { readFileSync as readFileSync5 } from "node:fs";
-import { join as join4 } from "node:path";
-function listModels(path = join4(config2.codexHome, "models_cache.json")) {
+import { readFileSync as readFileSync7 } from "node:fs";
+import { join as join6 } from "node:path";
+function listModels(path = join6(config2.codexHome, "models_cache.json")) {
   let data;
   try {
-    data = JSON.parse(readFileSync5(path, "utf8"));
+    data = JSON.parse(readFileSync7(path, "utf8"));
   } catch {
     return [];
   }
@@ -37669,7 +38267,7 @@ function resolveModelOrThrow(query) {
 }
 
 // src/policy.ts
-import { mkdirSync, readFileSync as readFileSync6, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { mkdirSync, readFileSync as readFileSync8, renameSync, writeFileSync as writeFileSync4 } from "node:fs";
 var DEFAULT_POLICY = {
   sandboxWrites: false,
   retention: { cmdLogMaxMB: 5, failedLogDays: 3, runDays: 30, totalMaxMB: 1024 },
@@ -37757,7 +38355,7 @@ function validatePolicy(input2, models = listModels()) {
 function loadPolicy(file2 = config2.policyFile) {
   let text2;
   try {
-    text2 = readFileSync6(file2, "utf8");
+    text2 = readFileSync8(file2, "utf8");
   } catch {
     return { policy: DEFAULT_POLICY };
   }
@@ -37776,14 +38374,64 @@ function tierLabel(t) {
   return `${t.model ?? (dflt ? dflt : "codex default")}#${t.effort}`;
 }
 
+// src/checkpoints.ts
+import { readdirSync as readdirSync3, readFileSync as readFileSync9, statSync as statSync2 } from "node:fs";
+import { join as join7 } from "node:path";
+var MAX_CHECKPOINT_CHARS = 2500;
+function checkpointContract(runDir) {
+  return `
+
+Checkpoints (requested by the lead): this is a longer task, and the lead wants to review direction while you work. At each point below, write a short stage report to ${join7(runDir, "checkpoint-<n>.md")} (n = 1, 2, 3 \u2026, a new file each time, written in one go), then KEEP WORKING; do not wait for an answer. If the lead changes direction, the new instruction arrives as a user message in this conversation.
+Write one when:
+- investigation is done and you are about to implement: what you found, the approach you chose, the alternatives you rejected;
+- you find something that contradicts the brief or changes its scope (an assumption is wrong, the fix belongs elsewhere, much more work than expected);
+- before a large, slow or hard-to-undo step (a long run, a migration, a wide refactor, deleting data);
+- a major phase finishes and the next one depends on its result.
+Usually 1\u20133 per task; never for routine progress. Format, under ~25 lines:
+# <one-line stage title>
+Found: \u2026
+Plan next: \u2026
+Open choice / risk: \u2026 (or "none")
+If a choice is genuinely the lead's (product, scope, risk) and continuing would waste the work, write the checkpoint, then end the turn with status needs_decision instead of guessing.`;
+}
+function scanCheckpoints(runDir, seen = /* @__PURE__ */ new Set(), now = Date.now()) {
+  let names;
+  try {
+    names = readdirSync3(runDir);
+  } catch {
+    return [];
+  }
+  const found = [];
+  for (const name of names) {
+    const n = Number(/^checkpoint-(\d+)\.md$/i.exec(name)?.[1]);
+    if (!Number.isInteger(n) || seen.has(n)) continue;
+    const file2 = join7(runDir, name);
+    try {
+      const st = statSync2(file2);
+      if (!st.size || now - st.mtimeMs < 1e3) continue;
+      const text2 = readFileSync9(file2, "utf8").trim();
+      const title = text2.split(/\r?\n/).find((l) => l.trim())?.replace(/^#+\s*/, "").slice(0, 120) ?? `checkpoint ${n}`;
+      found.push({ n, file: file2, at: st.mtimeMs, title, text: text2 });
+    } catch {
+    }
+  }
+  return found.sort((a, b) => a.n - b.n);
+}
+function renderCheckpoint(c) {
+  const body = c.text.length > MAX_CHECKPOINT_CHARS ? `${c.text.slice(0, MAX_CHECKPOINT_CHARS)}
+\u2026[truncated; full text in ${c.file}]` : c.text;
+  return `--- checkpoint ${c.n} (${c.file}) ---
+${body}`;
+}
+
 // src/pending.ts
 import { createHash as createHash2 } from "node:crypto";
-import { existsSync as existsSync3, mkdirSync as mkdirSync2, readFileSync as readFileSync7, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join5 } from "node:path";
+import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync10, rmSync as rmSync2, writeFileSync as writeFileSync5 } from "node:fs";
+import { join as join8 } from "node:path";
 var MAX_AGE_MS = 24 * 3600 * 1e3;
-var dir = () => join5(config2.runsDir, "pending");
-var fileFor = (cwd) => join5(dir(), `${createHash2("sha1").update(cwd.toLowerCase()).digest("hex").slice(0, 16)}.json`);
-function alive2(pid) {
+var dir = () => join8(config2.runsDir, "pending");
+var fileFor = (cwd) => join8(dir(), `${createHash2("sha1").update(cwd.toLowerCase()).digest("hex").slice(0, 16)}.json`);
+function alive3(pid) {
   if (pid === process.pid) return true;
   try {
     process.kill(pid, 0);
@@ -37795,7 +38443,7 @@ function alive2(pid) {
 function savePending(rec) {
   try {
     mkdirSync2(dir(), { recursive: true });
-    writeFileSync3(fileFor(rec.cwd), JSON.stringify(rec, null, 2));
+    writeFileSync5(fileFor(rec.cwd), JSON.stringify(rec, null, 2));
   } catch {
   }
 }
@@ -37803,8 +38451,8 @@ function clearPending(cwd, owner) {
   const f = fileFor(cwd);
   try {
     if (owner) {
-      if (!existsSync3(f)) return;
-      const cur = JSON.parse(readFileSync7(f, "utf8"));
+      if (!existsSync4(f)) return;
+      const cur = JSON.parse(readFileSync10(f, "utf8"));
       if (cur.pid !== owner.pid || cur.startedAt !== owner.startedAt) return;
     }
     rmSync2(f, { force: true });
@@ -37813,17 +38461,17 @@ function clearPending(cwd, owner) {
 }
 function loadPending(cwd) {
   const f = fileFor(cwd);
-  if (!existsSync3(f)) return void 0;
+  if (!existsSync4(f)) return void 0;
   let rec;
   try {
-    rec = JSON.parse(readFileSync7(f, "utf8"));
+    rec = JSON.parse(readFileSync10(f, "utf8"));
   } catch {
     return void 0;
   }
   if (rec.cwd.toLowerCase() !== cwd.toLowerCase()) return void 0;
   if (rec.state === "running") {
     const stale = Date.now() - rec.startedAt > (config2.timeoutSec + 300) * 1e3;
-    if (!stale && (rec.pid === process.pid || alive2(rec.pid))) return void 0;
+    if (!stale && (rec.pid === process.pid || alive3(rec.pid))) return void 0;
     if (rec.codexPid) killOrphan(rec.codexPid);
     rec.state = "interrupted";
   }
@@ -37914,7 +38562,7 @@ function renderReport(r) {
 // package.json
 var package_default = {
   name: "claude-codex-delegate",
-  version: "0.7.1",
+  version: "0.10.0",
   description: "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna\u2026) while staying the orchestrator.",
   type: "module",
   license: "MIT",
@@ -37927,7 +38575,7 @@ var package_default = {
   scripts: {
     start: "node src/index.ts",
     dashboard: "node src/dashboard.ts",
-    build: `esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);"`,
+    build: `esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --banner:js="import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" && node -e "require('node:fs').copyFileSync('src/longrun.mjs','dist/longrun.mjs')"`,
     typecheck: "tsc --noEmit",
     test: "node --test test/*.test.ts",
     check: "npm run typecheck && npm test && npm run build"
@@ -37949,7 +38597,7 @@ var version3 = package_default.version;
 // src/delegate.ts
 function newRunDir() {
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
-  const dir2 = resolve(config2.runsDir, `${stamp}-${randomUUID().slice(0, 6)}`);
+  const dir2 = resolve(config2.runsDir, `${stamp}-${randomUUID2().slice(0, 6)}`);
   try {
     mkdirSync3(dir2, { recursive: true });
     return dir2;
@@ -37959,7 +38607,7 @@ function newRunDir() {
 }
 async function delegate(input2, signal, onProgress, stallControl) {
   const cwd = resolve(config2.defaultCwd, input2.cwd ?? ".");
-  if (!existsSync4(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
+  if (!existsSync5(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const auto = input2.auto ?? config2.auto;
   const { policy, error: policyError } = loadPolicy();
   const sandbox2 = effectiveSandbox(input2.sandbox, auto && config2.sandbox !== "read-only", policy.sandboxWrites);
@@ -38039,6 +38687,7 @@ async function execute(input2, r, signal, onProgress, stallControl) {
     prompt: input2.prompt.slice(0, 2e3),
     version: version3,
     phase: "codex",
+    engine: config2.engine,
     pid: process.pid,
     heartbeatAt: Date.now(),
     lastEventAt: Date.now(),
@@ -38058,7 +38707,7 @@ async function execute(input2, r, signal, onProgress, stallControl) {
     lastSnapshot = serialized;
     lastWrite = Date.now();
     try {
-      if (runDir) writeFileSync4(join6(runDir, "meta.json"), serialized);
+      if (runDir) writeFileSync6(join9(runDir, "meta.json"), serialized);
     } catch {
     }
   };
@@ -38102,21 +38751,45 @@ async function execute(input2, r, signal, onProgress, stallControl) {
     progress();
   }, 15e3);
   heartbeat.unref();
+  const seenCheckpoints = /* @__PURE__ */ new Set();
+  const pollCheckpoints = () => {
+    if (!runDir || !input2.checkpoints) return;
+    const found = scanCheckpoints(runDir, seenCheckpoints);
+    if (!found.length) return;
+    for (const c of found) seenCheckpoints.add(c.n);
+    meta3.checkpoints = [...meta3.checkpoints ?? [], ...found.map(({ n, at, title }) => ({ n, at, title }))];
+    progress();
+    writeMeta();
+  };
+  const checkpointTimer = setInterval(pollCheckpoints, config2.checkpointPollMs);
+  checkpointTimer.unref();
   try {
     let prompt = previousDiagnosis(config2.runsDir, input2.session_id) + (continued ? continuationPreamble(continued) : "") + input2.prompt;
     if (config2.contract) prompt += readOnly ? READ_CONTRACT : WRITE_CONTRACT;
     if (codexGuidance) prompt += `
 
 ${codexGuidance}`;
-    if (runDir) prompt += `
+    if (runDir && input2.checkpoints) prompt += checkpointContract(runDir);
+    const launcher = runDir && installLauncher(runDir);
+    if (runDir) trackRunDir(runDir);
+    if (runDir && launcher) {
+      prompt += `
 
-Command logs (added by the server): for commands likely to run longer than ~1 minute, tee output to ${join6(runDir, "cmd-<n>.log")} (use a new n per command). Absolute run directory: ${runDir}.`;
+Long commands (added by the server): run every command likely to take longer than ~1 minute through the launcher, with a new n per command (1, 2, 3 \u2026):
+  node "${launcher}" "${runDir}" run <n> -- <program> <args\u2026>
+  node "${launcher}" "${runDir}" run <n> "<one shell command string, for pipes/redirects>"
+It streams the output, blocks until the command ends and exits with its exit code, so use it exactly like running the command directly (one blocking call; fine under any long-script rules you follow). It also writes ${join9(runDir, "cmd-<n>.log")} ending in EXIT=<code>, and keeps the command alive if your turn is interrupted, so the lead can talk to you without killing the job. Don't wrap it in tee. Absolute run directory: ${runDir}.`;
+    } else if (runDir) {
+      prompt += `
+
+Command logs (added by the server): for commands likely to run longer than ~1 minute, tee output to ${join9(runDir, "cmd-<n>.log")} (use a new n per command). Absolute run directory: ${runDir}.`;
+    }
     let outputSchemaFile;
     if (runDir) {
-      writeFileSync4(join6(runDir, "prompt.md"), prompt);
+      writeFileSync6(join9(runDir, "prompt.md"), prompt);
       if (structured) {
-        outputSchemaFile = join6(runDir, "report.schema.json");
-        writeFileSync4(outputSchemaFile, JSON.stringify(REPORT_SCHEMA, null, 2));
+        outputSchemaFile = join9(runDir, "report.schema.json");
+        writeFileSync6(outputSchemaFile, JSON.stringify(REPORT_SCHEMA, null, 2));
       }
     }
     const rec = readOnly ? void 0 : {
@@ -38134,7 +38807,7 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
     };
     if (rec) savePending(rec);
     const before = snapshot(cwd);
-    const tempDir = runDir && sandbox2 === "workspace-write" ? join6(runDir, "tmp") : void 0;
+    const tempDir = runDir && sandbox2 === "workspace-write" ? join9(runDir, "tmp") : void 0;
     if (tempDir) mkdirSync3(tempDir, { recursive: true });
     const result = await runCodex({
       addDirs: [...runDir ? [runDir] : [], ...(input2.add_dirs ?? []).map((dir2) => resolve(cwd, dir2))],
@@ -38154,6 +38827,9 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
         const it = info.inflight;
         if (info.suspicion) meta3.lastEvidence = info.suspicion.evidence;
         if (it?.type === "command_execution") meta3.lastInflight = { command: it.command, startedAt: it.startedAt };
+        if (info.turnId) meta3.turnId = info.turnId;
+        if (info.steers) meta3.steers = info.steers.map(({ at, text: text2, consumedAt, redirect }) => ({ at, text: text2, consumedAt, redirect }));
+        if (info.kept) meta3.kept = info.kept;
         Object.assign(meta3, {
           commands: info.commands,
           denials: info.denials,
@@ -38183,10 +38859,24 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
       timeoutMs: (input2.timeout_s ?? config2.timeoutSec) * 1e3,
       idleTimeoutMs: input2.idle_timeout_s === void 0 ? void 0 : input2.idle_timeout_s * 1e3,
       signal,
-      lastMessageFile: runDir && join6(runDir, "last-message.txt"),
+      lastMessageFile: runDir && join9(runDir, "last-message.txt"),
       outputSchemaFile,
-      logFile: runDir && join6(runDir, "events.jsonl")
+      logFile: runDir && join9(runDir, "events.jsonl"),
+      runDir
     });
+    if (runDir) {
+      const leftover = reapLongruns(runDir, signal?.aborted ? "task cancelled" : "the codex run ended");
+      const forgotten = leftover.filter((n) => !result.kept?.some((k) => k.n === n && k.outcome !== "running"));
+      if (forgotten.length) notes.push(`background command(s) ${forgotten.map((n) => `cmd-${n}`).join(", ")} were still running when codex finished; the server stopped them (logs in the run directory)`);
+      if (result.kept) result.kept = result.kept.map((k) => leftover.includes(k.n) && k.outcome === "running" ? { ...k, outcome: "killed_forgotten" } : refresh(runDir, k));
+    }
+    clearInterval(checkpointTimer);
+    if (runDir && input2.checkpoints) {
+      for (const c of scanCheckpoints(runDir, seenCheckpoints, Infinity)) {
+        seenCheckpoints.add(c.n);
+        meta3.checkpoints = [...meta3.checkpoints ?? [], { n: c.n, at: c.at, title: c.title }];
+      }
+    }
     Object.assign(meta3, {
       exitKind: result.exitKind,
       errorKind: result.errorKind,
@@ -38209,7 +38899,9 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
     const report = structured ? parseReport(result.text) : void 0;
     if (structured && !report && result.ok) notes.push("codex did not return the JSON report; showing its raw final message");
     let checks;
-    if (input2.checks?.length && !signal?.aborted) {
+    const envStop = !result.ok && (result.errorKind === "quota" || result.errorKind === "auth");
+    if (envStop && input2.checks?.length) notes.push(`host checks skipped: codex stopped on ${result.errorKind}`);
+    if (input2.checks?.length && !signal?.aborted && !envStop) {
       meta3.phase = "checks";
       meta3.checksStartedAt = Date.now();
       meta3.checks = [];
@@ -38237,7 +38929,7 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
       error: result.error,
       toolCalls: result.toolCalls.length
     });
-    return { model: model2, effort, tier, fast, sandbox: sandbox2, resumed: !!input2.session_id, cwd, notes, result, report, runDir, changes, checks, continued };
+    return { model: model2, effort, tier, fast, sandbox: sandbox2, resumed: !!input2.session_id, cwd, notes, result, report, runDir, changes, checks, continued, checkpoints: meta3.checkpoints };
   } catch (error62) {
     meta3.state = signal?.aborted ? "interrupted" : "error";
     meta3.error = error62 instanceof Error ? error62.message : String(error62);
@@ -38246,16 +38938,17 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
     throw error62;
   } finally {
     clearInterval(heartbeat);
+    clearInterval(checkpointTimer);
     clearInterval(sampler);
     sampleController.abort();
     if (runDir) {
       try {
         trimCommandLogs(runDir, r.retention.cmdLogMaxMB);
-        meta3.cmdLogTails = finishCommandLogs(runDir, meta3.state === "ok" && !meta3.checks?.some((c) => c.ok === false));
+        meta3.cmdLogTails = finishCommandLogs(runDir, meta3.state === "ok" && !meta3.checks?.some((c) => c.ok === false), (meta3.kept ?? []).map((k) => `cmd-${k.n}.log`));
       } catch {
       }
       try {
-        rmSync3(join6(runDir, "tmp"), { recursive: true, force: true });
+        rmSync3(join9(runDir, "tmp"), { recursive: true, force: true });
       } catch {
       }
     }
@@ -38305,6 +38998,23 @@ var REPORT_NEXT = {
   partial: "resume with session_id to finish the remaining items, or take over only if they are small",
   blocked: "codex could not proceed: read the reason; fix the environment or brief and resume, or ask the user if it needs them"
 };
+var KEPT_OUTCOME = {
+  running: "STILL RUNNING",
+  exited: "finished",
+  stopped: "stopped by codex",
+  gone: "ended (exit code unknown)",
+  killed_cancel: "stopped: task cancelled",
+  killed_forgotten: "STOPPED BY THE SERVER: codex ended without dealing with it; check whether it should be rerun"
+};
+function renderKept(kept) {
+  return ["background commands kept across a redirect:", ...kept.map((k) => `  cmd-${k.n}: ${KEPT_OUTCOME[k.outcome]}${k.exitCode !== void 0 ? ` (exit ${k.exitCode})` : ""} | ${k.command.replace(/\s+/g, " ").slice(0, 160)} | log ${k.log}`)].join("\n");
+}
+function quotaReset(r) {
+  const said = r.error?.match(/try again (?:at|in) ([^.;]+)/i)?.[1]?.trim();
+  if (said) return said;
+  const at = r.rateLimits?.resetsAt;
+  return at ? new Date(at * 1e3).toLocaleString() : void 0;
+}
 function formatOutcome(o) {
   const r = o.result;
   const model2 = o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`);
@@ -38315,7 +39025,7 @@ function formatOutcome(o) {
     `duration: ${(r.durationMs / 1e3).toFixed(0)}s, codex tokens in/cached/out: ${r.tokens.input}/${r.tokens.cachedInput}/${r.tokens.output}`
   ];
   if (r.exitKind !== "completed") {
-    const hint = r.errorKind === "quota" || r.errorKind === "auth" ? "environment problem: tell the user, don't take over" : r.exitKind === "stalled" ? `codex hung on ${r.stall?.command?.replace(/\s+/g, " ").slice(0, 200) ?? "a silent model turn"}; the session keeps context: resume with session_id and tell it the command hung (run it with a timeout / fix the hang)` : (r.exitKind === "crashed" || r.exitKind === "api_error") && (r.errorKind === "network" || r.errorKind === "rate_limit") ? "transient: retry once with the same session_id" : void 0;
+    const hint = r.errorKind === "quota" ? `codex is out of quota${quotaReset(r) ? ` until ${quotaReset(r)}` : ""}. STOP now: do not continue the delegated work yourself, do not sleep or poll for the reset. End your turn with what codex finished (git changes below), what is left, and ask the user whether to wait for the reset, have you take over the rest, or something else. Resume later with session_id.` : r.errorKind === "auth" ? "codex is not logged in or its credentials were rejected. STOP: tell the user (they run `codex login`), don't take over the work." : r.exitKind === "stalled" ? `codex hung on ${r.stall?.command?.replace(/\s+/g, " ").slice(0, 200) ?? "a silent model turn"}; the session keeps context: resume with session_id and tell it the command hung (run it with a timeout / fix the hang)` : (r.exitKind === "crashed" || r.exitKind === "api_error") && (r.errorKind === "network" || r.errorKind === "rate_limit") ? "transient: retry once with the same session_id" : void 0;
     if (hint) lines.splice(1, 0, `next: ${hint}`);
   } else if (o.report && o.report.status !== "done") {
     const n = o.report.questions?.length ?? 0;
@@ -38324,6 +39034,18 @@ function formatOutcome(o) {
   }
   if (o.continued) {
     lines.push(`continued: the interrupted run in this cwd (session ${o.continued.sessionId}); codex kept its context and partial edits and was told your new message wins. Pass fresh: true to start over instead.`);
+  }
+  if (r.kept?.length) lines.push(renderKept(r.kept));
+  if (o.checkpoints?.length) {
+    lines.push(`checkpoints (stage reports in the run log): ${o.checkpoints.map((c) => `${c.n}. ${c.title}`).join("; ")}`);
+  }
+  if (r.steers?.length) {
+    const unread = r.steers.filter((s) => !s.consumedAt).length;
+    lines.push(`steered: ${r.steers.length} message(s) sent into the turn${unread ? `; ${unread} not read by codex before it finished: resend with session_id` : ", all read by codex"}`);
+  }
+  const used = r.rateLimits?.usedPercent;
+  if (used !== void 0 && used >= 80 && r.errorKind !== "quota") {
+    lines.push(`note: codex usage window ${used}% used${quotaReset(r) ? `, resets ${quotaReset(r)}` : ""}; keep further briefs small or tell the user`);
   }
   for (const n of [...o.notes, ...r.warnings]) lines.push(`note: ${n}`);
   if (r.error) lines.push(`error: ${truncate(r.error, 1500)}`);
@@ -38336,7 +39058,7 @@ ${seen.map((p) => `  ${p}`).join("\n")}`);
   }
   if (o.checks?.length) lines.push(renderChecks(o.checks));
   if (!o.report) {
-    const where = o.runDir && join6(o.runDir, "last-message.txt");
+    const where = o.runDir && join9(o.runDir, "last-message.txt");
     lines.push("--- response ---", truncate(r.text || "(no text output)", config2.maxOutputChars, where));
   }
   if (o.runDir) lines.push(`run log: ${o.runDir}`);
@@ -38347,8 +39069,8 @@ ${seen.map((p) => `  ${p}`).join("\n")}`);
 import { watchFile } from "node:fs";
 
 // src/sessions.ts
-import { closeSync as closeSync2, openSync as openSync2, readdirSync as readdirSync2, readSync as readSync2, statSync as statSync2 } from "node:fs";
-import { join as join7, resolve as resolve2 } from "node:path";
+import { closeSync as closeSync2, openSync as openSync2, readdirSync as readdirSync4, readSync as readSync2, statSync as statSync3 } from "node:fs";
+import { join as join10, resolve as resolve2 } from "node:path";
 var HEAD_BYTES = 512 * 1024;
 function readHead(file2) {
   const fd = openSync2(file2, "r");
@@ -38387,17 +39109,17 @@ function parseRollout(head, file2) {
 function* rollouts(dir2) {
   let entries2;
   try {
-    entries2 = readdirSync2(dir2).sort().reverse();
+    entries2 = readdirSync4(dir2).sort().reverse();
   } catch {
     return;
   }
   for (const e of entries2) {
-    const p = join7(dir2, e);
+    const p = join10(dir2, e);
     if (e.startsWith("rollout-") && e.endsWith(".jsonl")) yield p;
-    else if (statSync2(p).isDirectory()) yield* rollouts(p);
+    else if (statSync3(p).isDirectory()) yield* rollouts(p);
   }
 }
-function listSessions(cwd, limit, root = join7(config2.codexHome, "sessions")) {
+function listSessions(cwd, limit, root = join10(config2.codexHome, "sessions")) {
   const want = resolve2(cwd);
   const out = [];
   for (const file2 of rollouts(root)) {
@@ -38409,27 +39131,35 @@ function listSessions(cwd, limit, root = join7(config2.codexHome, "sessions")) {
 }
 
 // src/tasks.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { existsSync as existsSync5, mkdirSync as mkdirSync4, readFileSync as readFileSync8, writeFileSync as writeFileSync5 } from "node:fs";
-import { join as join8 } from "node:path";
+import { randomUUID as randomUUID3 } from "node:crypto";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync11, writeFileSync as writeFileSync7 } from "node:fs";
+import { join as join11 } from "node:path";
 var MAX_FINISHED = 100;
 var tasks = /* @__PURE__ */ new Map();
-var tasksDir = () => join8(config2.runsDir, "tasks");
-var taskFile = (id) => join8(tasksDir(), `${id.replace(/[^\w-]/g, "")}.json`);
+var tasksDir = () => join11(config2.runsDir, "tasks");
+var taskFile = (id) => join11(tasksDir(), `${id.replace(/[^\w-]/g, "")}.json`);
 function store(t) {
   try {
     mkdirSync4(tasksDir(), { recursive: true });
     const text2 = t.outcome ? formatOutcome(t.outcome) : t.error && `error: ${t.error}`;
-    const rec = { id: t.id, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, title: t.input.title, text: text2 };
-    writeFileSync5(taskFile(t.id), JSON.stringify(rec));
+    const rec = {
+      id: t.id,
+      status: t.status,
+      startedAt: t.startedAt,
+      finishedAt: t.finishedAt,
+      title: t.input.title,
+      text: text2,
+      sessionId: t.outcome?.result.sessionId ?? t.progress?.sessionId
+    };
+    writeFileSync7(taskFile(t.id), JSON.stringify(rec));
   } catch {
   }
 }
 function storedTask(id) {
   const f = taskFile(id);
-  if (!existsSync5(f)) return void 0;
+  if (!existsSync6(f)) return void 0;
   try {
-    const rec = JSON.parse(readFileSync8(f, "utf8"));
+    const rec = JSON.parse(readFileSync11(f, "utf8"));
     if (rec.status === "running") rec.status = "interrupted";
     return rec;
   } catch {
@@ -38442,9 +39172,11 @@ function prune() {
 }
 function startTask(input2, background = true, evidenceSampler) {
   const controller = new AbortController();
-  const task = { id: `task_${randomUUID2().slice(0, 8)}`, input: input2, status: "running", startedAt: Date.now(), controller, control: { evidenceSampler, background, lastObservedAt: Date.now() }, listeners: /* @__PURE__ */ new Set() };
+  const task = { id: `task_${randomUUID3().slice(0, 8)}`, input: input2, status: "running", startedAt: Date.now(), controller, control: { evidenceSampler, background, lastObservedAt: Date.now() }, listeners: /* @__PURE__ */ new Set() };
   task.promise = delegate(input2, controller.signal, (info) => {
+    const first = info.sessionId && !task.progress?.sessionId;
     task.progress = info;
+    if (first) store(task);
     for (const notify of task.listeners) notify();
   }, task.control).then(
     (outcome) => {
@@ -38472,8 +39204,10 @@ function runningProgress(task) {
   const p = task.progress;
   const minutes = ((Date.now() - (p?.lastEventAt ?? task.startedAt)) / 6e4).toFixed(1);
   const command = p?.inflight?.command ?? p?.checks?.find((c) => c.state === "running")?.command;
+  const kept = p?.kept?.filter((k) => k.outcome === "running").map((k) => `
+kept running: cmd-${k.n} ${k.command.replace(/\s+/g, " ").slice(0, 120)}`).join("") ?? "";
   return `phase: ${p?.phase ?? "codex"}; last codex event: ${minutes}m ago${command ? `
-inflight: ${command.replace(/\s+/g, " ").slice(0, 200)}` : ""}`;
+inflight: ${command.replace(/\s+/g, " ").slice(0, 200)}` : ""}${kept}`;
 }
 function listTasks() {
   for (const task of tasks.values()) task.control.lastObservedAt = Date.now();
@@ -38493,14 +39227,39 @@ function formatSuspicion(task) {
     `inflight: ${s.command?.replace(/\s+/g, " ").slice(0, 300) ?? "(model silent)"}; idle: ${((Date.now() - (p.lastEventAt ?? task.startedAt)) / 1e3).toFixed(0)}s`,
     `threshold: ${s.thresholdSec}s; wakes: ${s.wakes}${s.matchedRule ? `; rule: ${s.matchedRule}` : ""}`,
     `evidence: ${JSON.stringify(s.evidence)}`,
-    logReport(join8(config2.runsDir, p.id)),
+    logReport(join11(config2.runsDir, p.id)),
     trendReport(p.trend),
     s.command ? baseline(config2.runsDir, s.command, p.id) : ""
   ].filter(Boolean).join("\n");
 }
+function newCheckpoints(task) {
+  return (task.progress?.checkpoints ?? []).slice(task.shownCheckpoints ?? 0);
+}
+function formatCheckpoints(task) {
+  const fresh = newCheckpoints(task);
+  task.shownCheckpoints = task.progress?.checkpoints?.length ?? 0;
+  const p = task.progress;
+  const dir2 = join11(config2.runsDir, p.id);
+  const steer = task.control.live ? "direction should change \u2192 task_steer(task_id, prompt) (now: true makes codex read it at once; a long command it started keeps running unless you also pass kill: true)" : "direction should change \u2192 task_cancel, then delegate(session_id) with the new direction (this engine cannot steer)";
+  return [
+    "status: checkpoint (codex is still working; nothing was stopped)",
+    `next: read the stage report. On course \u2192 task_result(task_id, wait_s) to keep waiting; ${steer}; badly off \u2192 task_cancel. Don't re-investigate what the report already states.`,
+    `task_id: ${task.id}`,
+    `session_id: ${p.sessionId ?? "(none)"}`,
+    `elapsed: ${((Date.now() - task.startedAt) / 1e3).toFixed(0)}s`,
+    ...fresh.map((c) => {
+      try {
+        return renderCheckpoint({ ...c, file: join11(dir2, `checkpoint-${c.n}.md`), text: readFileSync11(join11(dir2, `checkpoint-${c.n}.md`), "utf8").trim() });
+      } catch {
+        return `--- checkpoint ${c.n}: ${c.title} (file unreadable) ---`;
+      }
+    })
+  ].join("\n");
+}
 async function waitTask(task, waitSec, stallAfterSec) {
   task.control.lastObservedAt = Date.now();
   if (task.status !== "running") return;
+  if (newCheckpoints(task).length) return;
   const suspicion = task.controller.signal.aborted ? void 0 : task.progress?.suspicion;
   if (suspicion && task.seenWake !== suspicion.suspectedAt && stallAfterSec === void 0) {
     task.seenWake = suspicion.suspectedAt;
@@ -38512,7 +39271,7 @@ async function waitTask(task, waitSec, stallAfterSec) {
   let notify;
   const wake = new Promise((resolve4) => {
     notify = () => {
-      if (!task.controller.signal.aborted && task.progress?.suspicion) resolve4();
+      if (!task.controller.signal.aborted && (task.progress?.suspicion || newCheckpoints(task).length)) resolve4();
     };
     task.listeners.add(notify);
   });
@@ -38542,12 +39301,36 @@ async function delegateSync(input2, signal, evidenceSampler) {
     signal?.removeEventListener("abort", abort);
   }
 }
+async function steerTask(task, prompt, now = false, waitMs, kill = false) {
+  const session = task.progress?.sessionId ?? task.outcome?.result.sessionId;
+  if (task.status !== "running") {
+    return { isError: true, text: `${task.id} already ${task.status}; codex is no longer running. Send the new direction with delegate(session_id="${session ?? "?"}") instead.` };
+  }
+  const live2 = task.control.live;
+  if (!live2) return { isError: true, text: `${task.id} runs on the exec engine, which cannot be steered; task_cancel it, then delegate again in the same cwd with the new direction (the interrupted session continues).` };
+  if (live2.finished) return { isError: true, text: `codex has finished ${task.id}'s turn and the server is running host checks; collect it with task_result, then send the new direction with delegate(session_id="${session ?? "?"}").` };
+  try {
+    const inflight = task.progress?.inflight?.command?.replace(/\s+/g, " ").slice(0, 160);
+    if (now) {
+      const r = await live2.redirect(prompt, { kill, waitMs });
+      const lines = [`redirected ${task.id}: codex stopped thinking about its current step and continues the same session with your message. Edits made before stay.`];
+      for (const k of r.kept) lines.push(`kept running: cmd-${k.n} ${k.command.replace(/\s+/g, " ").slice(0, 160)} (log ${k.log}). Codex was told it must wait for it or stop it before finishing; you can watch it with task_inspect. If you decide it must stop, task_steer again saying so (or now: true, kill: true).`);
+      for (const c of r.killed) lines.push(`stopped: ${c.replace(/\s+/g, " ").slice(0, 160)}${kill ? "" : " (it was not started through the launcher, so it could not be kept)"}`);
+      lines.push("Collect with task_result.");
+      return { isError: false, text: lines.join("\n") };
+    }
+    const { consumed } = await live2.steer(prompt, waitMs);
+    return { isError: false, text: consumed ? `steered ${task.id}: codex has read the message and continues with it. Edits made before it stay; collect with task_result.` : `steered ${task.id}: accepted, codex will read it at its next step${inflight ? ` (busy running: ${inflight}; to have codex read it now while that keeps running, steer again with now: true)` : ""}. Collect with task_result; the result says whether codex read it.` };
+  } catch (e) {
+    return { isError: true, text: `steer failed: ${e instanceof Error ? e.message : String(e)}` };
+  }
+}
 async function inspectTask(task) {
   const p = task.progress;
   if (!p) return `task_id: ${task.id}; ${task.status}; evidence unavailable`;
-  const dir2 = join8(config2.runsDir, p.id);
+  const dir2 = join11(config2.runsDir, p.id);
   const sample = task.status === "running" && p.codexPid ? await sampleTreeEvidence(p.codexPid, new AbortController().signal) : void 0;
-  const events = tailFile(join8(dir2, "events.jsonl"), 16e3).trim().split(/\r?\n/).slice(-5).map((line) => {
+  const events = tailFile(join11(dir2, "events.jsonl"), 16e3).trim().split(/\r?\n/).slice(-5).map((line) => {
     try {
       const e = JSON.parse(line);
       return `${e.type}: ${e.item?.command ?? e.item?.text ?? e.item?.type ?? e.message ?? ""}`.slice(0, 120);
@@ -38586,9 +39369,10 @@ function effortParam(policy) {
     "Cost tier for this run, chosen by you from the task's difficulty; it sets the model and reasoning effort (an explicit `model` overrides the tier's model). Tiers, cheapest first:\n" + policy.tiers.map((t) => `- ${t.id} (${tierLabel(t)}): ${t.use}`).join("\n") + "\nA follow-up (same session_id) may use a different tier."
   );
 }
+var CHECKPOINT_DESCRIPTION = "\n\nCheckpoints: for long tasks (roughly 10+ minutes, multi-phase work, or an investigation whose findings could change the plan) set checkpoints: true. Codex then writes a short stage report at points where direction may change (findings before implementing, scope surprises, before slow or hard-to-undo steps) and keeps working; the call returns early with `status: checkpoint` and the report. Read it and either keep waiting (task_result with wait_s) or redirect (task_steer). Skip checkpoints for short, well-specified tasks: each one costs you a turn.";
 var STALL_DESCRIPTION = " When the brief includes long-running commands (full test suites, training, backtests, big builds), set stall.long_commands for them. A status: suspected_stall result means Codex is still running: inspect cheaply, then task_result to keep waiting or task_cancel.";
-var DELEGATE_DESCRIPTION = "Run a task with an OpenAI model through the Codex CLI (`codex exec`) and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass it as written rather than restating it. Put test/build commands in `checks`. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id. A result whose first line is `status: needs_decision` (or partial/blocked) is not finished: make the decisions yourself and resume the same session_id with them in this turn; ask the user only for choices that are really theirs.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.";
-var ASYNC_DESCRIPTION = "Same as delegate, but returns a task_id immediately while the Codex model works in the background. Use for long tasks or to run several in parallel; then call task_result to collect output. Parallel tasks editing the same directory can conflict \u2014 give each its own cwd/worktree or non-overlapping files.";
+var DELEGATE_DESCRIPTION = "Run a task with an OpenAI model through the Codex CLI and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass it as written rather than restating it. Put test/build commands in `checks`. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id. A result whose first line is `status: needs_decision` (or partial/blocked) is not finished: make the decisions yourself and resume the same session_id with them in this turn; ask the user only for choices that are really theirs.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.";
+var ASYNC_DESCRIPTION = "Same as delegate, but returns a task_id immediately while the Codex model works in the background. Use for long tasks or to run several in parallel; then call task_result to collect output. Parallel tasks editing the same directory can conflict \u2014 give each its own cwd/worktree or non-overlapping files.\n\nA running task can be steered: when the user adds or changes requirements mid-task, call task_steer(task_id, prompt) with the change instead of cancelling and restarting; Codex keeps its context and work. Prefer delegate_async over delegate for long writer tasks the user may want to redirect.";
 var withGuidance = (d, policy) => policy.guidance ? `${d}
 
 ${policy.guidance}` : d;
@@ -38623,7 +39407,8 @@ var delegateShape = {
     `Shell commands (tests, build, lint) the server runs on the host in cwd after codex finishes, through ${process.platform === "win32" ? "cmd.exe (Windows: no bash syntax)" : "/bin/sh"}. Results come back as PASS/FAIL with the output tail on failure, so you don't need to re-run them yourself.`
   ),
   structured: external_exports.boolean().optional().describe(`Ask codex to finish with a JSON report (status done/partial/blocked/needs_decision, summary, changes, verification, risks, questions). Default: ${config2.structured} for runs that may edit files; read-only runs always answer in prose.`),
-  fresh: external_exports.boolean().optional().describe("Start a new Codex session even if an interrupted run in this cwd would otherwise be continued (the user wants to drop it, or the new task is unrelated).")
+  fresh: external_exports.boolean().optional().describe("Start a new Codex session even if an interrupted run in this cwd would otherwise be continued (the user wants to drop it, or the new task is unrelated)."),
+  checkpoints: external_exports.boolean().optional().describe("Ask Codex for stage reports at direction-changing points; each new report returns this call early (status: checkpoint) while Codex keeps working. For long or open-ended tasks.")
 };
 server.registerTool(
   "list_models",
@@ -38648,7 +39433,7 @@ var delegateTool = server.registerTool(
   "delegate",
   {
     title: "Delegate a task to a Codex model",
-    description: withGuidance(DELEGATE_DESCRIPTION + STALL_DESCRIPTION, loadPolicy().policy),
+    description: withGuidance(DELEGATE_DESCRIPTION + CHECKPOINT_DESCRIPTION + STALL_DESCRIPTION, loadPolicy().policy),
     inputSchema: delegateShape
   },
   async (input2, extra) => {
@@ -38664,6 +39449,7 @@ var delegateTool = server.registerTool(
     }, 15e3) : void 0;
     try {
       const task = await delegateSync(input2, extra.signal);
+      if (task.status === "running" && newCheckpoints(task).length) return text(formatCheckpoints(task));
       if (task.status === "running") return text(formatSuspicion(task));
       if (task.outcome) return text(formatOutcome(task.outcome), !task.outcome.result.ok);
       return text(task.error ?? "delegate failed", true);
@@ -38685,7 +39471,7 @@ var asyncTool = server.registerTool(
   "delegate_async",
   {
     title: "Start a Codex task in the background",
-    description: withGuidance(ASYNC_DESCRIPTION + STALL_DESCRIPTION, loadPolicy().policy),
+    description: withGuidance(ASYNC_DESCRIPTION + CHECKPOINT_DESCRIPTION + STALL_DESCRIPTION, loadPolicy().policy),
     inputSchema: delegateShape
   },
   async (input2) => {
@@ -38712,11 +39498,12 @@ server.registerTool(
       const s = storedTask(task_id);
       if (!s) return text(`unknown task_id '${task_id}'`, true);
       if (s.status === "interrupted") return text(`task: ${s.id} (interrupted)
-the server that ran it exited before it finished; re-run it (check git status first).`, true);
+the server that ran it exited before it finished; ${s.sessionId ? `continue it with delegate(session_id="${s.sessionId}")` : "re-run it"} (check git status first).`, true);
       return text(`task: ${s.id} (${s.status})
 ${s.text ?? ""}`, s.status !== "done");
     }
     await waitTask(t, wait_s ?? 0, stall_after_s);
+    if (t.status === "running" && newCheckpoints(t).length) return text(formatCheckpoints(t));
     if (t.status === "running" && t.progress?.suspicion) return text(formatSuspicion(t));
     if (t.status === "running") return text(`${taskSummary(t)}
 ${runningProgress(t)}
@@ -38751,6 +39538,25 @@ server.registerTool(
   async () => {
     const all = listTasks();
     return text(all.length ? all.map(taskSummary).join("\n") : "(no tasks)");
+  }
+);
+server.registerTool(
+  "task_steer",
+  {
+    title: "Steer a running Codex task",
+    description: "Add a message to a running Codex task (delegate_async, or a delegate that returned at a checkpoint): new or changed requirements, a correction, a hint. Codex keeps its context and edits. By default it reads the message at its next step, after any command in flight. With now: true Codex reads it at once while a long command keeps running: say in the message whether that command should continue, what to check first (log, partial results), or that it should be stopped; Codex must account for it before finishing. Look at it first with task_inspect if you need to. kill: true also stops the command. task_cancel stops the whole task. Returns right away; collect with task_result.",
+    inputSchema: {
+      task_id: external_exports.string(),
+      prompt: external_exports.string().min(1).describe("What changed, in full: Codex sees only this text plus its own context. State whether it replaces or adds to the brief."),
+      now: external_exports.boolean().optional().describe("true = interrupt Codex's current step so it reads this at once. A long command it started through the server's launcher keeps running and Codex must decide what to do with it (wait, check, stop) as part of your message. Default false: Codex reads it at its next step, after the command in flight."),
+      kill: external_exports.boolean().optional().describe("With now: true, also stop the long command(s) in flight at once. Only when they must not continue (e.g. writing bad data); otherwise say in prompt what Codex should check before deciding.")
+    }
+  },
+  async ({ task_id, prompt, now, kill }) => {
+    const t = getTask(task_id);
+    if (!t) return text(`unknown task_id '${task_id}' (only tasks of this server can be steered)`, true);
+    const r = await steerTask(t, prompt, now ?? false, void 0, kill ?? false);
+    return text(r.text, r.isError);
   }
 );
 server.registerTool(
@@ -38793,7 +39599,7 @@ watchFile(config2.policyFile, { interval: 2e3, persistent: false }, () => {
   const { policy, error: error62 } = loadPolicy();
   if (error62) console.error(`codex-delegate: ${error62}`);
   const paramsSchema = { ...delegateShape, effort: effortParam(policy) };
-  delegateTool.update({ description: withGuidance(DELEGATE_DESCRIPTION + STALL_DESCRIPTION, policy), paramsSchema });
-  asyncTool.update({ description: withGuidance(ASYNC_DESCRIPTION + STALL_DESCRIPTION, policy), paramsSchema });
+  delegateTool.update({ description: withGuidance(DELEGATE_DESCRIPTION + CHECKPOINT_DESCRIPTION + STALL_DESCRIPTION, policy), paramsSchema });
+  asyncTool.update({ description: withGuidance(ASYNC_DESCRIPTION + CHECKPOINT_DESCRIPTION + STALL_DESCRIPTION, policy), paramsSchema });
 });
 await server.connect(new StdioServerTransport());

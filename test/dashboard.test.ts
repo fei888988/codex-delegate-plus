@@ -10,6 +10,7 @@ const root = mkdtempSync(join(tmpdir(), "cd-dashboard-"));
 const runs = join(root, "runs");
 mkdirSync(runs);
 process.env.CODEX_BIN = join(import.meta.dirname, "fixtures", "fake-codex.mjs");
+process.env.CODEX_DELEGATE_ENGINE = "exec";
 process.env.CODEX_DELEGATE_RUNS_DIR = runs;
 process.env.CODEX_DELEGATE_POLICY = join(root, "policy.json");
 const { delegate } = await import("../src/delegate.ts");

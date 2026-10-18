@@ -12,13 +12,35 @@ If that text has `--`, the part before it names the model. Pass it to `model` un
 server resolves it. "fast" means `fast: true`. With no model named, omit `model`; codex then uses
 the model in `~/.codex/config.toml` (gpt-6.1-sol).
 
-The `codex` MCP server runs `codex exec` in the project. Codex has its own shell and apply_patch, so
+The `codex` MCP server runs Codex (`codex app-server`) in the project. Codex has its own shell and apply_patch, so
 it reads the code, implements the change and runs the tests itself. **You are the lead**: you own the
 goal, the effort choice, the decisions and the acceptance. Your tokens are the expensive ones, so
 spend them on judgement, not legwork.
 
 Tools: `delegate` (preferred: one call, no polling); `delegate_async` + `task_result` with a large
-`wait_s` for parallel runs; `list_models`, `list_sessions`, `task_list`, `task_cancel`.
+`wait_s` for parallel runs and for long writer tasks the user may redirect; `task_steer` to add the
+user's new or changed requirements to a running task (no cancel, Codex keeps its context; it reads
+the message at its next step, edits already made stay); `list_models`, `list_sessions`, `task_list`,
+`task_cancel` (to stop the task).
+
+Long scripts and steering: `task_steer(now: true)` makes Codex read your message at once while a
+long command it started keeps running. Say in the message what should happen to it: keep going,
+check its log or partial results first and then decide, or stop it. Use `task_inspect` first if you
+need to see its progress yourself. Add `kill: true` only when it must stop immediately. Codex has to
+wait for or stop every kept command before finishing; the result lists each one under "background
+commands kept across a redirect" with its outcome. If one says STOPPED BY THE SERVER, Codex forgot
+it: decide whether it needs rerunning.
+
+Checkpoints: for long or open-ended tasks (roughly 10+ minutes, several phases, or an investigation
+whose findings could change the plan) pass `checkpoints: true`. Codex writes a short stage report at
+points where direction may change and keeps working; `delegate` / `task_result` return early with
+`status: checkpoint` and the report. Read it, then either `task_result(task_id, wait_s)` (on course)
+or `task_steer` (change direction). Don't re-investigate what the report states. Skip checkpoints for
+short, well-specified work: each one costs you a turn.
+
+If a result says codex is out of quota (or not logged in): stop. Don't finish the work yourself and
+don't sleep or poll for the reset; report what Codex finished, what is left, the reset time, and ask
+the user how to proceed.
 
 ## 1. Decide whether to delegate
 

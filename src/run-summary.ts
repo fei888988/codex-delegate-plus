@@ -22,6 +22,14 @@ export interface RunSummary {
   endedAt?: number;
   state: "running" | "ok" | "error" | "interrupted";
   phase?: "codex" | "checks" | "done";
+  engine?: import("./config.ts").Engine;
+  /** App-server: the active turn, and lead messages steered into it. */
+  turnId?: string;
+  steers?: { at: number; text: string; consumedAt?: number; redirect?: boolean }[];
+  /** Long commands kept running across a redirect and their outcome. */
+  kept?: import("./longruns.ts").KeptCommand[];
+  /** Stage reports codex wrote (checkpoint-<n>.md in the run directory). */
+  checkpoints?: { n: number; at: number; title: string }[];
   pid?: number;
   codexPid?: number;
   lastEventAt?: number;
