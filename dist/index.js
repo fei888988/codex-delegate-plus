@@ -7455,7 +7455,7 @@ function parseToml(text2, ignoreUnrelated = false) {
       const match = line.match(/^((?:"(?:[^"\\]|\\.)*"|'[^']*'|[^=])+?)\s*=\s*(.*)$/);
       if (!match) throw Error();
       const path = [...table, ...keys(match[1].trim())], id = JSON.stringify(path);
-      if (ignoreUnrelated && path[0] === "model_providers" && !["base_url", "wire_api", "requires_openai_auth", "name", "http_headers", "query_params"].includes(path[2])) continue;
+      if (ignoreUnrelated && path[0] === "model_providers" && !["base_url", "wire_api", "requires_openai_auth", "name", "http_headers", "query_params", "experimental_bearer_token"].includes(path[2])) continue;
       if (result.has(id)) throw Error();
       result.set(id, { keys: path, value: value(match[2]) });
     } catch {
@@ -7729,8 +7729,8 @@ function commandLogs(dir2) {
   return entries(dir2).filter((e) => e.isFile() && /^cmd-.*\.log$/.test(e.name)).flatMap((e) => {
     const file2 = join3(dir2, e.name);
     try {
-      const stat2 = lstatSync(file2);
-      return [{ file: file2, name: e.name, bytes: stat2.size, mtime: stat2.mtimeMs }];
+      const stat3 = lstatSync(file2);
+      return [{ file: file2, name: e.name, bytes: stat3.size, mtime: stat3.mtimeMs }];
     } catch {
       return [];
     }
@@ -35342,8 +35342,8 @@ var Protocol = class {
    */
   async _clearTaskQueue(taskId, sessionId) {
     if (this._taskMessageQueue) {
-      const messages = await this._taskMessageQueue.dequeueAll(taskId, sessionId);
-      for (const message of messages) {
+      const messages2 = await this._taskMessageQueue.dequeueAll(taskId, sessionId);
+      for (const message of messages2) {
         if (message.type === "request" && isJSONRPCRequest(message.message)) {
           const requestId = message.message.id;
           const resolver = this._requestResolvers.get(requestId);
@@ -37147,9 +37147,141 @@ var StdioServerTransport = class {
 // src/index.ts
 import { resolve as resolve3 } from "node:path";
 
+// src/inbox.ts
+import { readFile, writeFile, appendFile, rename, mkdir, readdir, stat, rmdir } from "node:fs/promises";
+import { join as join4 } from "node:path";
+import { randomUUID as randomUUID2 } from "node:crypto";
+async function readJson(file2) {
+  try {
+    return JSON.parse(await readFile(file2, "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+async function atomic(file2, value) {
+  await mkdir(join4(file2, ".."), { recursive: true });
+  const tmp = `${file2}.${randomUUID2()}.tmp`;
+  await writeFile(tmp, JSON.stringify(value));
+  await rename(tmp, file2);
+}
+var inboxPath = (dir2, mid) => join4(dir2, "inbox", `${mid}.json`);
+async function locked(dir2, mid, fn) {
+  const lock = inboxPath(dir2, `${mid}.lock`);
+  await mkdir(join4(dir2, "inbox"), { recursive: true });
+  for (let tries = 0; ; tries++) {
+    try {
+      await mkdir(lock);
+      break;
+    } catch (e) {
+      if (e.code !== "EEXIST" || tries >= 200) throw e;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await rmdir(lock);
+  }
+}
+async function ack(dir2, mid, state, error62, turn) {
+  await atomic(inboxPath(dir2, `${mid}.ack`), { state, at: Date.now(), ...error62 ? { error: error62 } : {}, ...turn ? { turn } : {} });
+}
+async function messages(dir2) {
+  let names;
+  try {
+    names = await readdir(join4(dir2, "inbox"));
+  } catch {
+    return [];
+  }
+  const result = [];
+  for (const name of names.filter((n) => /^[\w-]+(?:\.claimed|\.editing)?\.json$/.test(n) && !n.startsWith("interrupt."))) {
+    const m = await readJson(join4(dir2, "inbox", name));
+    if (!m?.mid || m.from !== "user") continue;
+    const a = await readJson(inboxPath(dir2, `${m.mid}.ack`));
+    result.push({ ...m, state: a?.state ?? "queued", stateAt: a?.at ?? m.at, error: a?.error, turn: a?.turn });
+  }
+  try {
+    for (const line of (await readFile(join4(dir2, "inbox", "lead.jsonl"), "utf8")).split("\n")) {
+      try {
+        const m = JSON.parse(line);
+        result.push({ ...m, notify: false, stateAt: m.at });
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return result.sort((a, b) => a.at - b.at || a.mid.localeCompare(b.mid));
+}
+async function claim2(dir2, mid) {
+  return locked(dir2, mid, async () => {
+    const a = await readJson(inboxPath(dir2, `${mid}.ack`));
+    if (a && a.state !== "queued") return void 0;
+    try {
+      await rename(inboxPath(dir2, mid), inboxPath(dir2, `${mid}.claimed`));
+    } catch {
+      return void 0;
+    }
+    return readJson(inboxPath(dir2, `${mid}.claimed`));
+  });
+}
+async function markQueued(dir2, mid) {
+  await locked(dir2, mid, async () => {
+    if (await readJson(inboxPath(dir2, mid)) && !await readJson(inboxPath(dir2, `${mid}.ack`))) await ack(dir2, mid, "queued");
+  });
+}
+async function leadInput(dir2, text2, state) {
+  await mkdir(join4(dir2, "inbox"), { recursive: true });
+  await appendFile(join4(dir2, "inbox", "lead.jsonl"), JSON.stringify({ mid: randomUUID2(), mode: "steer", text: text2, at: Date.now(), from: "lead", state }) + "\n");
+}
+async function finishInputs(dir2) {
+  for (const m of await messages(dir2)) if (m.from === "user" && m.state === "queued" && await claim2(dir2, m.mid)) await ack(dir2, m.mid, "undelivered");
+  return messages(dir2);
+}
+async function launcherJobs(dir2) {
+  let names;
+  try {
+    names = await readdir(dir2);
+  } catch {
+    return [];
+  }
+  const jobs = [];
+  for (const name of names) {
+    const match = /^cmd-(\d+)\.pid$/.exec(name);
+    if (!match) continue;
+    const n = Number(match[1]);
+    try {
+      await stat(join4(dir2, `cmd-${n}.exit`));
+      continue;
+    } catch {
+    }
+    const pid = Number(await readFile(join4(dir2, name), "utf8"));
+    try {
+      process.kill(pid, 0);
+    } catch {
+      continue;
+    }
+    const m = await readJson(join4(dir2, `cmd-${n}.json`));
+    jobs.push({ n, pid, command: [m?.program, ...m?.args ?? []].filter(Boolean).join(" "), startedAt: m?.startedAt, log: join4(dir2, `cmd-${n}.log`) });
+  }
+  return jobs;
+}
+function renderInputs(inputs) {
+  const users = inputs.filter((m) => m.from === "user");
+  return users.length ? "user input during run:\n" + users.map((m) => `${m.mode} ${new Date(m.at).toISOString()} ${m.state}; turn ${m.turn ?? "(none)"}: ${m.text.slice(0, 300)}`).join("\n") : "";
+}
+function interruptText(i, session, inputs, jobs, dir2) {
+  return [
+    `status: user_interrupted`,
+    `reason: ${i.reason || "\u7528\u6237\u4E2D\u65AD\uFF0C\u539F\u56E0\u4E0D\u660E (the user interrupted without giving a reason)"}`,
+    `next: PAUSE this work. Do not resume, retry or re-delegate on your own; tell the user it was interrupted and wait for their instruction. session_id ${session ?? "(none)"} can continue it later.`,
+    ...inputs.filter((m) => m.state === "undelivered").map((m) => `undelivered ${m.mid}: ${m.text}`),
+    ...jobs.map((j) => i.killLongruns ? `stopped: cmd-${j.n} pid ${j.pid} log ${j.log}` : `kept running by user choice: cmd-${j.n} pid ${j.pid} log ${j.log} exit-file ${join4(dir2, `cmd-${j.n}.exit`)}; ask the user before stopping it.`)
+  ].join("\n");
+}
+
 // src/sessions.ts
 import { closeSync as closeSync2, openSync as openSync2, readdirSync as readdirSync2, readSync as readSync2, statSync as statSync2 } from "node:fs";
-import { join as join4, resolve } from "node:path";
+import { join as join5, resolve } from "node:path";
 var HEAD_BYTES = 512 * 1024;
 function readHead(file2) {
   const fd = openSync2(file2, "r");
@@ -37193,7 +37325,7 @@ function* rollouts(dir2) {
     return;
   }
   for (const e of entries2) {
-    const p = join4(dir2, e);
+    const p = join5(dir2, e);
     if (e.startsWith("rollout-") && e.endsWith(".jsonl")) yield p;
     else if (statSync2(p).isDirectory()) yield* rollouts(p);
   }
@@ -37201,7 +37333,7 @@ function* rollouts(dir2) {
 function listSessions(cwd, limit, root) {
   if (root === void 0) {
     const providers = loadProviders().providers.filter((p) => p.auth === "chatgpt");
-    return [listSessions(cwd, limit, join4(config.codexHome, "sessions")), ...providers.map((p) => listSessions(cwd, limit, join4(providerHome(p), "sessions")).map((s) => ({ ...s, provider: p.id })))].flat().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, limit);
+    return [listSessions(cwd, limit, join5(config.codexHome, "sessions")), ...providers.map((p) => listSessions(cwd, limit, join5(providerHome(p), "sessions")).map((s) => ({ ...s, provider: p.id })))].flat().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, limit);
   }
   const want = resolve(cwd);
   const out = [];
@@ -37214,7 +37346,7 @@ function listSessions(cwd, limit, root) {
 }
 function sessionProvider(id, doc, homesRoot2) {
   for (const p of doc.providers.filter((p2) => p2.auth === "chatgpt")) {
-    for (const file2 of rollouts(join4(providerHome(p, homesRoot2), "sessions"))) {
+    for (const file2 of rollouts(join5(providerHome(p, homesRoot2), "sessions"))) {
       if (file2.includes(id) && parseRollout(readHead(file2), file2)?.id === id) return p;
     }
   }
@@ -37438,9 +37570,9 @@ function softWatchdog(pid, window, suspected, sample = sampleTreeEvidence) {
 }
 
 // src/delegate.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 import { existsSync as existsSync6, mkdirSync as mkdirSync4, rmSync as rmSync4, writeFileSync as writeFileSync8 } from "node:fs";
-import { basename, isAbsolute, join as join11, relative as relative2, resolve as resolve2 } from "node:path";
+import { basename, isAbsolute, join as join12, relative as relative2, resolve as resolve2 } from "node:path";
 
 // src/checks.ts
 import { spawn } from "node:child_process";
@@ -37643,20 +37775,20 @@ import { spawn as spawn2 } from "node:child_process";
 import { createWriteStream, existsSync as existsSync4, readFileSync as readFileSync6, writeFileSync as writeFileSync5 } from "node:fs";
 
 // src/appserver.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { randomUUID as randomUUID3 } from "node:crypto";
 import { readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "node:fs";
-import { join as join6 } from "node:path";
+import { join as join7 } from "node:path";
 
 // src/longruns.ts
 import { appendFileSync, copyFileSync as copyFileSync2, existsSync as existsSync3, readdirSync as readdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname2, join as join5 } from "node:path";
+import { dirname as dirname2, join as join6 } from "node:path";
 import { fileURLToPath } from "node:url";
 var LAUNCHER = "longrun.mjs";
 function installLauncher(runDir) {
   const here = dirname2(fileURLToPath(import.meta.url));
-  const src = [join5(here, LAUNCHER), join5(here, "..", "src", LAUNCHER)].find((f) => existsSync3(f));
+  const src = [join6(here, LAUNCHER), join6(here, "..", "src", LAUNCHER)].find((f) => existsSync3(f));
   if (!src) return void 0;
-  const dest = join5(runDir, LAUNCHER);
+  const dest = join6(runDir, LAUNCHER);
   try {
     copyFileSync2(src, dest);
     return dest;
@@ -37681,9 +37813,9 @@ var alive2 = (pid) => {
   }
 };
 function longrunState(runDir, n) {
-  const code = int3(join5(runDir, `cmd-${n}.exit`));
-  if (code !== void 0) return existsSync3(join5(runDir, `cmd-${n}.stopping`)) ? { state: "stopped" } : { state: "exited", code };
-  const pid = int3(join5(runDir, `cmd-${n}.pid`));
+  const code = int3(join6(runDir, `cmd-${n}.exit`));
+  if (code !== void 0) return existsSync3(join6(runDir, `cmd-${n}.stopping`)) ? { state: "stopped" } : { state: "exited", code };
+  const pid = int3(join6(runDir, `cmd-${n}.pid`));
   if (pid === void 0) return { state: "unknown" };
   return alive2(pid) ? { state: "running", pid } : { state: "gone" };
 }
@@ -37691,22 +37823,22 @@ function stopLongrun(runDir, n, why) {
   const s = longrunState(runDir, n);
   if (s.state !== "running") return false;
   try {
-    writeFileSync3(join5(runDir, `cmd-${n}.stopping`), why);
+    writeFileSync3(join6(runDir, `cmd-${n}.stopping`), why);
   } catch {
   }
   killPidTree(s.pid);
   try {
-    appendFileSync(join5(runDir, `cmd-${n}.log`), `
+    appendFileSync(join6(runDir, `cmd-${n}.log`), `
 EXIT=stopped (${why})
 `);
-    writeFileSync3(join5(runDir, `cmd-${n}.exit`), "137");
+    writeFileSync3(join6(runDir, `cmd-${n}.exit`), "137");
   } catch {
   }
   return true;
 }
 function longrunCommand(runDir, n) {
   try {
-    const { program, args } = JSON.parse(readFileSync4(join5(runDir, `cmd-${n}.json`), "utf8"));
+    const { program, args } = JSON.parse(readFileSync4(join6(runDir, `cmd-${n}.json`), "utf8"));
     const a = args ?? [];
     const script = a.find((x) => /cmd-\d+\.(ps1|sh)$/.test(x));
     if (script) return readFileSync4(script, "utf8").split(/\r?\n/)[0] ?? program;
@@ -37737,14 +37869,18 @@ function reapLongruns(runDir, why) {
   return killed;
 }
 var active = /* @__PURE__ */ new Set();
+function untrackRunDir(runDir) {
+  active.delete(runDir);
+}
 function trackRunDir(runDir) {
   active.add(runDir);
 }
-onExit(() => {
+function reapTrackedLongruns() {
   for (const dir2 of [...active]) reapLongruns(dir2, "server exited");
-});
+}
+onExit(reapTrackedLongruns);
 function keptPreamble(runDir, kept, killed) {
-  const launcher = join5(runDir, LAUNCHER);
+  const launcher = join6(runDir, LAUNCHER);
   const lines = ["[codex-delegate] The lead interrupted your previous step to give you a new instruction (below)."];
   for (const k of kept) {
     lines.push(`- Still running, NOT stopped: cmd-${k.n} \`${k.command.replace(/\s+/g, " ").slice(0, 200)}\` (log ${k.log}). It is the same job you started; do not start it again.`);
@@ -37762,7 +37898,7 @@ function keptPreamble(runDir, kept, killed) {
 `;
 }
 function keptReminder(runDir, kept) {
-  const launcher = join5(runDir, LAUNCHER);
+  const launcher = join6(runDir, LAUNCHER);
   return [
     "[codex-delegate] You ended your turn, but these commands you are responsible for are still running:",
     ...kept.map((k) => `- cmd-${k.n} \`${k.command.replace(/\s+/g, " ").slice(0, 200)}\` (log ${k.log})`),
@@ -37839,6 +37975,88 @@ var OPT_OUT = [
   "thread/readState/changed"
 ];
 var AppServerTurn = class {
+  userInterrupt;
+  interruptedJobs;
+  pollingInbox = false;
+  operations = Promise.resolve();
+  inputClients = /* @__PURE__ */ new Map();
+  async flushInbox() {
+    await Promise.all([...this.inputClients.values()].map((d) => d.pending));
+  }
+  inputAck(delivery) {
+    delivery.pending = delivery.pending.then(() => ack(this.o.runDir, delivery.mid, delivery.consumed ? "consumed" : "delivered", void 0, delivery.turn));
+    return delivery.pending;
+  }
+  serialize(fn) {
+    const next = this.operations.then(fn);
+    this.operations = next.catch(() => {
+    });
+    return next;
+  }
+  async pollInbox() {
+    const dir2 = this.o.runDir;
+    if (!dir2 || !this.turnId) return;
+    const interrupt = await readJson(inboxPath(dir2, "interrupt"));
+    if (interrupt && !this.userInterrupt) {
+      this.interruptedJobs = await launcherJobs(dir2);
+      this.userInterrupt = interrupt;
+      if (!interrupt.killLongruns) untrackRunDir(dir2);
+      await ack(dir2, "interrupt", "delivered");
+      void this.interrupt();
+      this.complete({ status: "interrupted", id: this.turnId });
+      return;
+    }
+    if (this.finished || this.pollingInbox) return;
+    this.pollingInbox = true;
+    try {
+      for (const m of await messages(dir2)) {
+        if (m.from !== "user" || m.state !== "queued") continue;
+        if (m.mode === "queue") {
+          await this.serialize(async () => {
+            if (!this.finished) await markQueued(dir2, m.mid);
+          });
+          continue;
+        }
+        await this.serialize(async () => {
+          if (this.finished || this.userInterrupt) return;
+          const input2 = await claim2(dir2, m.mid);
+          if (!input2) return;
+          try {
+            const r = await this.redirectNow(input2.text);
+            const delivery = { mid: m.mid, turn: this.turnId, consumed: !!r.record.consumedAt, pending: Promise.resolve() };
+            this.inputClients.set(r.record.clientId, delivery);
+            await this.inputAck(delivery);
+          } catch (e) {
+            await ack(dir2, m.mid, "failed", String(e));
+          }
+        });
+      }
+    } finally {
+      this.pollingInbox = false;
+    }
+  }
+  async queuedTurn() {
+    const dir2 = this.o.runDir;
+    if (!dir2 || this.userInterrupt || this.finished) return false;
+    for (const m of await messages(dir2)) {
+      if (m.from !== "user" || m.mode !== "queue" || m.state !== "queued") continue;
+      const input2 = await claim2(dir2, m.mid);
+      if (!input2) continue;
+      const clientId = `input-${m.mid}`;
+      const delivery = { mid: m.mid, turn: void 0, consumed: false, pending: Promise.resolve() };
+      this.inputClients.set(clientId, delivery);
+      try {
+        await this.startTurn([{ type: "text", text: input2.text, text_elements: [] }], clientId);
+        delivery.turn = this.turnId;
+        await this.inputAck(delivery);
+      } catch (e) {
+        await ack(dir2, m.mid, "failed", String(e));
+        this.failRun(e);
+      }
+      return true;
+    }
+    return false;
+  }
   threadId;
   turnId;
   finished = false;
@@ -37984,7 +38202,15 @@ var AppServerTurn = class {
     if (kind) this.errorKinds.push(kind);
     this.hooks.emit({ type: "error", message: error62?.message ?? "codex turn failed" });
   }
-  complete(turn) {
+  complete(turn, checkedQueue = false) {
+    if (turn.status === "completed" && this.redirecting) return this.complete({ ...turn, status: "interrupted" });
+    if (turn.status === "completed" && !checkedQueue && !this.finished) {
+      void this.serialize(async () => {
+        await Promise.all([...this.inputClients.values()].map((d) => d.pending));
+        if (!await this.queuedTurn()) this.complete(turn, true);
+      }).catch((e) => this.failRun(e));
+      return;
+    }
     if (this.finished) return;
     const runDir = this.o.runDir;
     if (turn.status === "interrupted") {
@@ -38001,7 +38227,7 @@ var AppServerTurn = class {
         if (!/longrun\.mjs/i.test(r.command)) killed.push(r.command);
       }
       for (const n of live2) {
-        if (redirect && !redirect.kill) kept.push({ n, command: longrunCommand(runDir, n), log: join6(runDir, `cmd-${n}.log`), keptAt: Date.now(), outcome: "running" });
+        if (redirect && !redirect.kill || this.userInterrupt && !this.userInterrupt.killLongruns) kept.push({ n, command: longrunCommand(runDir, n), log: join7(runDir, `cmd-${n}.log`), keptAt: Date.now(), outcome: "running" });
         else if (stopLongrun(runDir, n, redirect ? "lead redirected with kill" : "task cancelled")) killed.push(longrunCommand(runDir, n));
       }
       if (redirect) {
@@ -38009,7 +38235,8 @@ var AppServerTurn = class {
         this.hooks.emit({ type: "turn.redirected", turn_id: turn.id, kept: kept.map((k) => k.n), killed });
         return redirect.go(kept, killed);
       }
-      if (runDir) this.keptCommands = this.keptCommands.map((k) => refresh(runDir, k)).map((k) => k.outcome === "running" && stopLongrun(runDir, k.n, "task cancelled") ? { ...k, outcome: "killed_cancel" } : k);
+      this.keptCommands.push(...kept);
+      if (runDir && !(this.userInterrupt && !this.userInterrupt.killLongruns)) this.keptCommands = this.keptCommands.map((k) => refresh(runDir, k)).map((k) => k.outcome === "running" && stopLongrun(runDir, k.n, "task cancelled") ? { ...k, outcome: "killed_cancel" } : k);
     }
     if (turn.status === "completed" && runDir) {
       this.keptCommands = this.keptCommands.map((k) => refresh(runDir, k));
@@ -38046,6 +38273,12 @@ var AppServerTurn = class {
     this.hooks.done();
   }
   consumed(clientId) {
+    const delivery = clientId ? this.inputClients.get(clientId) : void 0;
+    if (delivery) {
+      delivery.consumed = true;
+      if (delivery.turn && this.o.runDir) void this.inputAck(delivery).catch(() => {
+      });
+    }
     const rec = this.steers.find((s) => s.clientId === clientId) ?? (clientId ? void 0 : this.steers.find((s) => !s.consumedAt));
     if (!rec || rec.consumedAt) return this.ping();
     rec.consumedAt = Date.now();
@@ -38088,10 +38321,13 @@ var AppServerTurn = class {
    * Stop what codex is doing right now (including a long command) and continue the same thread with
    * `text` as a new turn. The run stays one run: same task, same final report.
    */
-  async redirect(text2, opts = {}) {
+  redirect(text2, opts = {}) {
+    return this.serialize(() => this.redirectNow(text2, opts));
+  }
+  async redirectNow(text2, opts = {}) {
     if (!this.threadId || !this.turnId) throw new Error("codex has not started its turn yet; try again in a few seconds");
     if (this.finished) throw new Error("codex already finished this turn");
-    const record2 = { at: Date.now(), text: text2.slice(0, 500), clientId: `redirect-${randomUUID2().slice(0, 8)}`, redirect: true };
+    const record2 = { at: Date.now(), text: text2.slice(0, 500), clientId: `redirect-${randomUUID3().slice(0, 8)}`, redirect: true };
     this.steers.push(record2);
     let outcome = { kept: [], killed: [] };
     const stopped = new Promise((resolve4) => {
@@ -38112,6 +38348,7 @@ var AppServerTurn = class {
       this.redirecting = void 0;
       throw new Error("codex did not stop the current turn in time; try task_cancel");
     }
+    if (this.finished || this.userInterrupt) throw new Error("run interrupted");
     const preamble = this.o.runDir && (outcome.kept.length || outcome.killed.length) ? keptPreamble(this.o.runDir, outcome.kept, outcome.killed) : "";
     try {
       await this.startTurn([{ type: "text", text: preamble + text2, text_elements: [] }], record2.clientId);
@@ -38132,10 +38369,13 @@ var AppServerTurn = class {
     this.hooks.emit({ type: "turn.failed", error: { message: e instanceof Error ? e.message : String(e) } });
     this.hooks.done();
   }
-  async steer(text2, waitMs = 15e3) {
+  steer(text2, waitMs = 15e3) {
+    return this.serialize(() => this.steerNow(text2, waitMs));
+  }
+  async steerNow(text2, waitMs) {
     if (!this.threadId || !this.turnId) throw new Error("codex has not started its turn yet; try again in a few seconds");
     if (this.finished) throw new Error("codex already finished this turn");
-    const record2 = { at: Date.now(), text: text2.slice(0, 500), clientId: `steer-${randomUUID2().slice(0, 8)}` };
+    const record2 = { at: Date.now(), text: text2.slice(0, 500), clientId: `steer-${randomUUID3().slice(0, 8)}` };
     this.steers.push(record2);
     let timer;
     const seen = new Promise((resolve4) => {
@@ -38576,7 +38816,7 @@ ${stderr}
       else if (o.signal?.aborted) errors.push("cancelled");
       if (stall) errors.push(`stalled: no codex output for ${Math.round(stall.idleMs / 6e4)}m${stall.command ? ` while running: ${stall.command.slice(0, 200)}` : " (model silent)"}`);
       if (exitCode && !errors.length && !(turn && collector.turns)) errors.push(stderrTail() || `exit code ${exitCode}`);
-      const exitKind = timedOut ? "timeout" : stall ? "stalled" : o.signal?.aborted ? "cancelled" : spawnError ? "crashed" : collector.errors.length ? "api_error" : exitCode !== 0 && !turn || !collector.turns ? "crashed" : "completed";
+      const exitKind = turn?.userInterrupt ? "user_interrupted" : timedOut ? "timeout" : stall ? "stalled" : o.signal?.aborted ? "cancelled" : spawnError ? "crashed" : collector.errors.length ? "api_error" : exitCode !== 0 && !turn || !collector.turns ? "crashed" : "completed";
       if (exitKind === "crashed" && !errors.length) errors.push(stderrTail() || "codex exited without turn.completed");
       const error62 = errors.join("; ") || void 0;
       const final = readFinal(o.lastMessageFile);
@@ -38593,6 +38833,7 @@ ${stderr}
         exitKind,
         // Structured codexErrorInfo beats matching the message text.
         errorKind: error62 ? turn?.errorKinds[0] ?? classifyError(error62) : void 0,
+        userInterrupt: turn?.userInterrupt,
         steers: turn?.steers.length ? turn.steers : void 0,
         rateLimits: turn?.rateLimits,
         kept: turn?.kept.length ? turn.kept : void 0,
@@ -38619,8 +38860,8 @@ ${stderr}
 
 // src/git.ts
 import { spawn as spawn3 } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
-import { join as join7 } from "node:path";
+import { readFile as readFile2, stat as stat2 } from "node:fs/promises";
+import { join as join8 } from "node:path";
 function parsePorcelainZ(out) {
   const parts = out.split("\0");
   const entries2 = [];
@@ -38649,7 +38890,7 @@ function git(cwd, args) {
 var MAX_COUNT_BYTES = 32 * 1024 * 1024;
 async function fingerprint(file2) {
   try {
-    const st = await stat(file2);
+    const st = await stat2(file2);
     if (!st.isFile()) return "dir";
     return `${st.size}:${st.mtimeMs}`;
   } catch {
@@ -38666,7 +38907,7 @@ async function snapshot(cwd) {
   await Promise.all(Array.from({ length: Math.min(64, entries2.length) }, async () => {
     while (next < entries2.length) {
       const i = next++;
-      fingerprints[i] = await fingerprint(join7(cwd, entries2[i].path));
+      fingerprints[i] = await fingerprint(join8(cwd, entries2[i].path));
     }
   }));
   for (const [i, e] of entries2.entries()) snap.set(e.path, { xy: e.xy, hash: fingerprints[i] });
@@ -38702,9 +38943,9 @@ async function diffStat(cwd, changes) {
   async function fileStat(c) {
     if (c.xy === "??") {
       try {
-        const file2 = join7(cwd, c.path);
-        if ((await stat(file2)).size > MAX_COUNT_BYTES) return { ...c };
-        const buf = await readFile(file2);
+        const file2 = join8(cwd, c.path);
+        if ((await stat2(file2)).size > MAX_COUNT_BYTES) return { ...c };
+        const buf = await readFile2(file2);
         if (buf.includes(0)) return { ...c, binary: true };
         const text2 = buf.toString("utf8");
         return { ...c, added: text2 ? text2.split("\n").length - (text2.endsWith("\n") ? 1 : 0) : 0, removed: 0 };
@@ -38718,8 +38959,8 @@ async function diffStat(cwd, changes) {
 
 // src/models.ts
 import { readFileSync as readFileSync7 } from "node:fs";
-import { join as join8 } from "node:path";
-function listModels(path = join8(config.codexHome, "models_cache.json")) {
+import { join as join9 } from "node:path";
+function listModels(path = join9(config.codexHome, "models_cache.json")) {
   let data;
   try {
     data = JSON.parse(readFileSync7(path, "utf8"));
@@ -38893,12 +39134,12 @@ function tierLabel(t) {
 
 // src/checkpoints.ts
 import { readdirSync as readdirSync4, readFileSync as readFileSync9, statSync as statSync3 } from "node:fs";
-import { join as join9 } from "node:path";
+import { join as join10 } from "node:path";
 var MAX_CHECKPOINT_CHARS = 2500;
 function checkpointContract(runDir) {
   return `
 
-Checkpoints (requested by the lead): this is a longer task, and the lead wants to review direction while you work. At each point below, write a short stage report to ${join9(runDir, "checkpoint-<n>.md")} (n = 1, 2, 3 \u2026, a new file each time, written in one go), then KEEP WORKING; do not wait for an answer. If the lead changes direction, the new instruction arrives as a user message in this conversation.
+Checkpoints (requested by the lead): this is a longer task, and the lead wants to review direction while you work. At each point below, write a short stage report to ${join10(runDir, "checkpoint-<n>.md")} (n = 1, 2, 3 \u2026, a new file each time, written in one go), then KEEP WORKING; do not wait for an answer. If the lead changes direction, the new instruction arrives as a user message in this conversation.
 Write one when:
 - investigation is done and you are about to implement: what you found, the approach you chose, the alternatives you rejected;
 - you find something that contradicts the brief or changes its scope (an assumption is wrong, the fix belongs elsewhere, much more work than expected);
@@ -38922,7 +39163,7 @@ function scanCheckpoints(runDir, seen = /* @__PURE__ */ new Set(), now = Date.no
   for (const name of names) {
     const n = Number(/^checkpoint-(\d+)\.md$/i.exec(name)?.[1]);
     if (!Number.isInteger(n) || seen.has(n)) continue;
-    const file2 = join9(runDir, name);
+    const file2 = join10(runDir, name);
     try {
       const st = statSync3(file2);
       if (!st.size || now - st.mtimeMs < 1e3) continue;
@@ -38944,10 +39185,10 @@ ${body}`;
 // src/pending.ts
 import { createHash as createHash2 } from "node:crypto";
 import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync10, rmSync as rmSync3, writeFileSync as writeFileSync7 } from "node:fs";
-import { join as join10 } from "node:path";
+import { join as join11 } from "node:path";
 var MAX_AGE_MS = 24 * 3600 * 1e3;
-var dir = () => join10(config.runsDir, "pending");
-var fileFor = (cwd) => join10(dir(), `${createHash2("sha1").update(cwd.toLowerCase()).digest("hex").slice(0, 16)}.json`);
+var dir = () => join11(config.runsDir, "pending");
+var fileFor = (cwd) => join11(dir(), `${createHash2("sha1").update(cwd.toLowerCase()).digest("hex").slice(0, 16)}.json`);
 function alive3(pid) {
   if (pid === process.pid) return true;
   try {
@@ -39079,7 +39320,7 @@ function renderReport(r) {
 // package.json
 var package_default = {
   name: "claude-codex-delegate",
-  version: "0.11.0",
+  version: "0.12.0",
   description: "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna\u2026) while staying the orchestrator.",
   type: "module",
   license: "MIT",
@@ -39114,7 +39355,7 @@ var version3 = package_default.version;
 // src/delegate.ts
 function newRunDir() {
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
-  const dir2 = resolve2(config.runsDir, `${stamp}-${randomUUID3().slice(0, 6)}`);
+  const dir2 = resolve2(config.runsDir, `${stamp}-${randomUUID4().slice(0, 6)}`);
   try {
     mkdirSync4(dir2, { recursive: true });
     return dir2;
@@ -39123,6 +39364,7 @@ function newRunDir() {
   }
 }
 async function delegate(input2, signal, onProgress, stallControl) {
+  stallControl ??= { lastObservedAt: Date.now() };
   const cwd = resolve2(config.defaultCwd, input2.cwd ?? ".");
   if (!existsSync6(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const auto = input2.auto ?? config.auto;
@@ -39228,7 +39470,7 @@ async function execute(input2, r, signal, onProgress, stallControl) {
     lastSnapshot = serialized;
     lastWrite = Date.now();
     try {
-      if (runDir) writeFileSync8(join11(runDir, "meta.json"), serialized);
+      if (runDir) writeFileSync8(join12(runDir, "meta.json"), serialized);
     } catch {
     }
   };
@@ -39282,7 +39524,27 @@ async function execute(input2, r, signal, onProgress, stallControl) {
     progress();
     writeMeta();
   };
-  const checkpointTimer = setInterval(pollCheckpoints, config.checkpointPollMs);
+  const checksController = new AbortController();
+  let pollingInputs = false;
+  const pollInputs = async () => {
+    if (!runDir || config.engine !== "app-server" || pollingInputs) return;
+    pollingInputs = true;
+    try {
+      void stallControl?.live?.pollInbox?.().then(() => {
+        if (stallControl?.live?.userInterrupt) checksController.abort();
+      }).catch(() => {
+      });
+      meta3.inputs = await messages(runDir);
+      progress();
+    } catch {
+    } finally {
+      pollingInputs = false;
+    }
+  };
+  const checkpointTimer = setInterval(() => {
+    pollCheckpoints();
+    void pollInputs();
+  }, config.checkpointPollMs);
   checkpointTimer.unref();
   try {
     let prompt = previousDiagnosis(config.runsDir, input2.session_id) + (continued ? continuationPreamble(continued) : "") + input2.prompt;
@@ -39299,17 +39561,17 @@ ${codexGuidance}`;
 Long commands (added by the server): run every command likely to take longer than ~1 minute through the launcher, with a new n per command (1, 2, 3 \u2026):
   node "${launcher}" "${runDir}" run <n> -- <program> <args\u2026>
   node "${launcher}" "${runDir}" run <n> "<one shell command string, for pipes/redirects>"
-It streams the output, blocks until the command ends and exits with its exit code, so use it exactly like running the command directly (one blocking call; fine under any long-script rules you follow). It also writes ${join11(runDir, "cmd-<n>.log")} ending in EXIT=<code>, and keeps the command alive if your turn is interrupted, so the lead can talk to you without killing the job. Don't wrap it in tee. Absolute run directory: ${runDir}.`;
+It streams the output, blocks until the command ends and exits with its exit code, so use it exactly like running the command directly (one blocking call; fine under any long-script rules you follow). It also writes ${join12(runDir, "cmd-<n>.log")} ending in EXIT=<code>, and keeps the command alive if your turn is interrupted, so the lead can talk to you without killing the job. Don't wrap it in tee. Absolute run directory: ${runDir}.`;
     } else if (runDir) {
       prompt += `
 
-Command logs (added by the server): for commands likely to run longer than ~1 minute, tee output to ${join11(runDir, "cmd-<n>.log")} (use a new n per command). Absolute run directory: ${runDir}.`;
+Command logs (added by the server): for commands likely to run longer than ~1 minute, tee output to ${join12(runDir, "cmd-<n>.log")} (use a new n per command). Absolute run directory: ${runDir}.`;
     }
     let outputSchemaFile;
     if (runDir) {
-      writeFileSync8(join11(runDir, "prompt.md"), prompt);
+      writeFileSync8(join12(runDir, "prompt.md"), prompt);
       if (structured) {
-        outputSchemaFile = join11(runDir, "report.schema.json");
+        outputSchemaFile = join12(runDir, "report.schema.json");
         writeFileSync8(outputSchemaFile, JSON.stringify(REPORT_SCHEMA, null, 2));
       }
     }
@@ -39328,7 +39590,7 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
     };
     if (rec) savePending(rec);
     const before = await snapshot(cwd);
-    const tempDir = runDir && sandbox2 === "workspace-write" ? join11(runDir, "tmp") : void 0;
+    const tempDir = runDir && sandbox2 === "workspace-write" ? join12(runDir, "tmp") : void 0;
     if (tempDir) mkdirSync4(tempDir, { recursive: true });
     const result = await runCodex({
       provider: r.provider,
@@ -39381,18 +39643,26 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
       timeoutMs: (input2.timeout_s ?? config.timeoutSec) * 1e3,
       idleTimeoutMs: input2.idle_timeout_s === void 0 ? void 0 : input2.idle_timeout_s * 1e3,
       signal,
-      lastMessageFile: runDir && join11(runDir, "last-message.txt"),
+      lastMessageFile: runDir && join12(runDir, "last-message.txt"),
       outputSchemaFile,
-      logFile: runDir && join11(runDir, "events.jsonl"),
+      logFile: runDir && join12(runDir, "events.jsonl"),
       runDir
     });
-    if (runDir) {
+    if (runDir && config.engine === "app-server") {
+      await stallControl?.live?.flushInbox?.();
+      result.inputs = await finishInputs(runDir);
+      meta3.inputs = result.inputs;
+      if (result.userInterrupt) {
+        result.interruptedJobs = stallControl?.live?.interruptedJobs ?? await launcherJobs(runDir);
+        if (!result.userInterrupt.killLongruns) untrackRunDir(runDir);
+      }
+    }
+    if (runDir && !(result.userInterrupt && !result.userInterrupt.killLongruns)) {
       const leftover = reapLongruns(runDir, signal?.aborted ? "task cancelled" : "the codex run ended");
       const forgotten = leftover.filter((n) => !result.kept?.some((k) => k.n === n && k.outcome !== "running"));
       if (forgotten.length) notes.push(`background command(s) ${forgotten.map((n) => `cmd-${n}`).join(", ")} were still running when codex finished; the server stopped them (logs in the run directory)`);
       if (result.kept) result.kept = result.kept.map((k) => leftover.includes(k.n) && k.outcome === "running" ? { ...k, outcome: "killed_forgotten" } : refresh(runDir, k));
     }
-    clearInterval(checkpointTimer);
     if (runDir && input2.checkpoints) {
       for (const c of scanCheckpoints(runDir, seenCheckpoints, Infinity)) {
         seenCheckpoints.add(c.n);
@@ -39411,7 +39681,7 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
     const after = before && await snapshot(cwd);
     const changes = before && after ? await diffStat(cwd, diffSnapshots(before, after)) : void 0;
     if (rec) {
-      if (signal?.aborted && result.sessionId) {
+      if ((signal?.aborted || result.userInterrupt) && result.sessionId) {
         const changed = [.../* @__PURE__ */ new Set([...continued?.changed ?? [], ...(changes ?? []).map((c) => c.path)])];
         savePending({ ...rec, sessionId: result.sessionId, state: "interrupted", endedAt: Date.now(), changed });
       } else {
@@ -39421,14 +39691,14 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
     const report = structured ? parseReport(result.text) : void 0;
     if (structured && !report && result.ok) notes.push("codex did not return the JSON report; showing its raw final message");
     let checks;
-    const envStop = !result.ok && (result.errorKind === "quota" || result.errorKind === "auth");
-    if (envStop && input2.checks?.length) notes.push(`host checks skipped: codex stopped on ${result.errorKind}`);
+    const envStop = !!result.userInterrupt || !result.ok && (result.errorKind === "quota" || result.errorKind === "auth");
+    if (envStop && input2.checks?.length) notes.push(`host checks skipped: ${result.userInterrupt ? "user interrupted" : `codex stopped on ${result.errorKind}`}`);
     if (input2.checks?.length && !signal?.aborted && !envStop) {
       meta3.phase = "checks";
       meta3.checksStartedAt = Date.now();
       meta3.checks = [];
       progress();
-      checks = await runChecks(input2.checks, cwd, config.checkTimeoutSec * 1e3, signal, {
+      checks = await runChecks(input2.checks, cwd, config.checkTimeoutSec * 1e3, signal ? AbortSignal.any([signal, checksController.signal]) : checksController.signal, {
         onProgress: ({ command, startedAt, lastOutputAt, result: result2 }) => {
           const records = meta3.checks;
           if (!records.length || records.at(-1).state !== "running") records.push({ command, startedAt, state: "running" });
@@ -39438,8 +39708,20 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
         }
       });
     }
+    if (runDir && config.engine === "app-server") {
+      result.userInterrupt ??= stallControl?.live?.userInterrupt;
+      result.inputs = await finishInputs(runDir);
+      if (result.userInterrupt) {
+        result.exitKind = "user_interrupted";
+        result.ok = false;
+        result.interruptedJobs ??= stallControl?.live?.interruptedJobs;
+        if (rec && result.sessionId) savePending({ ...rec, sessionId: result.sessionId, state: "interrupted", endedAt: Date.now(), changed: [.../* @__PURE__ */ new Set([...continued?.changed ?? [], ...(changes ?? []).map((c) => c.path)])] });
+      }
+    }
     Object.assign(meta3, {
-      state: signal?.aborted ? "interrupted" : result.ok ? "ok" : "error",
+      state: result.userInterrupt ? "user_interrupted" : signal?.aborted ? "interrupted" : result.ok ? "ok" : "error",
+      exitKind: result.exitKind,
+      inputs: result.inputs,
       sessionId: result.sessionId ?? meta3.sessionId,
       tokens: result.tokens,
       turns: result.turns,
@@ -39470,7 +39752,7 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
       } catch {
       }
       try {
-        rmSync4(join11(runDir, "tmp"), { recursive: true, force: true });
+        rmSync4(join12(runDir, "tmp"), { recursive: true, force: true });
       } catch {
       }
     }
@@ -39539,6 +39821,7 @@ function quotaReset(r) {
 }
 function formatOutcome(o) {
   const r = o.result;
+  if (r.userInterrupt) return interruptText(r.userInterrupt, r.sessionId, r.inputs ?? [], r.interruptedJobs ?? [], o.runDir ?? "") + "\n" + renderInputs(r.inputs ?? []);
   const model2 = o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`);
   const lines = [
     r.exitKind === "completed" ? "status: ok" : `status: error (${r.exitKind}${r.errorKind ? `/${r.errorKind}` : ""})`,
@@ -39557,6 +39840,7 @@ function formatOutcome(o) {
   if (o.continued) {
     lines.push(`continued: the interrupted run in this cwd (session ${o.continued.sessionId}); codex kept its context and partial edits and was told your new message wins. Pass fresh: true to start over instead.`);
   }
+  if (r.inputs?.length) lines.push(renderInputs(r.inputs));
   if (r.kept?.length) lines.push(renderKept(r.kept));
   if (o.checkpoints?.length) {
     lines.push(`checkpoints (stage reports in the run log): ${o.checkpoints.map((c) => `${c.n}. ${c.title}`).join("; ")}`);
@@ -39580,7 +39864,7 @@ ${seen.map((p) => `  ${p}`).join("\n")}`);
   }
   if (o.checks?.length) lines.push(renderChecks(o.checks));
   if (!o.report) {
-    const where = o.runDir && join11(o.runDir, "last-message.txt");
+    const where = o.runDir && join12(o.runDir, "last-message.txt");
     lines.push("--- response ---", truncate(r.text || "(no text output)", config.maxOutputChars, where));
   }
   if (o.runDir) lines.push(`run log: ${o.runDir}`);
@@ -39591,13 +39875,13 @@ ${seen.map((p) => `  ${p}`).join("\n")}`);
 import { watchFile as watchFile2 } from "node:fs";
 
 // src/tasks.ts
-import { randomUUID as randomUUID4 } from "node:crypto";
+import { randomUUID as randomUUID5 } from "node:crypto";
 import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync11, writeFileSync as writeFileSync9 } from "node:fs";
-import { join as join12 } from "node:path";
+import { join as join13 } from "node:path";
 var MAX_FINISHED = 100;
 var tasks = /* @__PURE__ */ new Map();
-var tasksDir = () => join12(config.runsDir, "tasks");
-var taskFile = (id) => join12(tasksDir(), `${id.replace(/[^\w-]/g, "")}.json`);
+var tasksDir = () => join13(config.runsDir, "tasks");
+var taskFile = (id) => join13(tasksDir(), `${id.replace(/[^\w-]/g, "")}.json`);
 function store(t) {
   try {
     mkdirSync5(tasksDir(), { recursive: true });
@@ -39632,7 +39916,7 @@ function prune() {
 }
 function startTask(input2, background = true, evidenceSampler) {
   const controller = new AbortController();
-  const task = { id: `task_${randomUUID4().slice(0, 8)}`, input: input2, status: "running", startedAt: Date.now(), controller, control: { evidenceSampler, background, lastObservedAt: Date.now() }, listeners: /* @__PURE__ */ new Set() };
+  const task = { id: `task_${randomUUID5().slice(0, 8)}`, input: input2, status: "running", startedAt: Date.now(), controller, control: { evidenceSampler, background, lastObservedAt: Date.now() }, listeners: /* @__PURE__ */ new Set() };
   task.promise = delegate(input2, controller.signal, (info) => {
     const first = info.sessionId && !task.progress?.sessionId;
     task.progress = info;
@@ -39641,7 +39925,7 @@ function startTask(input2, background = true, evidenceSampler) {
   }, task.control).then(
     (outcome) => {
       task.outcome = outcome;
-      task.status = controller.signal.aborted ? "cancelled" : outcome.result.ok ? "done" : "error";
+      task.status = outcome.result.userInterrupt ? "user_interrupted" : controller.signal.aborted ? "cancelled" : outcome.result.ok ? "done" : "error";
     },
     (err) => {
       task.error = err instanceof Error ? err.message : String(err);
@@ -39687,7 +39971,7 @@ function formatSuspicion(task) {
     `inflight: ${s.command?.replace(/\s+/g, " ").slice(0, 300) ?? "(model silent)"}; idle: ${((Date.now() - (p.lastEventAt ?? task.startedAt)) / 1e3).toFixed(0)}s`,
     `threshold: ${s.thresholdSec}s; wakes: ${s.wakes}${s.matchedRule ? `; rule: ${s.matchedRule}` : ""}`,
     `evidence: ${JSON.stringify(s.evidence)}`,
-    logReport(join12(config.runsDir, p.id)),
+    logReport(join13(config.runsDir, p.id)),
     trendReport(p.trend),
     s.command ? baseline(config.runsDir, s.command, p.id) : ""
   ].filter(Boolean).join("\n");
@@ -39699,7 +39983,7 @@ function formatCheckpoints(task) {
   const fresh = newCheckpoints(task);
   task.shownCheckpoints = task.progress?.checkpoints?.length ?? 0;
   const p = task.progress;
-  const dir2 = join12(config.runsDir, p.id);
+  const dir2 = join13(config.runsDir, p.id);
   const steer = task.control.live ? "direction should change \u2192 task_steer(task_id, prompt) (now: true makes codex read it at once; a long command it started keeps running unless you also pass kill: true)" : "direction should change \u2192 task_cancel, then delegate(session_id) with the new direction (this engine cannot steer)";
   return [
     "status: checkpoint (codex is still working; nothing was stopped)",
@@ -39709,7 +39993,7 @@ function formatCheckpoints(task) {
     `elapsed: ${((Date.now() - task.startedAt) / 1e3).toFixed(0)}s`,
     ...fresh.map((c) => {
       try {
-        return renderCheckpoint({ ...c, file: join12(dir2, `checkpoint-${c.n}.md`), text: readFileSync11(join12(dir2, `checkpoint-${c.n}.md`), "utf8").trim() });
+        return renderCheckpoint({ ...c, file: join13(dir2, `checkpoint-${c.n}.md`), text: readFileSync11(join13(dir2, `checkpoint-${c.n}.md`), "utf8").trim() });
       } catch {
         return `--- checkpoint ${c.n}: ${c.title} (file unreadable) ---`;
       }
@@ -39719,7 +40003,7 @@ function formatCheckpoints(task) {
 async function waitTask(task, waitSec, stallAfterSec) {
   task.control.lastObservedAt = Date.now();
   if (task.status !== "running") return;
-  if (newCheckpoints(task).length) return;
+  if (newCheckpoints(task).length || newUserInputs(task).length) return;
   const suspicion = task.controller.signal.aborted ? void 0 : task.progress?.suspicion;
   if (suspicion && task.seenWake !== suspicion.suspectedAt && stallAfterSec === void 0) {
     task.seenWake = suspicion.suspectedAt;
@@ -39731,7 +40015,7 @@ async function waitTask(task, waitSec, stallAfterSec) {
   let notify;
   const wake = new Promise((resolve4) => {
     notify = () => {
-      if (!task.controller.signal.aborted && (task.progress?.suspicion || newCheckpoints(task).length)) resolve4();
+      if (!task.controller.signal.aborted && (task.progress?.suspicion || newCheckpoints(task).length || newUserInputs(task).length)) resolve4();
     };
     task.listeners.add(notify);
   });
@@ -39773,6 +40057,8 @@ async function steerTask(task, prompt, now = false, waitMs, kill = false) {
     const inflight = task.progress?.inflight?.command?.replace(/\s+/g, " ").slice(0, 160);
     if (now) {
       const r = await live2.redirect(prompt, { kill, waitMs });
+      if (task.progress) await leadInput(join13(config.runsDir, task.progress.id), prompt, "delivered").catch(() => {
+      });
       const lines = [`redirected ${task.id}: codex stopped thinking about its current step and continues the same session with your message. Edits made before stay.`];
       for (const k of r.kept) lines.push(`kept running: cmd-${k.n} ${k.command.replace(/\s+/g, " ").slice(0, 160)} (log ${k.log}). Codex was told it must wait for it or stop it before finishing; you can watch it with task_inspect. If you decide it must stop, task_steer again saying so (or now: true, kill: true).`);
       for (const c of r.killed) lines.push(`stopped: ${c.replace(/\s+/g, " ").slice(0, 160)}${kill ? "" : " (it was not started through the launcher, so it could not be kept)"}`);
@@ -39780,17 +40066,21 @@ async function steerTask(task, prompt, now = false, waitMs, kill = false) {
       return { isError: false, text: lines.join("\n") };
     }
     const { consumed } = await live2.steer(prompt, waitMs);
+    if (task.progress) await leadInput(join13(config.runsDir, task.progress.id), prompt, consumed ? "consumed" : "delivered").catch(() => {
+    });
     return { isError: false, text: consumed ? `steered ${task.id}: codex has read the message and continues with it. Edits made before it stay; collect with task_result.` : `steered ${task.id}: accepted, codex will read it at its next step${inflight ? ` (busy running: ${inflight}; to have codex read it now while that keeps running, steer again with now: true)` : ""}. Collect with task_result; the result says whether codex read it.` };
   } catch (e) {
+    if (task.progress) await leadInput(join13(config.runsDir, task.progress.id), prompt, "failed").catch(() => {
+    });
     return { isError: true, text: `steer failed: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
 async function inspectTask(task) {
   const p = task.progress;
   if (!p) return `task_id: ${task.id}; ${task.status}; evidence unavailable`;
-  const dir2 = join12(config.runsDir, p.id);
+  const dir2 = join13(config.runsDir, p.id);
   const sample = task.status === "running" && p.codexPid ? await sampleTreeEvidence(p.codexPid, new AbortController().signal) : void 0;
-  const events = tailFile(join12(dir2, "events.jsonl"), 16e3).trim().split(/\r?\n/).slice(-5).map((line) => {
+  const events = tailFile(join13(dir2, "events.jsonl"), 16e3).trim().split(/\r?\n/).slice(-5).map((line) => {
     try {
       const e = JSON.parse(line);
       return `${e.type}: ${e.item?.command ?? e.item?.text ?? e.item?.type ?? e.message ?? ""}`.slice(0, 120);
@@ -39808,6 +40098,14 @@ async function inspectTask(task) {
 ${events.join("\n")}`,
     `recent files (30m, top 10; scan capped at 20000 entries): ${(p.cwd ? recentFiles(p.cwd) : []).join(", ").slice(0, 600)}`
   ].filter(Boolean).join("\n");
+}
+function newUserInputs(task) {
+  return (task.progress?.inputs ?? []).filter((m) => m.from === "user" && m.notify).slice(task.shownUserInputs ?? 0);
+}
+function formatUserInputs(task) {
+  const fresh = newUserInputs(task);
+  task.shownUserInputs = (task.progress?.inputs ?? []).filter((m) => m.from === "user" && m.notify).length;
+  return ["status: user_input (codex is still working; nothing was stopped)", `task_id: ${task.id}`, renderInputs(fresh), "next: tell the user what they changed, then task_result(task_id, wait_s) to keep waiting, or task_steer/task_cancel if your plan must change."].join("\n");
 }
 
 // src/index.ts
@@ -39910,6 +40208,7 @@ var delegateTool = server.registerTool(
     }, 15e3) : void 0;
     try {
       const task = await delegateSync(input2, extra.signal);
+      if (task.status === "running" && newUserInputs(task).length) return text(formatUserInputs(task));
       if (task.status === "running" && newCheckpoints(task).length) return text(formatCheckpoints(task));
       if (task.status === "running") return text(formatSuspicion(task));
       if (task.outcome) return text(formatOutcome(task.outcome), !task.outcome.result.ok);
@@ -39960,15 +40259,18 @@ server.registerTool(
       if (!s) return text(`unknown task_id '${task_id}'`, true);
       if (s.status === "interrupted") return text(`task: ${s.id} (interrupted)
 the server that ran it exited before it finished; ${s.sessionId ? `continue it with delegate(session_id="${s.sessionId}")` : "re-run it"} (check git status first).`, true);
+      if (s.status === "user_interrupted") return text(s.text ?? "status: user_interrupted");
       return text(`task: ${s.id} (${s.status})
 ${s.text ?? ""}`, s.status !== "done");
     }
     await waitTask(t, wait_s ?? 0, stall_after_s);
+    if (t.status === "running" && newUserInputs(t).length) return text(formatUserInputs(t));
     if (t.status === "running" && newCheckpoints(t).length) return text(formatCheckpoints(t));
     if (t.status === "running" && t.progress?.suspicion) return text(formatSuspicion(t));
     if (t.status === "running") return text(`${taskSummary(t)}
 ${runningProgress(t)}
 still running \u2014 call again later or with a larger wait_s.`);
+    if (t.outcome?.result.userInterrupt) return text(formatOutcome(t.outcome));
     if (t.outcome) return text(`task: ${t.id} (${t.status})
 ${formatOutcome(t.outcome)}`, t.status !== "done");
     return text(`task: ${t.id} (${t.status})

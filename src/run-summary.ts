@@ -11,6 +11,7 @@ import pkg from "../package.json" with { type: "json" };
 export const version = pkg.version;
 
 export interface RunSummary {
+  inputs?: import("./inbox.ts").InputMessage[];
   provider?: string;
   commands?: CommandTiming[];
   denials?: Denials;
@@ -21,7 +22,7 @@ export interface RunSummary {
   id: string;
   startedAt: number;
   endedAt?: number;
-  state: "running" | "ok" | "error" | "interrupted";
+  state: "running" | "ok" | "error" | "interrupted" | "user_interrupted";
   phase?: "codex" | "checks" | "done";
   engine?: import("./config.ts").Engine;
   /** App-server: the active turn, and lead messages steered into it. */

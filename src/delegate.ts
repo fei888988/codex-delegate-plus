@@ -1,3 +1,4 @@
+import { finishInputs, interruptText, launcherJobs, messages, renderInputs } from "./inbox.ts";
 import { loadProviders, selectProvider, selectModel, type Provider } from "./providers.ts";
 import { sessionProvider } from "./sessions.ts";
 import { effectiveSandbox, previousDiagnosis, denialBlock, commandLogs, trimCommandLogs, finishCommandLogs, type TrendPoint } from "./observability.ts";
@@ -13,7 +14,7 @@ import { diffSnapshots, diffStat, snapshot, type FileStat } from "./git.ts";
 import { resolveModelOrThrow } from "./models.ts";
 import { findTier, loadPolicy, type Retention } from "./policy.ts";
 import { checkpointContract, scanCheckpoints } from "./checkpoints.ts";
-import { installLauncher, reapLongruns, refresh, trackRunDir, type KeptCommand } from "./longruns.ts";
+import { installLauncher, reapLongruns, untrackRunDir, refresh, trackRunDir, type KeptCommand } from "./longruns.ts";
 import { clearPending, continuationPreamble, loadPending, savePending, type PendingRun } from "./pending.ts";
 import { parseReport, READ_CONTRACT, renderReport, REPORT_SCHEMA, WRITE_CONTRACT, type Report } from "./report.ts";
 import { version, type RunSummary } from "./run-summary.ts";
@@ -77,6 +78,7 @@ function newRunDir(): string | undefined {
 }
 
 export async function delegate(input: DelegateInput, signal?: AbortSignal, onProgress?: (info: RunSummary) => void, stallControl?: StallControl): Promise<DelegateOutcome> {
+  stallControl ??= { lastObservedAt: Date.now() };
   const cwd = resolve(config.defaultCwd, input.cwd ?? ".");
   if (!existsSync(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const auto = input.auto ?? config.auto;
@@ -236,7 +238,20 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
     progress();
     writeMeta();
   };
-  const checkpointTimer = setInterval(pollCheckpoints, config.checkpointPollMs);
+  const checksController = new AbortController();
+  let pollingInputs = false;
+  const pollInputs = async () => {
+    if (!runDir || config.engine !== "app-server" || pollingInputs) return;
+    pollingInputs = true;
+    try {
+      void stallControl?.live?.pollInbox?.().then(() => {
+        if (stallControl?.live?.userInterrupt) checksController.abort();
+      }).catch(() => {});
+      meta.inputs = await messages(runDir);
+      progress();
+    } catch {} finally { pollingInputs = false; }
+  };
+  const checkpointTimer = setInterval(() => { pollCheckpoints(); void pollInputs(); }, config.checkpointPollMs);
   checkpointTimer.unref();
   try {
     let prompt = previousDiagnosis(config.runsDir, input.session_id) + (continued ? continuationPreamble(continued) : "") + input.prompt;
@@ -331,14 +346,23 @@ It streams the output, blocks until the command ends and exits with its exit cod
       logFile: runDir && join(runDir, "events.jsonl"),
       runDir,
     });
+    if (runDir && config.engine === "app-server") {
+      // A final scan covers inputs submitted between the last timer tick and run failure/end.
+      await stallControl?.live?.flushInbox?.();
+      result.inputs = await finishInputs(runDir);
+      meta.inputs = result.inputs;
+      if (result.userInterrupt) {
+        result.interruptedJobs = stallControl?.live?.interruptedJobs ?? await launcherJobs(runDir);
+        if (!result.userInterrupt.killLongruns) untrackRunDir(runDir);
+      }
+    }
     // Nothing the run started may outlive it unnoticed: stop what is still running and say so.
-    if (runDir) {
+    if (runDir && !(result.userInterrupt && !result.userInterrupt.killLongruns)) {
       const leftover = reapLongruns(runDir, signal?.aborted ? "task cancelled" : "the codex run ended");
       const forgotten = leftover.filter((n) => !result.kept?.some((k) => k.n === n && k.outcome !== "running"));
       if (forgotten.length) notes.push(`background command(s) ${forgotten.map((n) => `cmd-${n}`).join(", ")} were still running when codex finished; the server stopped them (logs in the run directory)`);
       if (result.kept) result.kept = result.kept.map((k) => leftover.includes(k.n) && k.outcome === "running" ? { ...k, outcome: "killed_forgotten" as const } : refresh(runDir, k));
     }
-    clearInterval(checkpointTimer);
     if (runDir && input.checkpoints) {
       // A checkpoint written just before the end is still listed; the mtime guard no longer applies.
       for (const c of scanCheckpoints(runDir, seenCheckpoints, Infinity)) {
@@ -352,7 +376,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
     const after = before && await snapshot(cwd);
     const changes = before && after ? await diffStat(cwd, diffSnapshots(before, after)) : undefined;
     if (rec) {
-      if (signal?.aborted && result.sessionId) {
+      if ((signal?.aborted || result.userInterrupt) && result.sessionId) {
         // Merge in what the continued run had already touched, so the next preamble lists it all.
         const changed = [...new Set([...(continued?.changed ?? []), ...(changes ?? []).map((c) => c.path)])];
         savePending({ ...rec, sessionId: result.sessionId, state: "interrupted", endedAt: Date.now(), changed });
@@ -365,14 +389,14 @@ It streams the output, blocks until the command ends and exits with its exit cod
 
     let checks: CheckResult[] | undefined;
     // Out of quota or logged out: report at once instead of spending minutes on checks first.
-    const envStop = !result.ok && (result.errorKind === "quota" || result.errorKind === "auth");
-    if (envStop && input.checks?.length) notes.push(`host checks skipped: codex stopped on ${result.errorKind}`);
+    const envStop = !!result.userInterrupt || !result.ok && (result.errorKind === "quota" || result.errorKind === "auth");
+    if (envStop && input.checks?.length) notes.push(`host checks skipped: ${result.userInterrupt ? "user interrupted" : `codex stopped on ${result.errorKind}`}`);
     if (input.checks?.length && !signal?.aborted && !envStop) {
       meta.phase = "checks";
       meta.checksStartedAt = Date.now();
       meta.checks = [];
       progress();
-      checks = await runChecks(input.checks, cwd, config.checkTimeoutSec * 1000, signal, {
+      checks = await runChecks(input.checks, cwd, config.checkTimeoutSec * 1000, signal ? AbortSignal.any([signal, checksController.signal]) : checksController.signal, {
         onProgress: ({ command, startedAt, lastOutputAt, result }) => {
           // Sequential checks: the active record is always the last one, even for duplicate commands.
           const records = meta.checks!;
@@ -383,8 +407,19 @@ It streams the output, blocks until the command ends and exits with its exit cod
         },
       });
     }
+    if (runDir && config.engine === "app-server") {
+      result.userInterrupt ??= stallControl?.live?.userInterrupt;
+      result.inputs = await finishInputs(runDir);
+      if (result.userInterrupt) {
+        result.exitKind = "user_interrupted";
+        result.ok = false;
+        result.interruptedJobs ??= stallControl?.live?.interruptedJobs;
+        if (rec && result.sessionId) savePending({ ...rec, sessionId: result.sessionId, state: "interrupted", endedAt: Date.now(), changed: [...new Set([...(continued?.changed ?? []), ...(changes ?? []).map(c => c.path)])] });
+      }
+    }
     Object.assign(meta, {
-      state: signal?.aborted ? "interrupted" : result.ok ? "ok" : "error",
+      state: result.userInterrupt ? "user_interrupted" : signal?.aborted ? "interrupted" : result.ok ? "ok" : "error",
+      exitKind: result.exitKind, inputs: result.inputs,
       sessionId: result.sessionId ?? meta.sessionId, tokens: result.tokens, turns: result.turns,
       reportStatus: report?.status, summary: report?.summary, report, changes,
       notes: [...notes, ...result.warnings],
@@ -482,6 +517,7 @@ function quotaReset(r: RunResult): string | undefined {
 
 export function formatOutcome(o: DelegateOutcome): string {
   const r = o.result;
+  if (r.userInterrupt) return interruptText(r.userInterrupt, r.sessionId, r.inputs ?? [], r.interruptedJobs ?? [], o.runDir ?? "") + "\n" + renderInputs(r.inputs ?? []);
   const model = o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`);
   const lines = [
     r.exitKind === "completed" ? "status: ok" : `status: error (${r.exitKind}${r.errorKind ? `/${r.errorKind}` : ""})`,
@@ -508,6 +544,7 @@ export function formatOutcome(o: DelegateOutcome): string {
   if (o.continued) {
     lines.push(`continued: the interrupted run in this cwd (session ${o.continued.sessionId}); codex kept its context and partial edits and was told your new message wins. Pass fresh: true to start over instead.`);
   }
+  if (r.inputs?.length) lines.push(renderInputs(r.inputs));
   if (r.kept?.length) lines.push(renderKept(r.kept));
   if (o.checkpoints?.length) {
     lines.push(`checkpoints (stage reports in the run log): ${o.checkpoints.map((c) => `${c.n}. ${c.title}`).join("; ")}`);

@@ -89,8 +89,10 @@ export function reapLongruns(runDir: string, why: string): number[] {
 
 // Run directories whose launcher commands must die with this server, even if it exits abruptly.
 const active = new Set<string>();
+export function untrackRunDir(runDir: string) { active.delete(runDir); }
 export function trackRunDir(runDir: string) { active.add(runDir); }
-onExit(() => { for (const dir of [...active]) reapLongruns(dir, "server exited"); });
+export function reapTrackedLongruns() { for (const dir of [...active]) reapLongruns(dir, "server exited"); }
+onExit(reapTrackedLongruns);
 
 export function keptPreamble(runDir: string, kept: KeptCommand[], killed: string[]): string {
   const launcher = join(runDir, LAUNCHER);

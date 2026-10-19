@@ -383,6 +383,75 @@
   .end-line { text-align: center; color: var(--muted); font: 11px var(--mono); letter-spacing: .1em; display: flex; align-items: center; gap: 12px; }
   .end-line::before, .end-line::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, transparent, var(--line2)); }
   .end-line::after { transform: scaleX(-1); }
+  /* 人工输入：对话里的「你」 */
+  .ava.me { background: var(--run); color: #001418; box-shadow: 0 0 0 4px var(--bg), 0 0 18px -2px rgba(77,227,255,.5); }
+  .ava.lead { background: var(--ember); color: #1a0700; box-shadow: 0 0 0 4px var(--bg); }
+  .bubble.me { background: var(--run-bg); border-color: rgba(77,227,255,.22); }
+  .bubble.me .md p { white-space: pre-wrap; }
+  .msg.dim .bubble { opacity: .55; }
+  .msg.dim .md { text-decoration: line-through; text-decoration-color: var(--muted); }
+  .mtag { font: 11px var(--mono); padding: 0 6px; border-radius: 5px; background: var(--soft); color: var(--text2); }
+  .mtag.notify { color: var(--ember); background: rgba(255,106,61,.1); }
+  .ist { font: 11px var(--mono); display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+  .ist::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .ist.sending, .ist.queued { color: var(--warn); } .ist.sending::before { animation: hop 1.1s var(--io) infinite; }
+  .ist.delivered { color: var(--run); } .ist.consumed { color: var(--ok); }
+  .ist.failed, .ist.undelivered { color: var(--err); }
+  /* 输入区：固定在抽屉底部 */
+  .composer { border-top: 1px solid var(--line); padding: 12px 28px 18px; background: linear-gradient(to top, var(--card-solid), rgba(13,15,20,.92)); display: grid; gap: 10px; }
+  .composer[hidden] { display: none; }
+  .q-tray { display: grid; gap: 6px; }
+  .q-tray:empty { display: none; }
+  .q-tray .qh { font: 11px var(--mono); color: var(--warn); letter-spacing: .12em; }
+  .qi { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px 8px 12px; border-radius: 10px; border: 1px dashed rgba(255,181,71,.35); background: var(--warn-bg); font-size: 13px; }
+  .qi .qn { font: 11px var(--mono); color: var(--warn); flex: none; padding-top: 2px; }
+  .qi { flex-wrap: wrap; }
+  .qi .qt { flex: 1 1 220px; min-width: 0; white-space: pre-wrap; word-break: break-word; color: var(--text); max-height: 4.8em; overflow: auto; }
+  .qi .qa { flex: none; display: flex; align-items: center; gap: 4px; margin-left: auto; }
+  .qi textarea { flex: 1 1 100%; }
+  .mtag, .ist { white-space: nowrap; }
+  .msg .who { flex-wrap: wrap; row-gap: 2px; }
+  .qi button { padding: 2px 9px; font-size: 12px; border-radius: 7px; }
+  .qi textarea { flex: 1; }
+  .cbox { border: 1px solid var(--line2); border-radius: 14px; background: rgba(0,0,0,.28); transition: border-color .2s, box-shadow .3s; }
+  .cbox:focus-within { border-color: rgba(77,227,255,.5); box-shadow: 0 0 0 4px rgba(77,227,255,.08); }
+  .composer textarea, .qi textarea, #iReason { font: inherit; font-size: 14px; line-height: 1.6; color: var(--text); background: none; border: 0; outline: none; resize: none; width: 100%; display: block; }
+  .cbox textarea { padding: 11px 14px 4px; min-height: 46px; max-height: 180px; }
+  .composer textarea::placeholder, #iReason::placeholder { color: var(--muted); }
+  .crow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 6px 8px 8px 10px; }
+  .crow .seg button { padding: 3px 14px; }
+  .cnotify { font-size: 12.5px; color: var(--text2); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+  .cnotify input { accent-color: var(--ember); }
+  .chint { flex: 1; min-width: 160px; color: var(--muted); font-size: 12px; }
+  .crow .primary { padding: 6px 18px; border-radius: 10px; }
+  .cnote { font-size: 12.5px; color: var(--muted); text-align: center; padding: 4px 0; }
+  .cerr { color: var(--err); font-size: 12.5px; }
+  /* 中断 */
+  button.stopbtn { display: inline-flex; align-items: center; gap: 7px; color: var(--err); border-color: rgba(255,77,94,.35); background: var(--err-bg); padding: 6px 13px; border-radius: 10px; font-size: 13px; font-weight: 600; }
+  button.stopbtn:hover:not(:disabled) { background: rgba(255,77,94,.18); border-color: var(--err); box-shadow: 0 0 22px -6px rgba(255,77,94,.6); }
+  button.stopbtn:disabled { opacity: .6; cursor: default; }
+  button.stopbtn i { width: 9px; height: 9px; border-radius: 2px; background: currentColor; }
+  button.danger { background: var(--err); border-color: var(--err); color: #1a0003; font-weight: 650; }
+  button.danger:hover:not(:disabled) { background: var(--err); box-shadow: 0 0 26px -4px rgba(255,77,94,.7); }
+  #idlg { width: min(520px, calc(100vw - 32px)); height: fit-content; max-height: calc(100vh - 48px); overflow: auto; margin: auto; border-radius: 20px; border: 1px solid rgba(255,77,94,.3); padding: 0; }
+  #idlg[open] { animation: popIn .45s var(--out); }
+  #idlg.closing { animation: popOut .24s var(--io) forwards; }
+  #idlg::before { left: 10%; right: 10%; top: 0; bottom: auto; width: auto; height: 1px; background: linear-gradient(90deg, transparent, var(--err), transparent); }
+  #idlg .in { padding: 24px 26px 20px; display: grid; gap: 14px; }
+  #idlg [hidden] { display: none; }
+  #idlg .kicker { color: var(--err); margin: 0; }
+  #idlg h2 { margin: 0; font: 600 21px/1.3 var(--disp); }
+  #idlg ul { margin: 0; padding-left: 18px; color: var(--text2); font-size: 13.5px; line-height: 1.8; } #idlg li::marker { color: var(--err); }
+  #idlg .fld { border: 1px solid var(--line2); border-radius: 12px; background: rgba(0,0,0,.28); padding: 10px 13px; }
+  #idlg .fld:focus-within { border-color: rgba(255,77,94,.5); box-shadow: 0 0 0 4px rgba(255,77,94,.08); }
+  #idlg label.lb { font-size: 12.5px; color: var(--text2); display: block; margin-bottom: 6px; }
+  #iReason { min-height: 72px; font-size: 13.5px; }
+  #idlg .hint { color: var(--muted); font-size: 12px; margin-top: -6px; }
+  #idlg .acts { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; padding-top: 4px; }
+  #idlg .acts .back { margin-right: auto; }
+  .lr { display: grid; gap: 6px; }
+  .lr div { border: 1px solid var(--line); border-radius: 10px; padding: 8px 11px; background: rgba(0,0,0,.25); font: 12px var(--mono); color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lr div span { color: var(--muted); margin-left: 8px; }
   /* 完整日志 */
   .tl { display: grid; }
   .ev { display: grid; grid-template-columns: 70px 48px 1fr; gap: 10px; padding: 7px 4px; border-top: 1px solid var(--line); align-items: baseline; }
@@ -628,6 +697,7 @@
       <h2 id="dlgTitle"></h2>
       <div class="dlg-meta" id="dlgMeta"></div>
     </div>
+    <button type="button" class="stopbtn" id="dlgStop" hidden title="中断这次运行，并让 Claude 暂停这项工作"><i aria-hidden="true"></i>中断</button>
     <button type="button" class="icon" id="dlgClose" aria-label="关闭"><svg width="16" height="16" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m4 4 8 8M12 4l-8 8"/></svg></button>
   </div>
   <div class="strip" id="dlgStrip" role="status" hidden></div>
@@ -637,6 +707,44 @@
     <i class="ink" id="tabInk" aria-hidden="true"></i>
   </div>
   <div class="dlg-body" id="dlgBody" role="tabpanel"></div>
+  <div class="composer" id="cmp" hidden>
+    <div class="q-tray" id="cQueue" aria-live="polite"></div>
+    <div class="cbox">
+      <textarea id="cText" rows="1" maxlength="4000" placeholder="给 Codex 发消息…" aria-label="给 Codex 的消息" aria-describedby="cHint"></textarea>
+      <div class="crow">
+        <div class="seg" id="cMode" role="group" aria-label="发送方式">
+          <button type="button" data-v="steer" aria-pressed="true">插话</button><button type="button" data-v="queue" aria-pressed="false">排队</button>
+        </div>
+        <label class="cnotify"><input type="checkbox" id="cNotify"> 立即通知 Claude</label>
+        <span class="chint" id="cHint"></span>
+        <button type="button" class="primary" id="cSend" disabled>发送</button>
+      </div>
+    </div>
+    <div class="cerr" id="cErr" role="alert" hidden></div>
+  </div>
+  <div class="composer" id="cmpNote" hidden><div class="cnote" id="cNoteText"></div></div>
+</dialog>
+
+<dialog id="idlg" aria-labelledby="iTitle">
+  <div class="in" id="iStep1">
+    <div class="kicker">INTERRUPT · 中断运行</div>
+    <h2 id="iTitle">中断这次运行？</h2>
+    <ul id="iEffects"></ul>
+    <div class="fld">
+      <label class="lb" for="iReason">写给 Claude 的理由（可选）</label>
+      <textarea id="iReason" maxlength="1000" placeholder="例如：方向错了，先别改数据库结构"></textarea>
+    </div>
+    <div class="hint">不写理由时，Claude 只会收到「用户中断，原因不明」，并暂停这项工作。</div>
+    <div class="acts"><button type="button" id="iCancel" autofocus>取消</button><button type="button" class="danger" id="iNext">确认中断</button></div>
+  </div>
+  <div class="in" id="iStep2" hidden>
+    <div class="kicker">LONG SCRIPTS · 后台脚本</div>
+    <h2 id="iTitle2">还有后台脚本在运行</h2>
+    <div class="lr" id="iLong"></div>
+    <div class="hint" style="margin-top:0">停止：脚本立即结束。保留：脚本继续跑完，Claude 会拿到它的 pid 和日志位置，停止前会先问你。</div>
+    <div class="acts"><button type="button" class="ghost back" id="iBack">返回</button><button type="button" id="iKeep">保留运行</button><button type="button" class="danger" id="iKill">停止脚本</button></div>
+  </div>
+  <div class="cerr" id="iErr" role="alert" hidden style="padding:0 26px 18px"></div>
 </dialog>
 
 <dialog id="pdlg" aria-labelledby="pTitle">
@@ -747,9 +855,9 @@ function fmtRel(ms) {
 }
 const base = (p) => p ? String(p).split(/[\\/]/).filter(Boolean).pop() : "";
 const dur = (r) => r.durationMs ?? (r.endedAt && r.startedAt ? r.endedAt - r.startedAt : r.state === "running" ? Date.now() - r.startedAt : null);
-const isBad = (r) => r.state === "error" || r.state === "interrupted" || r.reportStatus === "blocked";
+const isBad = (r) => r.state === "error" || r.state === "interrupted" || r.state === "user_interrupted" || r.reportStatus === "blocked";
 
-const STATE = { running: ["进行中", "b-run"], ok: ["完成", "b-ok"], error: ["出错", "b-err"], interrupted: ["已中断", "b-warn"] };
+const STATE = { running: ["进行中", "b-run"], ok: ["完成", "b-ok"], error: ["出错", "b-err"], interrupted: ["已中断", "b-warn"], user_interrupted: ["你中断了", "b-warn"] };
 const REPORT = { done: ["完成", "b-ok"], partial: ["部分完成", "b-warn"], blocked: ["受阻", "b-err"], needs_decision: ["待决策", "b-warn"] };
 const badge = ([t, c]) => `<span class="badge ${c}">${esc(t)}</span>`;
 const HEALTH = { active: ["运行中", "b-run"], quiet: ["无输出", "b-warn"], stalled: ["疑似卡住", "b-err"], orphaned: ["已失联", "b-err"] };
@@ -1061,6 +1169,7 @@ const KIND = { user: "任务", assistant: "回复", reasoning: "思考", command
   file_change: "改文件", tokens: "Token", error: "错误", system: "系统" };
 const NOISY = new Set(["tokens", "system", "reasoning"]);
 const view = { id: null, tab: "info", run: null, entries: [], seen: new Set(), lastSeq: undefined, lastTs: null, open: new Set(), timer: null, busy: false,
+  inputs: [], io: null, ioSig: "", sending: [], editing: null, drafts: new Map(),
   mode: (() => { try { return localStorage.getItem("tlMode") || "chat"; } catch { return "chat"; } })() };
 const clock = (ts) => { const d = new Date(ts); return isNaN(d) ? "—" : `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
 const isOpen = (key) => view.open.has(key) ? " open" : "";
@@ -1072,9 +1181,21 @@ function buildConvo(entries) {
   const items = [];
   let group = null, lastSay = "";
   const flush = () => { if (group) items.push(group); group = null; };
+  let briefed = false;
+  const used = new Set();
   for (const e of entries) {
     if (e.kind === "system" || e.kind === "tokens") continue;
-    if (e.kind === "user") { if (BOILER.test(e.text || e.title || "")) continue; flush(); items.push({ type: "task", e }); continue; }
+    if (e.kind === "user") {
+      const text = e.text || e.title || "";
+      if (BOILER.test(text)) continue;
+      flush();
+      // Later user turns are interjections, queued messages or server reminders: attribute them to whoever sent them.
+      const inp = briefed ? matchInput(text, used) : null;
+      if (inp) { used.add(inp.mid); items.push({ type: "human", e, inp }); }
+      else items.push({ type: "task", e, later: briefed });
+      briefed = true;
+      continue;
+    }
     if (e.kind === "assistant") {
       const text = (e.text || e.title || "").trim();
       if (!text || text === lastSay) continue; // the rollout can log one message twice
@@ -1091,7 +1212,28 @@ function buildConvo(entries) {
     group.steps.push(step);
   }
   flush();
+  // Messages not in the rollout yet (sending, just delivered) or never delivered go at the end.
+  for (const inp of view.inputs) if (!used.has(inp.mid) && !inQueue(inp)) items.push({ type: "human", e: { seq: inp.mid, ts: inp.at }, inp, pending: true });
   return items;
+}
+/** Waiting in the tray: queued-mode messages not yet claimed. An unacked steer is just waiting for pickup. */
+const inQueue = (i) => i.mode === "queue" && i.state === "queued" && i.from !== "lead";
+const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
+function matchInput(text, used) {
+  const t = norm(text);
+  return view.inputs.find((i) => !used.has(i.mid) && !inQueue(i) && i.state !== "withdrawn" && norm(i.text) && t.includes(norm(i.text).slice(0, 400)));
+}
+const IST = { sending: "发送中", queued: "排队中", delivered: "已送达", consumed: "Codex 已读", withdrawn: "已撤回", undelivered: "未送达", failed: "发送失败" };
+const IMODE = { steer: "插话", queue: "排队" };
+function humanHtml(it) {
+  const i = it.inp, lead = i.from === "lead";
+  const dim = i.state === "withdrawn" || i.state === "undelivered" || i.state === "failed";
+  const label = i.state === "queued" ? "等待接收" : IST[i.state] || i.state;
+  const st = `<span class="ist ${esc(i.state)}" title="${esc(i.error || "")}">${esc(label)}${i.error ? `：${esc(i.error.slice(0, 80))}` : ""}</span>`;
+  const tags = `<span class="mtag">${esc(IMODE[i.mode] || i.mode)}</span>${i.notify ? `<span class="mtag notify">已通知 Claude</span>` : ""}`;
+  return `<div class="msg${dim ? " dim" : ""}"><span class="ava ${lead ? "lead" : "me"}">${lead ? "C" : "你"}</span><div>
+    <div class="who"><b>${lead ? "Claude" : "你"}</b>${tags}<span>${clock(i.at)}</span>${st}</div>
+    <div class="bubble${lead ? "" : " me"}"><div class="md"><p>${esc(i.text)}</p></div></div></div></div>`;
 }
 const stepBad = (s) => [s.e, s.out].some((x) => x && (x.kind === "error" || (x.exitCode != null && x.exitCode !== 0) || x.status === "failed"));
 function stepHtml(s) {
@@ -1130,9 +1272,10 @@ const who = (name, ts) => `<div class="who"><b>${name}</b>${ts ? `<span>${clock(
 function itemHtml(it) {
   const e = it.e;
   if (it.type === "steps") return groupHtml(it);
+  if (it.type === "human") return humanHtml(it);
   if (it.type === "task") {
     const text = (e.text || e.title || "").trim(), first = text.split("\n").find((l) => l.trim())?.replace(/^#+\s*/, "") || "任务";
-    return `<div class="msg task"><span class="ava claude">C</span><div>${who("Claude 的任务简报", e.ts)}
+    return `<div class="msg task"><span class="ava claude">C</span><div>${who(it.later ? "追加消息" : "Claude 的任务简报", e.ts)}
       <div class="bubble"><details data-key="t${e.seq}"${isOpen(`t${e.seq}`)}><summary>${esc(first.slice(0, 160))}<span class="more">展开全文</span></summary><pre>${esc(text)}</pre></details></div></div></div>`;
   }
   if (it.type === "error") return `<div class="msg err"><span class="ava" style="background:var(--err)">!</span><div>${who("错误", e.ts)}<div class="bubble"><div class="md">${md(e.text || e.title)}</div></div></div></div>`;
@@ -1165,6 +1308,10 @@ function visibleEntries() {
 }
 function tlFoot() {
   const r = view.run || {};
+  if (r.state === "user_interrupted") {
+    const why = view.io?.interrupt?.reason;
+    return `<div class="end-line">你在 ${esc(fmtFull(r.endedAt))} 中断了这次运行 · ${why ? `理由：${esc(why.slice(0, 120))}` : "未写理由"}</div>`;
+  }
   if (r.state !== "running") return view.entries.length ? `<div class="end-line">结束于 ${esc(fmtFull(r.endedAt))}</div>` : "";
   const last = view.lastTs ? Date.parse(view.lastTs) : toMs(r.lastEventAt);
   const idle = last ? Date.now() - last : null;
@@ -1253,6 +1400,9 @@ async function refreshDrawer(full) {
     const r = view.run;
     renderStrip(r);
     renderHead(r);
+    const ioChanged = full || wasRunning ? await pullInputs() : false;
+    renderComposer();
+    if (ioChanged && view.tab !== "info" && $("#tl")) renderTimeline();
     if (view.tab === "info") {
       // Re-render only when something visible changed, so open <details> stay open.
       if (full || (r.state !== "running" && wasRunning)) { $("#dlgBody").innerHTML = renderInfo(r); if (full) enter($("#dlgBody")); }
@@ -1267,7 +1417,11 @@ async function refreshDrawer(full) {
 async function openRun(id) {
   const brief = data.runs.find((r) => r.id === id) || { id };
   popState.n = 0;
-  Object.assign(view, { id, run: brief, entries: [], seen: new Set(), lastSeq: undefined, lastTs: null, open: new Set(), source: null, loadError: null });
+  Object.assign(view, { id, run: brief, entries: [], seen: new Set(), lastSeq: undefined, lastTs: null, open: new Set(), source: null, loadError: null,
+    inputs: [], io: null, ioSig: "", sending: [], editing: null });
+  $("#cText").value = view.drafts.get(id) || "";
+  $("#cErr").hidden = true;
+  growText();
   renderHead(brief);
   $("#dlgBody").innerHTML = LOADING;
   // A live run opens on its conversation; a finished one on the overview.
@@ -1286,6 +1440,7 @@ function setTab(tab, refresh = true) {
   $("#tabTl").tabIndex = tab === "tl" ? 0 : -1;
   inkTabs();
   popState.n = 0;
+  renderComposer();
   if (!refresh) return;
   $("#dlgBody").innerHTML = LOADING;
   $("#dlgBody").scrollTop = 0;
@@ -1326,7 +1481,183 @@ $("#dlgBody").addEventListener("click", (e) => {
   $("#tlExpand").dataset.on = expand ? "1" : "";
   $("#tlExpand").textContent = expand ? "全部收起" : view.mode === "chat" ? "展开工具调用" : "全部展开";
 });
-$("#dlg").addEventListener("close", () => { clearInterval(view.timer); view.id = null; });
+$("#dlg").addEventListener("close", () => { clearInterval(view.timer); view.id = null; renderComposer(); });
+// ---- 人工输入：插话 / 排队 / 中断 ----
+const runUrl = (id, tail = "") => `/api/runs/${encodeURIComponent(id)}${tail}`;
+const IO_WHY = { not_running: "运行已结束。要继续这项工作，请在 Claude 里说。", exec_engine: "这次运行用的是 exec 引擎，不支持人工输入。",
+  stale_heartbeat: "联系不上负责这次运行的 MCP 服务（心跳超时），暂时不能发送。", unsupported: "控制面板后端还不支持人工输入，重启控制面板服务后再试。" };
+async function pullInputs() {
+  const id = view.id;
+  try {
+    const res = await fetch(runUrl(id, "/inputs"), { cache: "no-store" });
+    if (id !== view.id) return false;
+    if (res.status === 404) view.io = { available: false, reason: "unsupported", inputs: [], longruns: [], interrupt: null };
+    else if (res.ok) view.io = await res.json();
+    else return false;
+  } catch { return false; }
+  const known = new Set((view.io.inputs || []).map((i) => i.mid));
+  view.sending = view.sending.filter((s) => !known.has(s.mid));
+  view.inputs = [...(view.io.inputs || []), ...view.sending].sort((a, b) => a.at - b.at);
+  const sig = JSON.stringify([view.inputs.map((i) => [i.mid, i.state, i.text]), view.io.available, view.io.reason, view.io.interrupt?.state]);
+  const changed = sig !== view.ioSig;
+  view.ioSig = sig;
+  return changed;
+}
+function renderComposer() {
+  const r = view.run, io = view.io, onTl = $("#dlg").open && view.tab !== "info";
+  const live = r?.state === "running" && io?.available && !io.interrupt;
+  $("#dlgStop").hidden = !(r?.state === "running" && io && (io.available || io.interrupt));
+  $("#dlgStop").disabled = !!io?.interrupt;
+  $("#dlgStop").lastChild.textContent = io?.interrupt ? "正在中断…" : "中断";
+  $("#cmp").hidden = !(onTl && live);
+  const why = r?.state === "running" && io && !live ? (io.interrupt ? "已请求中断，等待 Codex 停下…" : IO_WHY[io.reason] || "暂时不能发送。") : "";
+  $("#cmpNote").hidden = !(onTl && why);
+  $("#cNoteText").textContent = why;
+  if ($("#cmp").hidden) return;
+  inkSeg($("#cMode"));
+  $("#cHint").textContent = cHint();
+  $("#cSend").disabled = !$("#cText").value.trim();
+  renderQueue();
+}
+function cHint() {
+  const q = $("#cMode [aria-pressed=true]").dataset.v === "queue", n = $("#cNotify").checked;
+  return (q ? "排队：Codex 做完当前这一轮后再读，每条单独一轮" : "插话：Codex 马上读到，后台长脚本继续运行")
+    + (n ? " · 同时立即告诉 Claude" : " · 任务返回时再告诉 Claude");
+}
+function renderQueue() {
+  const tray = $("#cQueue"), q = view.inputs.filter(inQueue);
+  // Leave the tray alone while one of its messages is being edited, unless that message is gone.
+  if (view.editing && q.some((i) => i.mid === view.editing)) return;
+  view.editing = null;
+  tray.innerHTML = q.length ? `<div class="qh">排队中 · ${q.length} 条，当前这一轮结束后依次发送</div>` + q.map((i, n) => `<div class="qi" data-mid="${esc(i.mid)}">
+    <span class="qn">#${n + 1}</span><span class="qt">${esc(i.text)}</span>
+    <span class="qa">${i.notify ? `<span class="mtag notify" title="发出时已通知 Claude">已通知</span>` : ""}<button type="button" class="ghost" data-act="edit">编辑</button><button type="button" class="ghost" data-act="del">撤回</button></span></div>`).join("") : "";
+}
+function cErr(msg) { $("#cErr").textContent = msg || ""; $("#cErr").hidden = !msg; }
+function growText() { const t = $("#cText"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, 180)}px`; }
+async function apiJson(url, method, body) {
+  const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) });
+  let j = {};
+  try { j = await res.json(); } catch {}
+  if (!res.ok) { const e = new Error(j.error || `HTTP ${res.status}`); e.status = res.status; e.reason = j.reason; throw e; }
+  return j;
+}
+async function sendInput() {
+  const text = $("#cText").value.trim();
+  if (!text || !view.id) return;
+  const mode = $("#cMode [aria-pressed=true]").dataset.v, notify = $("#cNotify").checked, id = view.id;
+  const tmp = { mid: `tmp-${Date.now()}`, mode, text, notify, at: Date.now(), from: "user", state: "sending" };
+  view.sending.push(tmp);
+  view.inputs.push(tmp);
+  $("#cText").value = ""; view.drafts.delete(id); growText(); cErr("");
+  if (view.tab !== "info") { renderTimeline(); $("#dlgBody").scrollTop = $("#dlgBody").scrollHeight; }
+  renderComposer();
+  try {
+    const { mid } = await apiJson(runUrl(id, "/input"), "POST", { mode, text, notify });
+    tmp.mid = mid;
+  } catch (e) {
+    view.sending = view.sending.filter((s) => s !== tmp);
+    view.inputs = view.inputs.filter((s) => s !== tmp);
+    if (id === view.id && !$("#cText").value) { $("#cText").value = text; growText(); }
+    if (e.status === 409 && e.reason && view.io) { view.io.available = false; view.io.reason = e.reason; }
+    cErr(`没发出去：${IO_WHY[e.reason] || e.message}`);
+  }
+  if (id !== view.id) return;
+  await pullInputs();
+  if (view.tab !== "info") renderTimeline();
+  renderComposer();
+}
+$("#cText").addEventListener("input", () => { growText(); if (view.id) view.drafts.set(view.id, $("#cText").value); $("#cSend").disabled = !$("#cText").value.trim(); });
+$("#cText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendInput(); } });
+$("#cSend").addEventListener("click", sendInput);
+$("#cNotify").addEventListener("change", () => { $("#cHint").textContent = cHint(); });
+$("#cMode").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-v]");
+  if (!b) return;
+  for (const x of $("#cMode").querySelectorAll("button")) x.setAttribute("aria-pressed", x === b);
+  inkSeg($("#cMode"));
+  $("#cHint").textContent = cHint();
+  $("#cText").focus();
+});
+$("#cQueue").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-act]"), row = b?.closest(".qi");
+  if (!row) return;
+  const mid = row.dataset.mid, act = b.dataset.act, inp = view.inputs.find((i) => i.mid === mid);
+  if (act === "edit") {
+    view.editing = mid;
+    row.querySelector(".qt").outerHTML = `<textarea rows="2" maxlength="4000" aria-label="编辑排队消息">${esc(inp?.text || "")}</textarea>`;
+    row.querySelector(".qa").innerHTML = `<button type="button" class="primary" data-act="save">保存</button><button type="button" class="ghost" data-act="cancel">取消</button>`;
+    row.querySelector("textarea").focus();
+    return;
+  }
+  if (act === "cancel") { view.editing = null; renderQueue(); return; }
+  b.disabled = true;
+  try {
+    if (act === "save") {
+      const text = row.querySelector("textarea").value.trim();
+      if (!text) { b.disabled = false; return; }
+      await apiJson(runUrl(view.id, `/input/${encodeURIComponent(mid)}`), "PATCH", { text });
+    } else await apiJson(runUrl(view.id, `/input/${encodeURIComponent(mid)}`), "DELETE");
+    cErr("");
+  } catch (err) {
+    cErr(err.status === 409 ? "这条消息已经发给 Codex 了，不能再改或撤回。" : `操作失败：${err.message}`);
+  }
+  view.editing = null;
+  await pullInputs();
+  if (view.tab !== "info") renderTimeline();
+  renderComposer();
+});
+// 中断：第一步确认 + 理由，若有后台长脚本，第二步决定停止还是保留。
+function iStep(n) { $("#iStep1").hidden = n !== 1; $("#iStep2").hidden = n !== 2; $("#iErr").hidden = true; }
+function iEffects() {
+  const q = view.inputs.filter(inQueue).length, lr = view.io?.longruns?.length || 0;
+  return ["Codex 当前这一轮立即停止，这次运行结束", "Claude 会收到通知：暂停这项工作，等你的指示",
+    q ? `${q} 条排队消息不会再发送` : "", lr ? `还有 ${lr} 个后台脚本在运行，下一步决定停止还是保留` : ""].filter(Boolean);
+}
+async function openInterrupt() {
+  if (!view.id || view.io?.interrupt) return;
+  await pullInputs();
+  $("#iEffects").innerHTML = iEffects().map((t) => `<li>${esc(t)}</li>`).join("");
+  $("#iNext").textContent = view.io?.longruns?.length ? "下一步" : "确认中断";
+  for (const b of $("#idlg").querySelectorAll("button")) b.disabled = false;
+  iStep(1);
+  $("#idlg").classList.remove("closing");
+  $("#idlg").showModal();
+  $("#iCancel").focus();
+}
+async function submitInterrupt(killLongruns) {
+  for (const b of $("#idlg").querySelectorAll("button")) b.disabled = true;
+  try {
+    await apiJson(runUrl(view.id, "/interrupt"), "POST", { reason: $("#iReason").value.trim(), killLongruns });
+    $("#iReason").value = "";
+    $("#idlg").close();
+    if (view.io) view.io.interrupt = { state: "requested" };
+    renderComposer();
+    refreshDrawer(true);
+  } catch (e) {
+    for (const b of $("#idlg").querySelectorAll("button")) b.disabled = false;
+    $("#iErr").textContent = `中断请求失败：${IO_WHY[e.reason] || e.message}`;
+    $("#iErr").hidden = false;
+  }
+}
+$("#dlgStop").addEventListener("click", openInterrupt);
+$("#iCancel").addEventListener("click", () => $("#idlg").close());
+$("#iBack").addEventListener("click", () => { iStep(1); $("#iNext").focus(); });
+$("#iNext").addEventListener("click", async () => {
+  $("#iNext").disabled = true;
+  await pullInputs();
+  $("#iNext").disabled = false;
+  const lr = view.io?.longruns || [];
+  if (!lr.length) return submitInterrupt(true);
+  $("#iLong").innerHTML = lr.map((l) => `<div title="${esc(l.command)}">cmd-${esc(l.n)} · ${esc(l.command)}<span>已运行 ${esc(ago(l.startedAt))}</span></div>`).join("");
+  $("#iTitle2").textContent = `还有 ${lr.length} 个后台脚本在运行`;
+  iStep(2);
+  $("#iKeep").focus();
+});
+$("#iKeep").addEventListener("click", () => submitInterrupt(false));
+$("#iKill").addEventListener("click", () => submitInterrupt(true));
+$("#idlg").addEventListener("click", (e) => { if (e.target === $("#idlg")) { const b = $("#idlg").getBoundingClientRect();
+  if (e.clientX < b.left || e.clientX > b.right || e.clientY < b.top || e.clientY > b.bottom) $("#idlg").close(); } });
 $("#rows").addEventListener("click", (e) => { const tr = e.target.closest(".row[data-id]"); if (tr) openRun(tr.dataset.id); });
 $("#rows").addEventListener("keydown", (e) => { const tr = e.target.closest(".row[data-id]"); if (tr && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openRun(tr.dataset.id); } });
 $("#dlgClose").addEventListener("click", () => $("#dlg").close());
@@ -2035,7 +2366,7 @@ if (!RM && matchMedia("(pointer: fine)").matches) {
   }, { passive: true });
 }
 // ---- 抽屉与弹窗：关闭时先播收起动画 ----
-for (const d of [$("#dlg"), $("#pdlg"), $("#vdlg")]) {
+for (const d of [$("#dlg"), $("#pdlg"), $("#vdlg"), $("#idlg")]) {
   const close = d.close.bind(d);
   d.close = (v) => {
     if (RM || !d.open || d.classList.contains("closing")) { if (!d.classList.contains("closing")) close(v); return; }

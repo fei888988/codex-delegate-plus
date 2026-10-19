@@ -1,3 +1,4 @@
+import { leadInput, renderInputs } from "./inbox.ts";
 import { baseline, denialBlock, evidenceDelta, logReport, recentFiles, tailFile, trendReport } from "./observability.ts";
 import { sampleTreeEvidence } from "./watchdog.ts";
 import type { EvidenceSampler } from "./watchdog.ts";
@@ -10,7 +11,7 @@ import { renderCheckpoint } from "./checkpoints.ts";
 import { delegate, formatOutcome, type DelegateInput, type DelegateOutcome } from "./delegate.ts";
 import type { RunSummary } from "./run-summary.ts";
 
-export type TaskStatus = "running" | "done" | "error" | "cancelled";
+export type TaskStatus = "running" | "done" | "error" | "cancelled" | "user_interrupted";
 
 export interface Task {
   id: string;
@@ -19,6 +20,7 @@ export interface Task {
   seenWake?: number;
   /** How many of progress.checkpoints the lead has been shown. */
   shownCheckpoints?: number;
+  shownUserInputs?: number;
   input: DelegateInput;
   status: TaskStatus;
   startedAt: number;
@@ -87,7 +89,7 @@ export function startTask(input: DelegateInput, background = true, evidenceSampl
   }, task.control).then(
     (outcome) => {
       task.outcome = outcome;
-      task.status = controller.signal.aborted ? "cancelled" : outcome.result.ok ? "done" : "error";
+      task.status = outcome.result.userInterrupt ? "user_interrupted" : controller.signal.aborted ? "cancelled" : outcome.result.ok ? "done" : "error";
     },
     (err: unknown) => {
       task.error = err instanceof Error ? err.message : String(err);
@@ -168,7 +170,7 @@ export async function waitTask(task: Task, waitSec: number, stallAfterSec?: numb
   task.control.lastObservedAt = Date.now();
   if (task.status !== "running") return;
   // A stage report the lead hasn't seen comes back before any waiting.
-  if (newCheckpoints(task).length) return;
+  if (newCheckpoints(task).length || newUserInputs(task).length) return;
   const suspicion = task.controller.signal.aborted ? undefined : task.progress?.suspicion;
   // Deliver an unseen wake once before allowing a later wait to re-arm it.
   if (suspicion && task.seenWake !== suspicion.suspectedAt && stallAfterSec === undefined) {
@@ -180,7 +182,7 @@ export async function waitTask(task: Task, waitSec: number, stallAfterSec?: numb
   let timer: ReturnType<typeof setTimeout> | undefined;
   let notify!: () => void;
   const wake = new Promise<void>(resolve => {
-    notify = () => { if (!task.controller.signal.aborted && (task.progress?.suspicion || newCheckpoints(task).length)) resolve(); };
+    notify = () => { if (!task.controller.signal.aborted && (task.progress?.suspicion || newCheckpoints(task).length || newUserInputs(task).length)) resolve(); };
     task.listeners.add(notify);
   });
   task.control.waiting = (task.control.waiting ?? 0) + 1;
@@ -226,6 +228,7 @@ export async function steerTask(task: Task, prompt: string, now = false, waitMs?
     const inflight = task.progress?.inflight?.command?.replace(/\s+/g, " ").slice(0, 160);
     if (now) {
       const r = await live.redirect(prompt, { kill, waitMs });
+      if (task.progress) await leadInput(join(config.runsDir, task.progress.id), prompt, "delivered").catch(() => {});
       const lines = [`redirected ${task.id}: codex stopped thinking about its current step and continues the same session with your message. Edits made before stay.`];
       for (const k of r.kept) lines.push(`kept running: cmd-${k.n} ${k.command.replace(/\s+/g, " ").slice(0, 160)} (log ${k.log}). Codex was told it must wait for it or stop it before finishing; you can watch it with task_inspect. If you decide it must stop, task_steer again saying so (or now: true, kill: true).`);
       for (const c of r.killed) lines.push(`stopped: ${c.replace(/\s+/g, " ").slice(0, 160)}${kill ? "" : " (it was not started through the launcher, so it could not be kept)"}`);
@@ -233,10 +236,12 @@ export async function steerTask(task: Task, prompt: string, now = false, waitMs?
       return { isError: false, text: lines.join("\n") };
     }
     const { consumed } = await live.steer(prompt, waitMs);
+    if (task.progress) await leadInput(join(config.runsDir, task.progress.id), prompt, consumed ? "consumed" : "delivered").catch(() => {});
     return { isError: false, text: consumed
       ? `steered ${task.id}: codex has read the message and continues with it. Edits made before it stay; collect with task_result.`
       : `steered ${task.id}: accepted, codex will read it at its next step${inflight ? ` (busy running: ${inflight}; to have codex read it now while that keeps running, steer again with now: true)` : ""}. Collect with task_result; the result says whether codex read it.` };
   } catch (e) {
+    if (task.progress) await leadInput(join(config.runsDir, task.progress.id), prompt, "failed").catch(() => {});
     return { isError: true, text: `steer failed: ${e instanceof Error ? e.message : String(e)}` };
   }
 }
@@ -257,4 +262,13 @@ export async function inspectTask(task: Task): Promise<string> {
     `evidence: ${sample ? evidenceDelta(sample, p.trend?.at(-1) ?? p.suspicion?.evidence) + `; busiest: ${sample.busiest?.name ?? "?"}; ${sample.error ?? ""}` : "process exited"}`,
     logReport(dir, 650), `last events:\n${events.join("\n")}`,
     `recent files (30m, top 10; scan capped at 20000 entries): ${(p.cwd ? recentFiles(p.cwd) : []).join(", ").slice(0, 600)}`].filter(Boolean).join("\n");
+}
+
+export function newUserInputs(task: Task) {
+  return (task.progress?.inputs ?? []).filter(m => m.from === "user" && m.notify).slice(task.shownUserInputs ?? 0);
+}
+export function formatUserInputs(task: Task) {
+  const fresh = newUserInputs(task);
+  task.shownUserInputs = (task.progress?.inputs ?? []).filter(m => m.from === "user" && m.notify).length;
+  return ["status: user_input (codex is still working; nothing was stopped)", `task_id: ${task.id}`, renderInputs(fresh), "next: tell the user what they changed, then task_result(task_id, wait_s) to keep waiting, or task_steer/task_cancel if your plan must change."].join("\n");
 }

@@ -14,7 +14,7 @@ export interface Suspicion extends Stall { suspectedAt: number; wakes: number; t
 export interface StallControl { evidenceSampler?: EvidenceSampler; rearm?: (seconds?: number) => void; background?: boolean; lastObservedAt: number; waiting?: number; live?: LiveTurn }
 export interface CodexProgress { commands?: CommandTiming[]; denials?: Denials; stallWindowSince?: number; suspicion?: Suspicion; effectiveThresholdSec?: number; matchedRule?: string; codexPid?: number; lastEventAt: number; inflight?: InflightItem; turnId?: string; steers?: SteerRecord[]; kept?: KeptCommand[] }
 export interface Stall { kind: "silent" | "command"; idleMs: number; command?: string; commandStartedAt?: number }
-export type ExitKind = "completed" | "timeout" | "stalled" | "cancelled" | "crashed" | "api_error";
+export type ExitKind = "user_interrupted" | "completed" | "timeout" | "stalled" | "cancelled" | "crashed" | "api_error";
 export type ErrorKind = "quota" | "rate_limit" | "auth" | "network" | "context" | "other";
 
 export function classifyError(text: string): ErrorKind {
@@ -76,6 +76,9 @@ export interface FileChange {
 }
 
 export interface RunResult {
+  userInterrupt?: import("./inbox.ts").UserInterrupt;
+  inputs?: import("./inbox.ts").InputMessage[];
+  interruptedJobs?: { n: number; pid: number; log: string }[];
   denials?: Denials;
   commands?: CommandTiming[];
   ok: boolean;
@@ -456,7 +459,7 @@ function runCodexProcess(o: RunOptions): Promise<RunResult> {
       if (stall) errors.push(`stalled: no codex output for ${Math.round(stall.idleMs / 60000)}m${stall.command ? ` while running: ${stall.command.slice(0, 200)}` : " (model silent)"}`);
       // app-server: after turn.completed the exit code is ours (stdin closed or the fallback stop).
       if (exitCode && !errors.length && !(turn && collector.turns)) errors.push(stderrTail() || `exit code ${exitCode}`);
-      const exitKind: ExitKind = timedOut ? "timeout" : stall ? "stalled" : o.signal?.aborted ? "cancelled"
+      const exitKind: ExitKind = turn?.userInterrupt ? "user_interrupted" : timedOut ? "timeout" : stall ? "stalled" : o.signal?.aborted ? "cancelled"
         : spawnError ? "crashed" : collector.errors.length ? "api_error"
         : (exitCode !== 0 && !turn) || !collector.turns ? "crashed" : "completed";
       if (exitKind === "crashed" && !errors.length) errors.push(stderrTail() || "codex exited without turn.completed");
@@ -471,6 +474,7 @@ function runCodexProcess(o: RunOptions): Promise<RunResult> {
         exitKind,
         // Structured codexErrorInfo beats matching the message text.
         errorKind: error ? turn?.errorKinds[0] ?? classifyError(error) : undefined,
+        userInterrupt: turn?.userInterrupt,
         steers: turn?.steers.length ? turn.steers : undefined,
         rateLimits: turn?.rateLimits,
         kept: turn?.kept.length ? turn.kept : undefined,

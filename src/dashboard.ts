@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { atomic, availability, editInput, inboxPath, launcherJobs, messages, readJson, type UserInterrupt } from "./inbox.ts";
 import { commandThreshold } from "./watchdog.ts";
 import { readFile, readdir, stat, lstat } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
@@ -58,7 +60,7 @@ export async function readRun(runsDir: string, id: string): Promise<RunSummary |
   const dir = join(runsDir, id);
   try { if (!(await lstat(dir)).isDirectory()) return undefined; } catch { return undefined; }
   const meta = await object<RunSummary>(join(dir, "meta.json"));
-  if (meta && meta.id === id && typeof meta.startedAt === "number" && ["running", "ok", "error", "interrupted"].includes(meta.state)) {
+  if (meta && meta.id === id && typeof meta.startedAt === "number" && ["running", "ok", "error", "interrupted", "user_interrupted"].includes(meta.state)) {
     // A server that exits mid-run never writes the final state; once the log has been quiet for
     // longer than the run timeout, nothing is coming back.
     if (meta.state === "running" && meta.pid === undefined && meta.heartbeatAt === undefined && meta.lastEventAt === undefined) {
@@ -149,14 +151,52 @@ export function createDashboardServer(options: { runsDir?: string; policyFile?: 
     };
     // Inspect the raw path: URL normalization would erase traversal segments before validation.
     const path = (req.url ?? "/").split("?")[0]!;
-    const allow = path === "/api/policy" || path === "/api/providers" ? "GET, PUT" : path === "/api/providers/ccswitch/import" || /^\/api\/providers\/[^/]+\/(test|sync)$/.test(path) ? "POST" : "GET";
+    const inputRoute = /^\/api\/runs\/([\w-]+)\/(inputs|input|interrupt)(?:\/([\w-]+))?$/.exec(path);
+    const allow = inputRoute ? (inputRoute[2] === "inputs" ? "GET" : inputRoute[3] ? "PATCH, DELETE" : "POST") : path === "/api/policy" || path === "/api/providers" ? "GET, PUT" : path === "/api/providers/ccswitch/import" || /^\/api\/providers\/[^/]+\/(test|sync)$/.test(path) ? "POST" : "GET";
     if (!allow.split(", ").includes(req.method ?? "")) {
       res.setHeader("Allow", allow);
       json(405, { error: "Method not allowed" });
       return;
     }
+    if (req.method !== "GET" && !sameOrigin(req)) { json(403, { error: "Forbidden" }); return; }
     try {
-      if (path === "/api/providers" || path.startsWith("/api/providers/")) {
+      if (inputRoute) {
+        const [, id, action, mid] = inputRoute;
+        const run = await readRun(runsDir, id!);
+        if (!run) { json(404, { error: "Run not found" }); return; }
+        const dir = join(runsDir, id!);
+        const reason = availability(run);
+        if (action === "inputs") {
+          const interrupt = await readJson<UserInterrupt>(inboxPath(dir, "interrupt"));
+          const interruptAck = await readJson<{ state: string }>(inboxPath(dir, "interrupt.ack"));
+          json(200, { available: !reason, ...(reason ? { reason } : {}), inputs: await messages(dir), longruns: await launcherJobs(dir), interrupt: interrupt ? { ...interrupt, state: interruptAck?.state ?? "queued" } : null }); return;
+        }
+        if (reason) { json(409, { error: "Run unavailable", reason }); return; }
+        let value: any = {};
+        try { if (req.method !== "DELETE") value = JSON.parse(await body(req)); } catch { json(400, { error: "Invalid JSON body" }); return; }
+        if (!value || typeof value !== "object" || Array.isArray(value)) { json(400, { error: "Body must be an object" }); return; }
+        if (action === "interrupt") {
+          if (typeof value.reason !== "undefined" && (typeof value.reason !== "string" || value.reason.length > 1000) || typeof value.killLongruns !== "boolean") { json(400, { error: "Invalid interrupt" }); return; }
+          if (await readJson(inboxPath(dir, "interrupt"))) { json(409, { error: "Already interrupting" }); return; }
+          // Exclusive create prevents two dashboard requests from replacing an interrupt.
+          const { mkdir, writeFile } = await import("node:fs/promises");
+          await mkdir(join(dir, "inbox"), { recursive: true });
+          const lock = inboxPath(dir, "interrupt.lock");
+          try { await writeFile(lock, "", { flag: "wx" }); } catch { json(409, { error: "Already interrupting" }); return; }
+          await atomic(inboxPath(dir, "interrupt"), { reason: value.reason ?? "", killLongruns: value.killLongruns, at: Date.now() });
+          json(202, {}); return;
+        }
+        const text = typeof value.text === "string" ? value.text.trim() : "";
+        if (req.method !== "DELETE" && (!text || text.length > 4000)) { json(400, { error: "text must contain 1..4000 characters" }); return; }
+        if (mid) {
+          if (!await editInput(dir, mid, req.method === "DELETE" ? undefined : text)) { json(409, { error: "Message already claimed" }); return; }
+          json(200, {}); return;
+        }
+        if (!["steer", "queue"].includes(value.mode) || value.notify !== undefined && typeof value.notify !== "boolean") { json(400, { error: "Invalid input" }); return; }
+        const messageId = randomUUID();
+        await atomic(inboxPath(dir, messageId), { mid: messageId, mode: value.mode, text, notify: value.notify ?? false, at: Date.now(), from: "user" });
+        json(201, { mid: messageId }); return;
+      } else if (path === "/api/providers" || path.startsWith("/api/providers/")) {
         if (req.method !== "GET" && !sameOrigin(req)) { json(403, { error: "Forbidden" }); return; }
         try {
           if (path === "/api/providers") {

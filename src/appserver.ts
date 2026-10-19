@@ -1,10 +1,11 @@
 import { providerName } from "./providers.ts";
+import { ack, claim, inboxPath, launcherJobs, markQueued, messages, readJson, type UserInterrupt } from "./inbox.ts";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { ErrorKind, RunOptions } from "./codex.ts";
 import { join } from "node:path";
-import { keptPreamble, keptReminder, longrunCommand, refresh, runningLongruns, stopLongrun, type KeptCommand } from "./longruns.ts";
+import { keptPreamble, keptReminder, longrunCommand, refresh, runningLongruns, stopLongrun, untrackRunDir, type KeptCommand } from "./longruns.ts";
 import { killPidTree } from "./procs.ts";
 
 /** Reminder turns codex gets for still-running kept commands before the server stops them. */
@@ -37,6 +38,10 @@ export interface LiveTurn {
   /** Commands kept running across a redirect, with their current state. */
   readonly kept: KeptCommand[];
   interrupt(): Promise<void>;
+  pollInbox?(): Promise<void>;
+  flushInbox?(): Promise<void>;
+  userInterrupt?: UserInterrupt;
+  interruptedJobs?: { n: number; pid: number; log: string }[];
 }
 
 export const APP_SERVER_ARGS = ["app-server", "-c", `approval_policy="never"`];
@@ -109,6 +114,76 @@ export interface DriverHooks {
 }
 
 export class AppServerTurn implements LiveTurn {
+  userInterrupt?: UserInterrupt;
+  interruptedJobs?: { n: number; pid: number; log: string }[];
+  private pollingInbox = false;
+  private operations: Promise<unknown> = Promise.resolve();
+  private inputClients = new Map<string, { mid: string; turn?: string; consumed: boolean; pending: Promise<void> }>();
+  async flushInbox() { await Promise.all([...this.inputClients.values()].map(d => d.pending)); }
+  private inputAck(delivery: { mid: string; turn?: string; consumed: boolean; pending: Promise<void> }) {
+    delivery.pending = delivery.pending.then(() => ack(this.o.runDir!, delivery.mid, delivery.consumed ? "consumed" : "delivered", undefined, delivery.turn));
+    return delivery.pending;
+  }
+  private serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.operations.then(fn);
+    this.operations = next.catch(() => {});
+    return next;
+  }
+  async pollInbox() {
+    const dir = this.o.runDir;
+    if (!dir || !this.turnId) return;
+    const interrupt = await readJson<UserInterrupt>(inboxPath(dir, "interrupt"));
+    if (interrupt && !this.userInterrupt) {
+      this.interruptedJobs = await launcherJobs(dir);
+      this.userInterrupt = interrupt;
+      if (!interrupt.killLongruns) untrackRunDir(dir);
+      await ack(dir, "interrupt", "delivered");
+      void this.interrupt();
+      this.complete({ status: "interrupted", id: this.turnId });
+      return;
+    }
+    if (this.finished || this.pollingInbox) return;
+    this.pollingInbox = true;
+    try {
+      for (const m of await messages(dir)) {
+        if (m.from !== "user" || m.state !== "queued") continue;
+        if (m.mode === "queue") {
+          await this.serialize(async () => {
+            if (!this.finished) await markQueued(dir, m.mid);
+          });
+          continue;
+        }
+        await this.serialize(async () => {
+          if (this.finished || this.userInterrupt) return;
+          const input = await claim(dir, m.mid); if (!input) return;
+          try {
+            const r = await this.redirectNow(input.text);
+            const delivery = { mid: m.mid, turn: this.turnId, consumed: !!r.record.consumedAt, pending: Promise.resolve() };
+            this.inputClients.set(r.record.clientId, delivery);
+            await this.inputAck(delivery);
+          } catch (e) { await ack(dir, m.mid, "failed", String(e)); }
+        });
+      }
+    } finally { this.pollingInbox = false; }
+  }
+  private async queuedTurn(): Promise<boolean> {
+    const dir = this.o.runDir;
+    if (!dir || this.userInterrupt || this.finished) return false;
+    for (const m of await messages(dir)) {
+      if (m.from !== "user" || m.mode !== "queue" || m.state !== "queued") continue;
+      const input = await claim(dir, m.mid); if (!input) continue;
+      const clientId = `input-${m.mid}`;
+      const delivery = { mid: m.mid, turn: undefined as string | undefined, consumed: false, pending: Promise.resolve() };
+      this.inputClients.set(clientId, delivery);
+      try {
+        await this.startTurn([{ type: "text", text: input.text, text_elements: [] }], clientId);
+        delivery.turn = this.turnId;
+        await this.inputAck(delivery);
+      } catch (e) { await ack(dir, m.mid, "failed", String(e)); this.failRun(e); }
+      return true;
+    }
+    return false;
+  }
   threadId?: string;
   turnId?: string;
   finished = false;
@@ -250,7 +325,15 @@ export class AppServerTurn implements LiveTurn {
     this.hooks.emit({ type: "error", message: error?.message ?? "codex turn failed" });
   }
 
-  private complete(turn: any) {
+  private complete(turn: any, checkedQueue = false): void {
+    if (turn.status === "completed" && this.redirecting) return this.complete({ ...turn, status: "interrupted" });
+    if (turn.status === "completed" && !checkedQueue && !this.finished) {
+      void this.serialize(async () => {
+        await Promise.all([...this.inputClients.values()].map(d => d.pending));
+        if (!await this.queuedTurn()) this.complete(turn, true);
+      }).catch(e => this.failRun(e));
+      return;
+    }
     if (this.finished) return;
     const runDir = this.o.runDir;
     if (turn.status === "interrupted") {
@@ -273,7 +356,7 @@ export class AppServerTurn implements LiveTurn {
         if (!/longrun\.mjs/i.test(r.command)) killed.push(r.command);
       }
       for (const n of live) {
-        if (redirect && !redirect.kill) kept.push({ n, command: longrunCommand(runDir!, n), log: join(runDir!, `cmd-${n}.log`), keptAt: Date.now(), outcome: "running" });
+        if ((redirect && !redirect.kill) || (this.userInterrupt && !this.userInterrupt.killLongruns)) kept.push({ n, command: longrunCommand(runDir!, n), log: join(runDir!, `cmd-${n}.log`), keptAt: Date.now(), outcome: "running" });
         else if (stopLongrun(runDir!, n, redirect ? "lead redirected with kill" : "task cancelled")) killed.push(longrunCommand(runDir!, n));
       }
       if (redirect) {
@@ -282,7 +365,8 @@ export class AppServerTurn implements LiveTurn {
         return redirect.go(kept, killed);
       }
       // A cancel: nothing the task started stays behind.
-      if (runDir) this.keptCommands = this.keptCommands.map((k) => refresh(runDir, k)).map((k) =>
+      this.keptCommands.push(...kept);
+      if (runDir && !(this.userInterrupt && !this.userInterrupt.killLongruns)) this.keptCommands = this.keptCommands.map((k) => refresh(runDir, k)).map((k) =>
         k.outcome === "running" && stopLongrun(runDir, k.n, "task cancelled") ? { ...k, outcome: "killed_cancel" as const } : k);
     }
     if (turn.status === "completed" && runDir) {
@@ -316,6 +400,11 @@ export class AppServerTurn implements LiveTurn {
   }
 
   private consumed(clientId: string | null) {
+    const delivery = clientId ? this.inputClients.get(clientId) : undefined;
+    if (delivery) {
+      delivery.consumed = true;
+      if (delivery.turn && this.o.runDir) void this.inputAck(delivery).catch(() => {});
+    }
     const rec = this.steers.find((s) => s.clientId === clientId) ?? (clientId ? undefined : this.steers.find((s) => !s.consumedAt));
     if (!rec || rec.consumedAt) return this.ping();
     rec.consumedAt = Date.now();
@@ -356,7 +445,10 @@ export class AppServerTurn implements LiveTurn {
    * Stop what codex is doing right now (including a long command) and continue the same thread with
    * `text` as a new turn. The run stays one run: same task, same final report.
    */
-  async redirect(text: string, opts: { kill?: boolean; waitMs?: number } = {}) {
+  redirect(text: string, opts: { kill?: boolean; waitMs?: number } = {}) {
+    return this.serialize(() => this.redirectNow(text, opts));
+  }
+  private async redirectNow(text: string, opts: { kill?: boolean; waitMs?: number } = {}) {
     if (!this.threadId || !this.turnId) throw new Error("codex has not started its turn yet; try again in a few seconds");
     if (this.finished) throw new Error("codex already finished this turn");
     const record: SteerRecord = { at: Date.now(), text: text.slice(0, 500), clientId: `redirect-${randomUUID().slice(0, 8)}`, redirect: true };
@@ -377,6 +469,7 @@ export class AppServerTurn implements LiveTurn {
       this.redirecting = undefined;
       throw new Error("codex did not stop the current turn in time; try task_cancel");
     }
+    if (this.finished || this.userInterrupt) throw new Error("run interrupted");
     const preamble = this.o.runDir && (outcome.kept.length || outcome.killed.length) ? keptPreamble(this.o.runDir, outcome.kept, outcome.killed) : "";
     try {
       await this.startTurn([{ type: "text", text: preamble + text, text_elements: [] }], record.clientId);
@@ -400,7 +493,10 @@ export class AppServerTurn implements LiveTurn {
     this.hooks.done();
   }
 
-  async steer(text: string, waitMs = 15000) {
+  steer(text: string, waitMs = 15000) {
+    return this.serialize(() => this.steerNow(text, waitMs));
+  }
+  private async steerNow(text: string, waitMs: number) {
     if (!this.threadId || !this.turnId) throw new Error("codex has not started its turn yet; try again in a few seconds");
     if (this.finished) throw new Error("codex already finished this turn");
     const record: SteerRecord = { at: Date.now(), text: text.slice(0, 500), clientId: `steer-${randomUUID().slice(0, 8)}` };
