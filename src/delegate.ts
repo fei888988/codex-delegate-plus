@@ -1,3 +1,5 @@
+import { loadProviders, selectProvider, selectModel, type Provider } from "./providers.ts";
+import { sessionProvider } from "./sessions.ts";
 import { effectiveSandbox, previousDiagnosis, denialBlock, commandLogs, trimCommandLogs, finishCommandLogs, type TrendPoint } from "./observability.ts";
 import { sampleTreeEvidence } from "./watchdog.ts";
 import type { StallPolicy } from "./watchdog.ts";
@@ -18,6 +20,7 @@ import { version, type RunSummary } from "./run-summary.ts";
 
 export interface DelegateInput {
   prompt: string;
+  provider?: string;
   model?: string;
   effort?: string;
   fast?: boolean;
@@ -105,13 +108,16 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
 
   // A tier pins its model, so escalating a follow-up to a tier on another model switches models.
   // Without one, a follow-up keeps the session's model unless one is asked for explicitly.
-  const query = input.model ?? tier?.model ?? (input.session_id ? undefined : auto ? config.defaultModel : config.readModel);
+  const doc = (input.provider ?? tier?.provider) === "system" && (!input.session_id || input.provider === "system") ? { defaultProvider: null, providers: [] } : loadProviders();
+  const resumedProvider = input.session_id && input.provider === undefined ? sessionProvider(input.session_id, doc) : undefined;
+  const provider = resumedProvider ?? ((input.provider ?? tier?.provider) === "system" ? undefined : selectProvider(doc, input.provider, tier?.provider));
+  const query = selectModel(input.model, provider, tier?.model, input.session_id ? undefined : auto ? config.defaultModel : config.readModel);
   let model: string | undefined;
-  let effort = tier?.effort ?? input.effort ?? (readOnly ? config.readEffort : config.writeEffort);
+  let effort = (tier ? undefined : input.effort) ?? provider?.effort ?? tier?.effort ?? (readOnly ? config.readEffort : config.writeEffort);
   if (query) {
     const r = resolveModelOrThrow(query);
     model = r.model;
-    if (r.effort && !input.effort) effort = r.effort;
+    if (r.effort && !input.effort && !provider?.effort) effort = r.effort;
     if (!r.known) notes.push(`'${r.model}' is not in codex's model cache; passed through as-is`);
   }
   if (model && policy.models.length && !policy.models.includes(model)) {
@@ -133,7 +139,7 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
     activeWriters.set(lockKey, { signal, done });
   }
   try {
-    const run = { cwd, sandbox, readOnly, model, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, fast, images, structured, notes, continued };
+    const run = { provider, cwd, sandbox, readOnly, model, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, fast, images, structured, notes, continued };
     const stall: StallPolicy = {
       silent_s: input.stall?.silent_s ?? input.idle_timeout_s ?? policy.stall?.silent_s ?? config.idleTimeoutSec,
       command_s: input.stall?.command_s ?? input.idle_timeout_s ?? policy.stall?.command_s ?? config.commandIdleTimeoutSec,
@@ -149,6 +155,7 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
 }
 
 interface Resolved {
+  provider?: Provider;
   cwd: string;
   sandbox: Sandbox;
   readOnly: boolean;
@@ -169,7 +176,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
   const runDir = newRunDir();
   const meta: RunSummary = {
     id: runDir ? basename(runDir) : "", startedAt: Date.now(), state: "running",
-    title: input.title, cwd, model, effort, tier, fast, sandbox, resumed: !!input.session_id,
+    title: input.title, cwd, provider: r.provider?.id ?? "system", model, effort, tier, fast, sandbox, resumed: !!input.session_id,
     sessionId: input.session_id, continuedFrom: continued?.sessionId,
     prompt: input.prompt.slice(0, 2000), version,
     phase: "codex", engine: config.engine, pid: process.pid, heartbeatAt: Date.now(), lastEventAt: Date.now(),
@@ -277,6 +284,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
     const tempDir = runDir && sandbox === "workspace-write" ? join(runDir, "tmp") : undefined;
     if (tempDir) mkdirSync(tempDir, { recursive: true });
     const result = await runCodex({
+      provider: r.provider,
       addDirs: [...(runDir ? [runDir] : []), ...(input.add_dirs ?? []).map(dir => resolve(cwd, dir))],
       env: tempDir ? { TEMP: tempDir, TMP: tempDir } : undefined,
       onSpawn: (pid) => {

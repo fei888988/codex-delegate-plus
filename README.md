@@ -1,5 +1,7 @@
 # claude-codex-delegate
 
+v0.11.0 支持每次委派选择模型供应商：`delegate` / `delegate_async` 新增 `provider` 参数，也支持从 cc-switch 导入官方 ChatGPT 登录账户。登录账户使用独立 Codex 主目录，可选 token 同步（导入时默认开启）；关闭同步后，refresh token 轮换可能使其他副本失效并退出登录。详见[配置与后端 API](docs/providers.md)。本次未修改仪表盘界面。
+
 [简体中文](README.md) | [English](README.en.md)
 
 让 Claude 把实现工作交给 OpenAI Codex 模型：GPT-6 Sol、Astra、Luna，GPT-5.6 Sol、Terra、Luna，以及你的 Codex 账号当前提供的其他模型。Claude 仍然负责统筹：规划任务、编写交接说明、检查改动并运行测试。

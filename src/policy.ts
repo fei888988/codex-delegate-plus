@@ -7,6 +7,7 @@ import { listModels, type ModelInfo } from "./models.ts";
 /** One rung of the cost ladder the lead picks from: a model (unset = codex's default) at an effort. */
 export interface Tier {
   id: string;
+  provider?: string;
   model?: string;
   effort: string;
   /** When to pick this tier; shown to the lead in the tool description. */
@@ -114,6 +115,8 @@ export function validatePolicy(input: unknown, models: ModelInfo[] = listModels(
     const id = str(t?.id)?.toLowerCase() ?? "";
     if (!TIER_ID.test(id)) return { ok: false, error: `tier id '${id}' must be 1-24 of a-z, 0-9, '-', '_'` };
     if (tiers.some((x) => x.id === id)) return { ok: false, error: `duplicate tier id '${id}'` };
+    const provider = t.provider;
+    if (provider !== undefined && (typeof provider !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(provider))) return { ok: false, error: `tier provider must be an id or system` };
     const model = str(t.model) || undefined;
     if (model && !SLUG.test(model)) return { ok: false, error: `tier '${id}': invalid model slug '${model}'` };
     const effort = str(t.effort)?.toLowerCase() ?? "";
@@ -126,7 +129,7 @@ export function validatePolicy(input: unknown, models: ModelInfo[] = listModels(
     if (info?.efforts.length && !info.efforts.includes(effort)) {
       return { ok: false, error: `tier '${id}': ${info.slug} does not support effort '${effort}' (supported: ${info.efforts.join(", ")})` };
     }
-    tiers.push({ id, ...(model ? { model } : {}), effort, use });
+    tiers.push({ id, ...(provider ? { provider } : {}), ...(model ? { model } : {}), effort, use });
   }
   return { ok: true, policy: { sandboxWrites: raw.sandboxWrites, retention, guidance, codexGuidance, tiers, models: allowed, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
 }

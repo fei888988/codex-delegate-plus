@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { watchProviders } from "./providers.ts";
 import { cleanupRuns } from "./observability.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -52,6 +53,7 @@ const delegateShape = {
     .describe(
       "Complete, self-contained task for the Codex model. It cannot see this conversation: include goal, relevant files/paths, constraints, and acceptance criteria.",
     ),
+  provider: z.string().optional().describe("Provider id from ~/.codex-delegate/providers.json, or system to force the system Codex configuration. Precedence: call > tier provider > defaultProvider > system. Explicit model wins; otherwise provider.model overrides the tier model."),
   model: z
     .string()
     .optional()
@@ -309,3 +311,5 @@ watchFile(config.policyFile, { interval: 2000, persistent: false }, () => {
 });
 
 await server.connect(new StdioServerTransport());
+
+watchProviders(() => { server.sendToolListChanged(); });

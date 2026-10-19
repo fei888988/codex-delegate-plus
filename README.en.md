@@ -1,5 +1,7 @@
 # claude-codex-delegate
 
+v0.11.0 adds per-run model providers: both delegate tools accept `provider`, including official ChatGPT-login accounts imported from cc-switch. Login accounts use isolated Codex homes with optional token sync (enabled on import); turning sync off risks stale copies being logged out when refresh tokens rotate. See [configuration and backend API](docs/providers.md). The dashboard UI is unchanged.
+
 [简体中文](README.md) | [English](README.en.md)
 
 Give Claude **OpenAI's Codex models as implementers**: GPT-6 Sol, Astra and Luna, GPT-5.6 Sol,

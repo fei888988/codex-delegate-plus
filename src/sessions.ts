@@ -1,6 +1,7 @@
 import { closeSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { config } from "./config.ts";
+import { loadProviders, providerHome, type Provider, type Providers } from "./providers.ts";
 
 export interface SessionInfo {
   id: string;
@@ -8,6 +9,7 @@ export interface SessionInfo {
   timestamp: string;
   prompt?: string;
   file: string;
+  provider?: string;
 }
 
 // Rollouts can be many MB; session_meta and the first prompt sit near the top.
@@ -65,7 +67,13 @@ function* rollouts(dir: string): Generator<string> {
   }
 }
 
-export function listSessions(cwd: string, limit: number, root = join(config.codexHome, "sessions")): SessionInfo[] {
+export function listSessions(cwd: string, limit: number, root?: string): SessionInfo[] {
+  if (root === undefined) {
+    const providers = loadProviders().providers.filter(p => p.auth === "chatgpt");
+    return [listSessions(cwd, limit, join(config.codexHome, "sessions")), ...providers.map(p =>
+      listSessions(cwd, limit, join(providerHome(p), "sessions")).map(s => ({ ...s, provider: p.id })))].flat()
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, limit);
+  }
   const want = resolve(cwd);
   const out: SessionInfo[] = [];
   for (const file of rollouts(root)) {
@@ -74,4 +82,13 @@ export function listSessions(cwd: string, limit: number, root = join(config.code
     if (out.length >= limit) break;
   }
   return out;
+}
+
+export function sessionProvider(id: string, doc: Providers, homesRoot?: string): Provider | undefined {
+  for (const p of doc.providers.filter(p => p.auth === "chatgpt")) {
+    for (const file of rollouts(join(providerHome(p, homesRoot), "sessions"))) {
+      if (file.includes(id) && parseRollout(readHead(file), file)?.id === id) return p;
+    }
+  }
+  return undefined;
 }

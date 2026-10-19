@@ -7200,9 +7200,483 @@ var require_dist = __commonJS({
   }
 });
 
+// src/providers.ts
+import { chmodSync, copyFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, renameSync, rmSync, statSync, watchFile, writeFileSync } from "node:fs";
+import { dirname, join as join2 } from "node:path";
+import { homedir as homedir2 } from "node:os";
+import { DatabaseSync } from "node:sqlite";
+import { createHash, randomUUID } from "node:crypto";
+
+// src/config.ts
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
+function fallbackDirs(env, platform) {
+  const home = homedir();
+  if (platform === "win32") {
+    return [env.APPDATA ? join(env.APPDATA, "npm") : "", join(home, ".bun", "bin"), join(home, ".cargo", "bin")].filter(Boolean);
+  }
+  return [
+    join(home, ".bun", "bin"),
+    join(home, ".local", "bin"),
+    join(home, ".npm-global", "bin"),
+    join(home, ".cargo", "bin"),
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+    "/usr/bin"
+  ];
+}
+function resolveCodex(env = process.env, platform = process.platform) {
+  const viaNode = (js) => ({ cmd: process.execPath, args: [js] });
+  if (env.CODEX_BIN) return /\.[cm]?js$/i.test(env.CODEX_BIN) ? viaNode(env.CODEX_BIN) : { cmd: env.CODEX_BIN, args: [] };
+  const path = env.PATH ?? env.Path ?? "";
+  const dirs = [...path.split(platform === "win32" ? ";" : delimiter).filter(Boolean), ...fallbackDirs(env, platform)];
+  for (const dir2 of dirs) {
+    if (platform === "win32") {
+      const js = join(dir2, "node_modules", "@openai", "codex", "bin", "codex.js");
+      if (existsSync(js)) return viaNode(js);
+      const exe = join(dir2, "codex.exe");
+      if (existsSync(exe)) return { cmd: exe, args: [] };
+    } else {
+      const candidate = join(dir2, "codex");
+      if (existsSync(candidate)) return { cmd: candidate, args: [] };
+    }
+  }
+  return { cmd: platform === "win32" ? "codex.exe" : "codex", args: [] };
+}
+function model(v, fallback) {
+  if (v === void 0) return fallback;
+  return v.trim() || void 0;
+}
+function bool(v, dflt) {
+  if (v === void 0 || v === "") return dflt;
+  return !/^(0|false|no|off)$/i.test(v);
+}
+function int(v, dflt) {
+  const n = Number.parseInt(v ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? n : dflt;
+}
+function idleSeconds(v, dflt) {
+  return v?.trim() === "0" ? 0 : int(v, dflt);
+}
+var SANDBOXES = ["read-only", "workspace-write", "danger-full-access"];
+function sandbox(v) {
+  return SANDBOXES.includes(v ?? "") ? v : "workspace-write";
+}
+function optionalBool(v) {
+  if (v === void 0 || v.trim() === "") return void 0;
+  return bool(v, false);
+}
+var codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
+function configuredModel(path = join(codexHome, "config.toml")) {
+  try {
+    const top = readFileSync(path, "utf8").split(/^\s*\[/m)[0] ?? "";
+    return top.match(/^\s*model\s*=\s*"([^"]+)"/m)?.[1];
+  } catch {
+    return void 0;
+  }
+}
+var defaultModel = model(process.env.CODEX_DELEGATE_DEFAULT_MODEL, void 0);
+var effortAll = process.env.CODEX_DELEGATE_EFFORT;
+var EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+function allowedEfforts(v) {
+  if (v === void 0) return ["low", "medium", "high"];
+  const list = v.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  if (!list.length || list.includes("any")) return void 0;
+  return EFFORT_ORDER.filter((e) => list.includes(e));
+}
+function clampEffort(effort, allowed) {
+  if (!effort || !allowed?.length || allowed.includes(effort)) return effort;
+  const rank = EFFORT_ORDER.indexOf(effort);
+  if (rank < 0) return effort;
+  const ranks = allowed.map((e) => EFFORT_ORDER.indexOf(e));
+  return rank > Math.max(...ranks) ? allowed.at(-1) : allowed[0];
+}
+var config = {
+  codex: resolveCodex(),
+  engine: process.env.CODEX_DELEGATE_ENGINE === "exec" ? "exec" : "app-server",
+  // Levels the lead may choose from; anything else is clamped into this range.
+  efforts: allowedEfforts(process.env.CODEX_DELEGATE_EFFORTS),
+  codexHome,
+  defaultModel,
+  // Used when no model is given and the run is read-only (auto: false): reading, reviews, questions.
+  readModel: model(process.env.CODEX_DELEGATE_READ_MODEL, defaultModel),
+  writeEffort: model(effortAll ?? process.env.CODEX_DELEGATE_WRITE_EFFORT, "high"),
+  readEffort: model(effortAll ?? process.env.CODEX_DELEGATE_READ_EFFORT, "medium"),
+  // Unset → inherit service_tier from config.toml. true = "priority" (Fast), false = "default".
+  fast: optionalBool(process.env.CODEX_DELEGATE_FAST),
+  sandbox: sandbox(process.env.CODEX_DELEGATE_SANDBOX),
+  auto: bool(process.env.CODEX_DELEGATE_AUTO, true),
+  // Ask codex for a JSON report (status/summary/verification/questions) on runs that may edit files.
+  structured: bool(process.env.CODEX_DELEGATE_STRUCTURED, true),
+  // Append the working agreement (investigate yourself, verify, ask instead of guessing) to every brief.
+  contract: bool(process.env.CODEX_DELEGATE_CONTRACT, true),
+  timeoutSec: int(process.env.CODEX_DELEGATE_TIMEOUT, 1800),
+  checkTimeoutSec: int(process.env.CODEX_DELEGATE_CHECK_TIMEOUT, 600),
+  idleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_IDLE_TIMEOUT, 600),
+  commandIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT, 600),
+  hardIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_HARD_IDLE_TIMEOUT, 3600),
+  checkIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_CHECK_IDLE_TIMEOUT, 300),
+  // How often a run with checkpoints looks for new checkpoint-<n>.md files.
+  checkpointPollMs: int(process.env.CODEX_DELEGATE_CHECKPOINT_POLL_MS, 2e3),
+  // What goes back into the caller's context. The full event log stays on disk.
+  maxOutputChars: int(process.env.CODEX_DELEGATE_MAX_OUTPUT, 6e3),
+  runsDir: process.env.CODEX_DELEGATE_RUNS_DIR || join(homedir(), ".codex-delegate", "runs"),
+  // Cost tiers and guidance prompts, edited from the dashboard (see policy.ts).
+  policyFile: process.env.CODEX_DELEGATE_POLICY || join(homedir(), ".codex-delegate", "policy.json"),
+  defaultCwd: process.env.CODEX_DELEGATE_CWD || process.cwd()
+};
+
+// src/providers.ts
+var providersFile = join2(homedir2(), ".codex-delegate", "providers.json");
+var homesRoot = join2(homedir2(), ".codex-delegate", "homes");
+var ccswitchFile = join2(homedir2(), ".cc-switch", "cc-switch.db");
+function providerHome(p, root = homesRoot) {
+  if (!ID.test(p.id)) throw Error("Invalid provider id");
+  return join2(root, p.id);
+}
+var refreshTime = (a) => {
+  const time3 = Date.parse(a?.last_refresh ?? "");
+  return Number.isFinite(time3) ? time3 : -Infinity;
+};
+var maskAccount = (id) => `${id.slice(0, 4)}\u2026${createHash("sha256").update(id).digest("hex").slice(0, 8)}`;
+function readAuth(file2) {
+  if (!existsSync2(file2)) return void 0;
+  try {
+    const a = JSON.parse(readFileSync2(file2, "utf8"));
+    if (a && typeof a === "object" && !Array.isArray(a)) return a;
+  } catch {
+  }
+  throw Error("Invalid account auth.json; re-import from cc-switch");
+}
+function atomicJson(file2, value) {
+  mkdirSync(dirname(file2), { recursive: true });
+  const tmp = `${file2}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: 384, flag: "wx" });
+    renameSync(tmp, file2);
+    if (process.platform !== "win32") chmodSync(file2, 384);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+var PROVIDER_KEY = "CODEX_DELEGATE_PROVIDER_KEY";
+var ID = /^(?!system$)[a-zA-Z0-9_-]{1,64}$/;
+var maskKey = (key) => key ? key.length > 9 ? `${key.slice(0, 5)}\u2026${key.slice(-4)}` : "\u2026" : "";
+var tomlString = (s) => JSON.stringify(s).replace(/\x7f/g, "\\u007f");
+var tomlValue = (v) => typeof v === "string" ? tomlString(v) : Array.isArray(v) ? `[${v.map(tomlValue).join(",")}]` : typeof v === "object" ? `{${Object.entries(v).map(([k, x]) => `${tomlString(k)}=${tomlValue(x)}`).join(",")}}` : String(v);
+function parseToml(text2, ignoreUnrelated = false) {
+  const result = /* @__PURE__ */ new Map();
+  let table = [];
+  function keys(s) {
+    const parts = s.match(/"(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+|\./g);
+    if (!parts || parts.join("") !== s.replace(/\s+(?=(?:[^"]*"[^"]*")*[^"]*$)/g, "") || parts.length % 2 !== 1) throw Error();
+    return parts.map((p, i) => {
+      if (i % 2) {
+        if (p !== ".") throw Error();
+        return "";
+      }
+      return p.startsWith('"') ? JSON.parse(p) : p.startsWith("'") ? p.slice(1, -1) : p;
+    }).filter((_, i) => !(i % 2));
+  }
+  function value(s) {
+    let pos = 0;
+    const ws = () => {
+      while (/\s/.test(s[pos] ?? "") && pos < s.length) pos++;
+    };
+    function read() {
+      ws();
+      const start = pos, c = s[pos++];
+      if (c === '"' || c === "'") {
+        while (pos < s.length) {
+          const next = s[pos++];
+          if (next === c) return c === '"' ? JSON.parse(s.slice(start, pos).replace(/\\U([0-9a-fA-F]{8})/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))) : s.slice(start + 1, pos - 1);
+          if (next === "\\" && c === '"') pos++;
+        }
+        throw Error();
+      }
+      if (c === "[" || c === "{") {
+        const out = [], obj = /* @__PURE__ */ Object.create(null), end = c === "[" ? "]" : "}";
+        ws();
+        while (s[pos] !== end) {
+          if (c === "{") {
+            const m2 = s.slice(pos).match(/^("(?:[^"\\]|\\.)*"|'[^']*'|[\w-]+)\s*=/);
+            if (!m2) throw Error();
+            const k = keys(m2[1])[0];
+            pos += m2[0].length;
+            if (Object.hasOwn(obj, k)) throw Error();
+            obj[k] = read();
+          } else out.push(read());
+          ws();
+          if (s[pos] === end) break;
+          if (s[pos++] !== ",") throw Error();
+          ws();
+        }
+        pos++;
+        return c === "[" ? out : obj;
+      }
+      pos = start;
+      const m = s.slice(pos).match(/^(true|false|[+-]?(?:\d[\d_]*)(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?)(?=\s|,|\]|\}|$)/);
+      if (!m) throw Error();
+      pos += m[0].length;
+      return m[0] === "true" ? true : m[0] === "false" ? false : Number(m[0].replaceAll("_", ""));
+    }
+    const v = read();
+    ws();
+    if (pos !== s.length) throw Error();
+    return v;
+  }
+  for (const [i, raw] of text2.split(/\r?\n/).entries()) {
+    let quote = "", end = raw.length;
+    for (let j = 0; j < raw.length; j++) {
+      const c = raw[j];
+      if (quote) {
+        if (c === "\\" && quote === '"') j++;
+        else if (c === quote) quote = "";
+      } else if (c === '"' || c === "'") quote = c;
+      else if (c === "#") {
+        end = j;
+        break;
+      }
+    }
+    const line = raw.slice(0, end).trim();
+    if (!line) continue;
+    try {
+      if (line.startsWith("[")) {
+        if (ignoreUnrelated && !/^\[\s*["']?model_providers["']?(?:\s*\.|\s*\])/.test(line)) {
+          table = ["ignored"];
+          continue;
+        }
+        table = keys(line.slice(1, -1));
+        if (!line.endsWith("]") || line.startsWith("[[")) throw Error();
+        continue;
+      }
+      if (ignoreUnrelated && table[0] !== "model_providers" && (table.length || !/^(model|model_provider|model_reasoning_effort)\s*=/.test(line))) continue;
+      const match = line.match(/^((?:"(?:[^"\\]|\\.)*"|'[^']*'|[^=])+?)\s*=\s*(.*)$/);
+      if (!match) throw Error();
+      const path = [...table, ...keys(match[1].trim())], id = JSON.stringify(path);
+      if (ignoreUnrelated && path[0] === "model_providers" && !["base_url", "wire_api", "requires_openai_auth", "name", "http_headers", "query_params"].includes(path[2])) continue;
+      if (result.has(id)) throw Error();
+      result.set(id, { keys: path, value: value(match[2]) });
+    } catch {
+      throw new Error(`Unsupported or invalid TOML at line ${i + 1}`);
+    }
+  }
+  return result;
+}
+function validateProviders(input2, previous = { defaultProvider: null, providers: [] }) {
+  const raw = input2;
+  if (!raw || !Array.isArray(raw.providers)) throw Error("providers must be an array");
+  const rejectTokens = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (Object.hasOwn(value, "tokens")) throw Error("tokens cannot be supplied; import accounts from cc-switch");
+    for (const child of Object.values(value)) rejectTokens(child);
+  };
+  rejectTokens(raw);
+  const providers = raw.providers.map((p) => {
+    if (!p || typeof p.id !== "string" || !ID.test(p.id)) throw Error("Invalid provider id (1-64 letters, digits, '_' or '-'; 'system' is reserved)");
+    if (Object.hasOwn(p, "tokens")) throw Error("tokens cannot be supplied; import accounts from cc-switch");
+    if (p.auth !== void 0 && !["apiKey", "chatgpt"].includes(p.auth)) throw Error("Invalid provider auth");
+    if (typeof p.name !== "string" || !p.name.trim()) throw Error("Provider name is required");
+    if (p.auth !== "chatgpt") {
+      if (typeof p.baseUrl !== "string") throw Error("Provider baseUrl is required");
+      let url2;
+      try {
+        url2 = new URL(p.baseUrl);
+      } catch {
+        throw Error("Invalid provider baseUrl");
+      }
+      if (!["http:", "https:"].includes(url2.protocol) || url2.username || url2.password) throw Error("baseUrl must be an HTTP(S) URL without credentials");
+    }
+    if (p.wireApi !== void 0 && (typeof p.wireApi !== "string" || !p.wireApi.trim())) throw Error("wireApi must be a nonempty string");
+    if (p.requiresOpenaiAuth !== void 0 && typeof p.requiresOpenaiAuth !== "boolean") throw Error("requiresOpenaiAuth must be boolean");
+    const out = { id: p.id, name: p.name, ...p.auth !== void 0 ? { auth: p.auth } : {}, ...p.auth === "chatgpt" ? {} : { baseUrl: p.baseUrl, wireApi: p.wireApi ?? "responses", requiresOpenaiAuth: p.requiresOpenaiAuth ?? false } };
+    for (const k of ["websiteUrl", "apiKey", "model", "effort", "extraToml", "notes"]) {
+      if (p[k] !== void 0) {
+        if (typeof p[k] !== "string") throw Error(`${k} must be a string`);
+        out[k] = p[k];
+      }
+    }
+    const old = previous.providers.find((x) => x.id === p.id);
+    if (p.apiKey === void 0 || old?.apiKey && p.apiKey === maskKey(old.apiKey)) out.apiKey = old?.apiKey;
+    for (const k of ["httpHeaders", "queryParams"]) {
+      if (p[k] !== void 0) {
+        if (!p[k] || typeof p[k] !== "object" || Array.isArray(p[k]) || Object.values(p[k]).some((v) => typeof v !== "string")) throw Error(`${k} must map strings to strings`);
+        out[k] = { ...p[k] };
+      }
+    }
+    if (p.source !== void 0) {
+      if (p.source?.type !== "cc-switch" || typeof p.source.id !== "string") throw Error("Invalid provider source");
+      out.source = { type: "cc-switch", id: p.source.id };
+    }
+    if (p.sync !== void 0) {
+      if (typeof p.sync !== "boolean" || out.source?.type !== "cc-switch") throw Error("sync requires a cc-switch source and a boolean");
+      out.sync = p.sync;
+    }
+    if (p.account !== void 0) {
+      if (typeof p.account?.accountId !== "string" || p.account.email !== void 0 && typeof p.account.email !== "string") throw Error("Invalid account display info");
+      out.account = { accountId: p.account.accountId, ...p.account.email ? { email: p.account.email } : {} };
+    }
+    if (out.auth === "chatgpt") {
+      delete out.apiKey;
+      delete out.httpHeaders;
+      delete out.queryParams;
+      delete out.extraToml;
+    }
+    if (out.extraToml) parseToml(out.extraToml);
+    if (out.apiKey && Object.entries(out).some(([k, v]) => k !== "apiKey" && JSON.stringify(v)?.includes(JSON.stringify(out.apiKey).slice(1, -1)))) throw Error("API key must appear only in apiKey");
+    return out;
+  });
+  if (new Set(providers.map((p) => p.id)).size !== providers.length) throw Error("Duplicate provider id");
+  const defaultProvider = raw.defaultProvider ?? null;
+  if (defaultProvider !== null && !providers.some((p) => p.id === defaultProvider)) throw Error("Unknown default provider id");
+  return { defaultProvider, providers };
+}
+function loadProviders(file2 = providersFile) {
+  if (!existsSync2(file2)) return { defaultProvider: null, providers: [] };
+  try {
+    return validateProviders(JSON.parse(readFileSync2(file2, "utf8")));
+  } catch {
+    throw Error("Invalid providers.json; correct it before selecting a provider");
+  }
+}
+var watchProviders = (changed) => watchFile(providersFile, { interval: 2e3, persistent: false }, changed);
+function selectProvider(doc, call, tier) {
+  const id = call ?? tier ?? doc.defaultProvider;
+  if (!id || id === "system") return void 0;
+  const p = doc.providers.find((p2) => p2.id === id);
+  if (!p) throw Error(`Unknown provider id '${id}'`);
+  return p;
+}
+var selectModel = (call, provider, tier, fallback) => call ?? provider?.model ?? tier ?? fallback;
+var providerName = (p) => p.auth === "chatgpt" ? "openai" : `cdp_${p.id}`;
+function providerArgs(p) {
+  if (!p) return [];
+  if (p.auth === "chatgpt") return ["-c", 'model_provider="openai"', "-c", 'cli_auth_credentials_store="file"'];
+  const prefix = `model_providers.${providerName(p)}`;
+  const entries2 = /* @__PURE__ */ new Map();
+  if (p.extraToml) for (const { keys, value } of parseToml(p.extraToml).values()) entries2.set(keys.map(tomlString).join("."), tomlValue(value));
+  entries2.set("model_provider", tomlString(providerName(p)));
+  for (const [k, v] of Object.entries({ name: p.name, base_url: p.baseUrl, wire_api: p.wireApi, requires_openai_auth: p.requiresOpenaiAuth, env_key: PROVIDER_KEY, http_headers: p.httpHeaders, query_params: p.queryParams })) {
+    if (v !== void 0) entries2.set(`${prefix}.${k}`, tomlValue(v));
+  }
+  const args = [...entries2].flatMap(([k, v]) => ["-c", `${k}=${v}`]);
+  if (p.apiKey && args.some((a) => a.includes(p.apiKey) || a.includes(JSON.stringify(p.apiKey).slice(1, -1)))) throw Error("API key cannot be included in provider overrides");
+  return args;
+}
+function prepareProviderHome(p, paths = {}) {
+  const home = providerHome(p, paths.homesRoot);
+  if (!readAuth(join2(home, "auth.json"))) throw Error("Missing account auth.json; re-import from cc-switch");
+  for (const name of ["config.toml", "AGENTS.md"]) {
+    const source = join2(paths.codexHome ?? config.codexHome, name), dest = join2(home, name);
+    if (existsSync2(source)) copyFileSync(source, dest);
+    else rmSync(dest, { force: true });
+  }
+  return home;
+}
+function providerEnv(p, extra = {}, paths = {}) {
+  const env = { ...process.env, ...extra };
+  if (p?.auth === "chatgpt") {
+    env.CODEX_HOME = providerHome(p, paths.homesRoot);
+    delete env[PROVIDER_KEY];
+    delete env.OPENAI_API_KEY;
+    delete env.OPENAI_BASE_URL;
+  } else if (p) env[PROVIDER_KEY] = p.apiKey ?? "";
+  return env;
+}
+function providerSecrets(p, paths = {}) {
+  if (p?.auth !== "chatgpt") return p?.apiKey ? [p.apiKey] : [];
+  const auth = readAuth(join2(providerHome(p, paths.homesRoot), "auth.json"));
+  return Object.values(auth?.tokens ?? {}).filter((v) => typeof v === "string" && !!v);
+}
+async function withProviderLock(p, paths, action) {
+  const home = providerHome(p, paths.homesRoot);
+  mkdirSync(home, { recursive: true });
+  const file2 = join2(home, ".token-sync.lock"), owner = randomUUID(), deadline = Date.now() + 1e4;
+  for (; ; ) {
+    try {
+      writeFileSync(file2, owner, { flag: "wx", mode: 384 });
+      break;
+    } catch (e) {
+      if (e.code !== "EEXIST") throw Error("Token sync lock unavailable");
+      try {
+        if (Date.now() - statSync(file2).mtimeMs > 6e4) rmSync(file2);
+      } catch {
+      }
+      if (Date.now() >= deadline) throw Error("Token sync lock timed out");
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  try {
+    return action();
+  } finally {
+    try {
+      if (readFileSync2(file2, "utf8") === owner) rmSync(file2);
+    } catch {
+    }
+  }
+}
+async function syncTokens(p, paths = {}) {
+  if (p.auth !== "chatgpt") throw Error("Token sync requires a ChatGPT provider");
+  if (p.sync !== true || p.source?.type !== "cc-switch") return { winner: null, locations: [] };
+  try {
+    return await withProviderLock(p, paths, () => {
+      const homeFile = join2(providerHome(p, paths.homesRoot), "auth.json");
+      const home = readAuth(homeFile);
+      const accountId = home?.tokens?.account_id;
+      if (!accountId || p.account && maskAccount(accountId) !== p.account.accountId) throw Error("Account mismatch");
+      const locations = [];
+      const addFile = (location, file2, auth) => {
+        if (auth?.tokens?.account_id !== accountId) return;
+        locations.push({ location, auth, write: (winner) => {
+          const current = readAuth(file2);
+          if (current?.tokens?.account_id !== accountId) throw Error("Account changed during sync");
+          if (refreshTime(current) > refreshTime(winner)) throw Error("Credentials changed during sync; retry");
+          atomicJson(file2, { ...current, tokens: winner.tokens, last_refresh: winner.last_refresh });
+        } });
+      };
+      addFile("home", homeFile, home);
+      let db;
+      try {
+        const dbFile = paths.ccswitchFile ?? ccswitchFile;
+        if (existsSync2(dbFile)) {
+          db = new DatabaseSync(dbFile);
+          db.exec("PRAGMA busy_timeout=5000; BEGIN IMMEDIATE");
+          const row = db.prepare("SELECT settings_config FROM providers WHERE id=? AND app_type='codex'").get(p.source.id);
+          if (row) {
+            const settings = JSON.parse(String(row.settings_config));
+            if (settings.auth?.tokens?.account_id === accountId) locations.push({ location: "ccswitch", auth: settings.auth, write: (winner2) => {
+              settings.auth.tokens = winner2.tokens;
+              settings.auth.last_refresh = winner2.last_refresh;
+              db.prepare("UPDATE providers SET settings_config=? WHERE id=? AND app_type='codex'").run(JSON.stringify(settings), p.source.id);
+            } });
+          }
+        }
+        const liveFile = join2(paths.codexHome ?? config.codexHome, "auth.json");
+        addFile("live", liveFile, readAuth(liveFile));
+        const newest = Math.max(...locations.map((l) => refreshTime(l.auth)));
+        const winners = locations.filter((l) => refreshTime(l.auth) === newest);
+        const winner = winners.length === 1 && newest > -Infinity ? winners[0] : void 0;
+        const result = { winner: winner?.location ?? null, locations: [] };
+        for (const loc of locations) {
+          const updated = !!winner && loc.auth.tokens?.refresh_token !== winner.auth.tokens?.refresh_token;
+          if (updated) loc.write(winner.auth);
+          result.locations.push({ location: loc.location, lastRefresh: (updated ? winner.auth : loc.auth).last_refresh ?? null, updated });
+        }
+        db?.exec("COMMIT");
+        return result;
+      } finally {
+        db?.close();
+      }
+    });
+  } catch {
+    throw Error("Token sync failed; check account files, cc-switch database access, and retry");
+  }
+}
+
 // src/observability.ts
-import { closeSync, openSync, readSync, readdirSync, readFileSync, lstatSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { closeSync, openSync, readSync, readdirSync, readFileSync as readFileSync3, lstatSync, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { join as join3, relative } from "node:path";
 function effectiveSandbox(sandbox2, auto, sandboxWrites) {
   return (sandbox2 ?? (auto ? "write" : "read-only")) === "read-only" ? "read-only" : sandboxWrites ? "workspace-write" : "danger-full-access";
 }
@@ -7232,7 +7706,7 @@ function entries(dir2) {
 }
 function readMeta(dir2) {
   try {
-    return JSON.parse(readFileSync(join(dir2, "meta.json"), "utf8"));
+    return JSON.parse(readFileSync3(join3(dir2, "meta.json"), "utf8"));
   } catch {
     return void 0;
   }
@@ -7253,7 +7727,7 @@ function tailFile(file2, bytes) {
 }
 function commandLogs(dir2) {
   return entries(dir2).filter((e) => e.isFile() && /^cmd-.*\.log$/.test(e.name)).flatMap((e) => {
-    const file2 = join(dir2, e.name);
+    const file2 = join3(dir2, e.name);
     try {
       const stat2 = lstatSync(file2);
       return [{ file: file2, name: e.name, bytes: stat2.size, mtime: stat2.mtimeMs }];
@@ -7273,14 +7747,14 @@ ${saved[1].slice(-maxBytes).split(/\r?\n/).slice(-15).join("\n")}` : "cmd log: (
 ${tailFile(log.file, maxBytes).split(/\r?\n/).slice(-15).join("\n")}` : "cmd log: (none)";
 }
 function trimCommandLogs(dir2, maxMB) {
-  for (const log of commandLogs(dir2)) if (log.bytes > maxMB * 1024 * 1024) writeFileSync(log.file, tailFile(log.file, Math.floor(maxMB * 1024 * 1024)));
+  for (const log of commandLogs(dir2)) if (log.bytes > maxMB * 1024 * 1024) writeFileSync2(log.file, tailFile(log.file, Math.floor(maxMB * 1024 * 1024)));
 }
 function finishCommandLogs(dir2, success2, keep = []) {
   if (!success2) return void 0;
   const tails = {};
   for (const log of commandLogs(dir2)) {
     tails[log.name] = tailFile(log.file, 2048);
-    if (!keep.includes(log.name)) rmSync(log.file);
+    if (!keep.includes(log.name)) rmSync2(log.file);
   }
   return tails;
 }
@@ -7304,7 +7778,7 @@ function baseline(runsDir, command, exclude) {
   const values = [];
   for (const e of entries(runsDir)) {
     if (!e.isDirectory() || e.name === exclude) continue;
-    const meta3 = readMeta(join(runsDir, e.name));
+    const meta3 = readMeta(join3(runsDir, e.name));
     for (const c of [...meta3?.commands ?? [], ...meta3?.checks ?? []]) {
       if (c.durationMs !== void 0 && commandClass(c.command) === cls) values.push(c.durationMs / 1e3);
     }
@@ -7339,7 +7813,7 @@ exit: ${meta3.exitKind ?? meta3.state}; denied paths: ${paths}; last command: ${
 }
 function previousDiagnosis(runsDir, sessionId) {
   if (!sessionId) return "";
-  const metas = entries(runsDir).filter((e) => e.isDirectory()).map((e) => readMeta(join(runsDir, e.name))).filter((m) => !!m && m.sessionId === sessionId && (m.state !== "running" || !!m.pid && !alive(m.pid) && !alive(m.codexPid))).map((m) => m.state === "running" ? { ...m, state: "interrupted", exitKind: "crashed" } : m).sort((a, b) => b.startedAt - a.startedAt);
+  const metas = entries(runsDir).filter((e) => e.isDirectory()).map((e) => readMeta(join3(runsDir, e.name))).filter((m) => !!m && m.sessionId === sessionId && (m.state !== "running" || !!m.pid && !alive(m.pid) && !alive(m.codexPid))).map((m) => m.state === "running" ? { ...m, state: "interrupted", exitKind: "crashed" } : m).sort((a, b) => b.startedAt - a.startedAt);
   return diagnosisPrefix(metas[0]);
 }
 function alive(pid) {
@@ -7352,22 +7826,22 @@ function alive(pid) {
   }
 }
 function dirBytes(dir2) {
-  return entries(dir2).reduce((sum, e) => sum + (e.isDirectory() ? dirBytes(join(dir2, e.name)) : e.isFile() ? lstatSync(join(dir2, e.name)).size : 0), 0);
+  return entries(dir2).reduce((sum, e) => sum + (e.isDirectory() ? dirBytes(join3(dir2, e.name)) : e.isFile() ? lstatSync(join3(dir2, e.name)).size : 0), 0);
 }
 function cleanupRuns(runsDir, retention, active2 = /* @__PURE__ */ new Set(), now = Date.now()) {
   const runs = entries(runsDir).filter((e) => e.isDirectory() && e.name !== "pending" && e.name !== "tasks").map((e) => {
-    const dir2 = join(runsDir, e.name), meta3 = readMeta(dir2);
+    const dir2 = join3(runsDir, e.name), meta3 = readMeta(dir2);
     return { dir: dir2, meta: meta3, age: now - (meta3?.endedAt ?? meta3?.startedAt ?? lstatSync(dir2).mtimeMs), bytes: dirBytes(dir2), protected: active2.has(e.name) || meta3?.state === "running" && (alive(meta3.pid) || alive(meta3.codexPid) || (meta3.heartbeatAt !== void 0 ? now - meta3.heartbeatAt < 9e4 : meta3.pid === void 0 && meta3.codexPid === void 0)) };
   }).sort((a, b) => b.age - a.age);
   let total = dirBytes(runsDir);
   for (const r of runs) {
     if (r.protected) continue;
     if (r.age > retention.runDays * 864e5 || total > retention.totalMaxMB * 1048576) {
-      rmSync(r.dir, { recursive: true, force: true });
+      rmSync2(r.dir, { recursive: true, force: true });
       total -= r.bytes;
       continue;
     }
-    if (r.age > retention.failedLogDays * 864e5) for (const log of commandLogs(r.dir)) rmSync(log.file);
+    if (r.age > retention.failedLogDays * 864e5) for (const log of commandLogs(r.dir)) rmSync2(log.file);
   }
 }
 function recentFiles(cwd, now = Date.now()) {
@@ -7377,7 +7851,7 @@ function recentFiles(cwd, now = Date.now()) {
     for (const e of entries(dir2)) {
       if (++visited > 2e4) return;
       if (e.name === ".git" || e.name === "node_modules") continue;
-      const file2 = join(dir2, e.name);
+      const file2 = join3(dir2, e.name);
       if (e.isDirectory()) walk(file2);
       else if (e.isFile()) {
         try {
@@ -11544,7 +12018,7 @@ __export(core_exports2, {
   clone: () => clone,
   compile: () => compile,
   compileFn: () => compileFn,
-  config: () => config,
+  config: () => config2,
   createStandardJSONSchemaMethod: () => createStandardJSONSchemaMethod,
   createToJSONSchemaMethod: () => createToJSONSchemaMethod,
   decode: () => decode,
@@ -12563,7 +13037,7 @@ var $ZodEncodeError = class extends Error {
 };
 (_a = globalThis).__zod_globalConfig ?? (_a.__zod_globalConfig = {});
 var globalConfig = globalThis.__zod_globalConfig;
-function config(newConfig) {
+function config2(newConfig) {
   if (newConfig)
     Object.assign(globalConfig, newConfig);
   return globalConfig;
@@ -12773,7 +13247,7 @@ var _parse = (_Err) => {
       throw new $ZodAsyncError();
     }
     if (result.issues.length) {
-      const e = new (_params?.Err ?? _Err)(result.issues.map((iss) => finalizeIssue(iss, ctx, config())));
+      const e = new (_params?.Err ?? _Err)(result.issues.map((iss) => finalizeIssue(iss, ctx, config2())));
       captureStackTrace(e, _params?.callee ?? fn);
       throw e;
     }
@@ -12789,7 +13263,7 @@ var _parseAsync = (_Err) => {
     if (result instanceof Promise)
       result = await result;
     if (result.issues.length) {
-      const e = new (params?.Err ?? _Err)(result.issues.map((iss) => finalizeIssue(iss, ctx, config())));
+      const e = new (params?.Err ?? _Err)(result.issues.map((iss) => finalizeIssue(iss, ctx, config2())));
       captureStackTrace(e, params?.callee ?? fn);
       throw e;
     }
@@ -12813,7 +13287,7 @@ function failure(Err, issues, ctx) {
     success: false,
     get error() {
       if (!error62) {
-        error62 = new Err(issues.map((iss) => finalizeIssue(iss, ctx, config())));
+        error62 = new Err(issues.map((iss) => finalizeIssue(iss, ctx, config2())));
         issues = void 0;
         ctx = void 0;
       }
@@ -13727,7 +14201,7 @@ var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
     own(this, "~standard", value);
   }
 });
-var toStandardResult = (r, ctx) => r.issues.length ? { issues: r.issues.map((iss) => finalizeIssue(iss, ctx, config())) } : { value: r.value };
+var toStandardResult = (r, ctx) => r.issues.length ? { issues: r.issues.map((iss) => finalizeIssue(iss, ctx, config2())) } : { value: r.value };
 async function validateAsync2(inst, value) {
   const ctx = { async: true };
   return toStandardResult(await inst._zod.run({ value, issues: [] }, ctx), ctx);
@@ -14736,7 +15210,7 @@ function handleUnionResults(results, final, inst, ctx) {
     code: "invalid_union",
     input: final.value,
     inst,
-    errors: results.map((result) => result.issues.map((iss) => finalizeIssue(iss, ctx, config())))
+    errors: results.map((result) => result.issues.map((iss) => finalizeIssue(iss, ctx, config2())))
   });
   return final;
 }
@@ -14800,7 +15274,7 @@ function handleExclusiveUnionResults(results, final, inst, ctx) {
       code: "invalid_union",
       input: final.value,
       inst,
-      errors: results.map((result) => result.issues.map((iss) => finalizeIssue(iss, ctx, config())))
+      errors: results.map((result) => result.issues.map((iss) => finalizeIssue(iss, ctx, config2())))
     });
   } else {
     final.issues.push({
@@ -15208,7 +15682,7 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
             payload.issues.push({
               code: "invalid_key",
               origin: "record",
-              issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config())),
+              issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config2())),
               input: key,
               path: [key],
               inst
@@ -15288,7 +15762,7 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
             payload.issues.push({
               code: "invalid_key",
               origin: "record",
-              issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config())),
+              issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config2())),
               input: key,
               path: [key],
               inst
@@ -15380,7 +15854,7 @@ function handleMapResult(keyResult, valueResult, final, key, input2, inst, ctx) 
         origin: "map",
         input: input2,
         inst,
-        issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config()))
+        issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config2()))
       });
     }
   }
@@ -15394,7 +15868,7 @@ function handleMapResult(keyResult, valueResult, final, key, input2, inst, ctx) 
         input: input2,
         inst,
         key,
-        issues: valueResult.issues.map((iss) => finalizeIssue(iss, ctx, config()))
+        issues: valueResult.issues.map((iss) => finalizeIssue(iss, ctx, config2()))
       });
     }
   }
@@ -15670,7 +16144,7 @@ function handleCatchResult(payload, result, def, ctx) {
     ...result,
     value: payload.value,
     error: {
-      issues: result.issues.map((iss) => finalizeIssue(iss, ctx, config()))
+      issues: result.issues.map((iss) => finalizeIssue(iss, ctx, config2()))
     },
     input: payload.value
   });
@@ -28434,7 +28908,7 @@ __export(external_exports, {
   codec: () => codec,
   coerce: () => coerce_exports2,
   compile: () => compile,
-  config: () => config,
+  config: () => config2,
   core: () => core_exports2,
   creditCard: () => creditCard2,
   cuid: () => cuid3,
@@ -28476,7 +28950,7 @@ __export(external_exports, {
   includes: () => _includes,
   input: () => input,
   instanceof: () => _instanceof,
-  int: () => int,
+  int: () => int2,
   int32: () => int32,
   int64: () => int64,
   intersection: () => intersection,
@@ -28706,7 +29180,7 @@ __export(schemas_exports2, {
   httpUrl: () => httpUrl,
   iban: () => iban2,
   instanceof: () => _instanceof,
-  int: () => int,
+  int: () => int2,
   int32: () => int32,
   int64: () => int64,
   intersection: () => intersection,
@@ -28868,11 +29342,11 @@ var safeDecodeAsync2 = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
 // node_modules/zod/v4/classic/schemas.js
 function _ensureDefaultLocale() {
   if (!globalConfig.localeError)
-    config(en_default2());
+    config2(en_default2());
 }
 function _ensureDefaultMemoizer() {
   if (!globalConfig.memoizer)
-    config({ memoizer: memoizer() });
+    config2({ memoizer: memoizer() });
 }
 var ZodType2 = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
   _ensureDefaultLocale();
@@ -29450,10 +29924,10 @@ var ZodNumber2 = /* @__PURE__ */ $constructor(
       return this.check(_lte(value, params));
     },
     int(params) {
-      return this.check(int(params));
+      return this.check(int2(params));
     },
     safe(params) {
-      return this.check(int(params));
+      return this.check(int2(params));
     },
     positive(params) {
       return this.check(_gt(0, params));
@@ -29485,7 +29959,7 @@ var ZodNumberFormat = /* @__PURE__ */ $constructor("ZodNumberFormat", (inst, def
   $ZodNumberFormat.init(inst, def);
   ZodNumber2.init(inst, def);
 });
-function int(params) {
+function int2(params) {
   return _int(ZodNumberFormat, params);
 }
 function float32(params) {
@@ -30345,12 +30819,12 @@ var ZodIssueCode2 = {
   custom: "custom"
 };
 function setErrorMap(map2) {
-  config({
+  config2({
     customError: map2
   });
 }
 function getErrorMap2() {
-  return config().customError;
+  return config2().customError;
 }
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
@@ -36673,125 +37147,79 @@ var StdioServerTransport = class {
 // src/index.ts
 import { resolve as resolve3 } from "node:path";
 
-// src/config.ts
-import { existsSync, readFileSync as readFileSync2 } from "node:fs";
-import { homedir } from "node:os";
-import { delimiter, join as join2 } from "node:path";
-function fallbackDirs(env, platform) {
-  const home = homedir();
-  if (platform === "win32") {
-    return [env.APPDATA ? join2(env.APPDATA, "npm") : "", join2(home, ".bun", "bin"), join2(home, ".cargo", "bin")].filter(Boolean);
+// src/sessions.ts
+import { closeSync as closeSync2, openSync as openSync2, readdirSync as readdirSync2, readSync as readSync2, statSync as statSync2 } from "node:fs";
+import { join as join4, resolve } from "node:path";
+var HEAD_BYTES = 512 * 1024;
+function readHead(file2) {
+  const fd = openSync2(file2, "r");
+  try {
+    const buf = Buffer.alloc(HEAD_BYTES);
+    const n = readSync2(fd, buf, 0, HEAD_BYTES, 0);
+    return buf.subarray(0, n).toString("utf8");
+  } finally {
+    closeSync2(fd);
   }
-  return [
-    join2(home, ".bun", "bin"),
-    join2(home, ".local", "bin"),
-    join2(home, ".npm-global", "bin"),
-    join2(home, ".cargo", "bin"),
-    "/usr/local/bin",
-    "/opt/homebrew/bin",
-    "/usr/bin"
-  ];
 }
-function resolveCodex(env = process.env, platform = process.platform) {
-  const viaNode = (js) => ({ cmd: process.execPath, args: [js] });
-  if (env.CODEX_BIN) return /\.[cm]?js$/i.test(env.CODEX_BIN) ? viaNode(env.CODEX_BIN) : { cmd: env.CODEX_BIN, args: [] };
-  const path = env.PATH ?? env.Path ?? "";
-  const dirs = [...path.split(platform === "win32" ? ";" : delimiter).filter(Boolean), ...fallbackDirs(env, platform)];
-  for (const dir2 of dirs) {
-    if (platform === "win32") {
-      const js = join2(dir2, "node_modules", "@openai", "codex", "bin", "codex.js");
-      if (existsSync(js)) return viaNode(js);
-      const exe = join2(dir2, "codex.exe");
-      if (existsSync(exe)) return { cmd: exe, args: [] };
-    } else {
-      const candidate = join2(dir2, "codex");
-      if (existsSync(candidate)) return { cmd: candidate, args: [] };
+function firstPrompt(lines) {
+  for (const line of lines) {
+    if (!line.includes('"role":"user"')) continue;
+    try {
+      const p = JSON.parse(line).payload;
+      if (p?.type !== "message" || p.role !== "user") continue;
+      const text2 = (p.content ?? []).map((c) => c?.text ?? "").join(" ").trim();
+      if (text2 && !text2.startsWith("#") && !text2.startsWith("<")) return text2;
+    } catch {
     }
   }
-  return { cmd: platform === "win32" ? "codex.exe" : "codex", args: [] };
+  return void 0;
 }
-function model(v, fallback) {
-  if (v === void 0) return fallback;
-  return v.trim() || void 0;
-}
-function bool(v, dflt) {
-  if (v === void 0 || v === "") return dflt;
-  return !/^(0|false|no|off)$/i.test(v);
-}
-function int2(v, dflt) {
-  const n = Number.parseInt(v ?? "", 10);
-  return Number.isFinite(n) && n > 0 ? n : dflt;
-}
-function idleSeconds(v, dflt) {
-  return v?.trim() === "0" ? 0 : int2(v, dflt);
-}
-var SANDBOXES = ["read-only", "workspace-write", "danger-full-access"];
-function sandbox(v) {
-  return SANDBOXES.includes(v ?? "") ? v : "workspace-write";
-}
-function optionalBool(v) {
-  if (v === void 0 || v.trim() === "") return void 0;
-  return bool(v, false);
-}
-var codexHome = process.env.CODEX_HOME || join2(homedir(), ".codex");
-function configuredModel(path = join2(codexHome, "config.toml")) {
+function parseRollout(head, file2) {
+  const lines = head.split("\n");
   try {
-    const top = readFileSync2(path, "utf8").split(/^\s*\[/m)[0] ?? "";
-    return top.match(/^\s*model\s*=\s*"([^"]+)"/m)?.[1];
+    const first = JSON.parse(lines[0] ?? "");
+    if (first.type !== "session_meta") return void 0;
+    const p = first.payload ?? {};
+    return { id: p.id, cwd: p.cwd, timestamp: p.timestamp, prompt: firstPrompt(lines.slice(1)), file: file2 };
   } catch {
     return void 0;
   }
 }
-var defaultModel = model(process.env.CODEX_DELEGATE_DEFAULT_MODEL, void 0);
-var effortAll = process.env.CODEX_DELEGATE_EFFORT;
-var EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
-function allowedEfforts(v) {
-  if (v === void 0) return ["low", "medium", "high"];
-  const list = v.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
-  if (!list.length || list.includes("any")) return void 0;
-  return EFFORT_ORDER.filter((e) => list.includes(e));
+function* rollouts(dir2) {
+  let entries2;
+  try {
+    entries2 = readdirSync2(dir2).sort().reverse();
+  } catch {
+    return;
+  }
+  for (const e of entries2) {
+    const p = join4(dir2, e);
+    if (e.startsWith("rollout-") && e.endsWith(".jsonl")) yield p;
+    else if (statSync2(p).isDirectory()) yield* rollouts(p);
+  }
 }
-function clampEffort(effort, allowed) {
-  if (!effort || !allowed?.length || allowed.includes(effort)) return effort;
-  const rank = EFFORT_ORDER.indexOf(effort);
-  if (rank < 0) return effort;
-  const ranks = allowed.map((e) => EFFORT_ORDER.indexOf(e));
-  return rank > Math.max(...ranks) ? allowed.at(-1) : allowed[0];
+function listSessions(cwd, limit, root) {
+  if (root === void 0) {
+    const providers = loadProviders().providers.filter((p) => p.auth === "chatgpt");
+    return [listSessions(cwd, limit, join4(config.codexHome, "sessions")), ...providers.map((p) => listSessions(cwd, limit, join4(providerHome(p), "sessions")).map((s) => ({ ...s, provider: p.id })))].flat().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, limit);
+  }
+  const want = resolve(cwd);
+  const out = [];
+  for (const file2 of rollouts(root)) {
+    const s = parseRollout(readHead(file2), file2);
+    if (s && resolve(s.cwd ?? "") === want) out.push(s);
+    if (out.length >= limit) break;
+  }
+  return out;
 }
-var config2 = {
-  codex: resolveCodex(),
-  engine: process.env.CODEX_DELEGATE_ENGINE === "exec" ? "exec" : "app-server",
-  // Levels the lead may choose from; anything else is clamped into this range.
-  efforts: allowedEfforts(process.env.CODEX_DELEGATE_EFFORTS),
-  codexHome,
-  defaultModel,
-  // Used when no model is given and the run is read-only (auto: false): reading, reviews, questions.
-  readModel: model(process.env.CODEX_DELEGATE_READ_MODEL, defaultModel),
-  writeEffort: model(effortAll ?? process.env.CODEX_DELEGATE_WRITE_EFFORT, "high"),
-  readEffort: model(effortAll ?? process.env.CODEX_DELEGATE_READ_EFFORT, "medium"),
-  // Unset → inherit service_tier from config.toml. true = "priority" (Fast), false = "default".
-  fast: optionalBool(process.env.CODEX_DELEGATE_FAST),
-  sandbox: sandbox(process.env.CODEX_DELEGATE_SANDBOX),
-  auto: bool(process.env.CODEX_DELEGATE_AUTO, true),
-  // Ask codex for a JSON report (status/summary/verification/questions) on runs that may edit files.
-  structured: bool(process.env.CODEX_DELEGATE_STRUCTURED, true),
-  // Append the working agreement (investigate yourself, verify, ask instead of guessing) to every brief.
-  contract: bool(process.env.CODEX_DELEGATE_CONTRACT, true),
-  timeoutSec: int2(process.env.CODEX_DELEGATE_TIMEOUT, 1800),
-  checkTimeoutSec: int2(process.env.CODEX_DELEGATE_CHECK_TIMEOUT, 600),
-  idleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_IDLE_TIMEOUT, 600),
-  commandIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_COMMAND_IDLE_TIMEOUT, 600),
-  hardIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_HARD_IDLE_TIMEOUT, 3600),
-  checkIdleTimeoutSec: idleSeconds(process.env.CODEX_DELEGATE_CHECK_IDLE_TIMEOUT, 300),
-  // How often a run with checkpoints looks for new checkpoint-<n>.md files.
-  checkpointPollMs: int2(process.env.CODEX_DELEGATE_CHECKPOINT_POLL_MS, 2e3),
-  // What goes back into the caller's context. The full event log stays on disk.
-  maxOutputChars: int2(process.env.CODEX_DELEGATE_MAX_OUTPUT, 6e3),
-  runsDir: process.env.CODEX_DELEGATE_RUNS_DIR || join2(homedir(), ".codex-delegate", "runs"),
-  // Cost tiers and guidance prompts, edited from the dashboard (see policy.ts).
-  policyFile: process.env.CODEX_DELEGATE_POLICY || join2(homedir(), ".codex-delegate", "policy.json"),
-  defaultCwd: process.env.CODEX_DELEGATE_CWD || process.cwd()
-};
+function sessionProvider(id, doc, homesRoot2) {
+  for (const p of doc.providers.filter((p2) => p2.auth === "chatgpt")) {
+    for (const file2 of rollouts(join4(providerHome(p, homesRoot2), "sessions"))) {
+      if (file2.includes(id) && parseRollout(readHead(file2), file2)?.id === id) return p;
+    }
+  }
+  return void 0;
+}
 
 // src/watchdog.ts
 import { execFile } from "node:child_process";
@@ -37010,9 +37438,9 @@ function softWatchdog(pid, window, suspected, sample = sampleTreeEvidence) {
 }
 
 // src/delegate.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
-import { existsSync as existsSync5, mkdirSync as mkdirSync3, rmSync as rmSync3, writeFileSync as writeFileSync6 } from "node:fs";
-import { basename, isAbsolute, join as join9, relative as relative2, resolve } from "node:path";
+import { randomUUID as randomUUID3 } from "node:crypto";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, rmSync as rmSync4, writeFileSync as writeFileSync8 } from "node:fs";
+import { basename, isAbsolute, join as join11, relative as relative2, resolve as resolve2 } from "node:path";
 
 // src/checks.ts
 import { spawn } from "node:child_process";
@@ -37148,7 +37576,7 @@ function runCheck(command, cwd, timeoutMs, signal, options = {}) {
     const watchdog = idleWatchdog(child.pid, () => ({
       key: "check",
       since: lastOutputAt ?? started,
-      timeoutMs: options.idleTimeoutMs ?? config2.checkIdleTimeoutSec * 1e3
+      timeoutMs: options.idleTimeoutMs ?? config.checkIdleTimeoutSec * 1e3
     }), () => {
       timedOut = stalled = true;
       stop(child);
@@ -37212,25 +37640,25 @@ async function runChecks(commands, cwd, timeoutMs, signal, options = {}) {
 
 // src/codex.ts
 import { spawn as spawn2 } from "node:child_process";
-import { createWriteStream, existsSync as existsSync3, readFileSync as readFileSync5 } from "node:fs";
+import { createWriteStream, existsSync as existsSync4, readFileSync as readFileSync6, writeFileSync as writeFileSync5 } from "node:fs";
 
 // src/appserver.ts
-import { randomUUID } from "node:crypto";
-import { readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join4 } from "node:path";
+import { randomUUID as randomUUID2 } from "node:crypto";
+import { readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "node:fs";
+import { join as join6 } from "node:path";
 
 // src/longruns.ts
-import { appendFileSync, copyFileSync, existsSync as existsSync2, readdirSync as readdirSync2, readFileSync as readFileSync3, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname, join as join3 } from "node:path";
+import { appendFileSync, copyFileSync as copyFileSync2, existsSync as existsSync3, readdirSync as readdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname2, join as join5 } from "node:path";
 import { fileURLToPath } from "node:url";
 var LAUNCHER = "longrun.mjs";
 function installLauncher(runDir) {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const src = [join3(here, LAUNCHER), join3(here, "..", "src", LAUNCHER)].find((f) => existsSync2(f));
+  const here = dirname2(fileURLToPath(import.meta.url));
+  const src = [join5(here, LAUNCHER), join5(here, "..", "src", LAUNCHER)].find((f) => existsSync3(f));
   if (!src) return void 0;
-  const dest = join3(runDir, LAUNCHER);
+  const dest = join5(runDir, LAUNCHER);
   try {
-    copyFileSync(src, dest);
+    copyFileSync2(src, dest);
     return dest;
   } catch {
     return void 0;
@@ -37238,7 +37666,7 @@ function installLauncher(runDir) {
 }
 var int3 = (f) => {
   try {
-    const v = Number.parseInt(readFileSync3(f, "utf8"), 10);
+    const v = Number.parseInt(readFileSync4(f, "utf8"), 10);
     return Number.isFinite(v) ? v : void 0;
   } catch {
     return void 0;
@@ -37253,9 +37681,9 @@ var alive2 = (pid) => {
   }
 };
 function longrunState(runDir, n) {
-  const code = int3(join3(runDir, `cmd-${n}.exit`));
-  if (code !== void 0) return existsSync2(join3(runDir, `cmd-${n}.stopping`)) ? { state: "stopped" } : { state: "exited", code };
-  const pid = int3(join3(runDir, `cmd-${n}.pid`));
+  const code = int3(join5(runDir, `cmd-${n}.exit`));
+  if (code !== void 0) return existsSync3(join5(runDir, `cmd-${n}.stopping`)) ? { state: "stopped" } : { state: "exited", code };
+  const pid = int3(join5(runDir, `cmd-${n}.pid`));
   if (pid === void 0) return { state: "unknown" };
   return alive2(pid) ? { state: "running", pid } : { state: "gone" };
 }
@@ -37263,25 +37691,25 @@ function stopLongrun(runDir, n, why) {
   const s = longrunState(runDir, n);
   if (s.state !== "running") return false;
   try {
-    writeFileSync2(join3(runDir, `cmd-${n}.stopping`), why);
+    writeFileSync3(join5(runDir, `cmd-${n}.stopping`), why);
   } catch {
   }
   killPidTree(s.pid);
   try {
-    appendFileSync(join3(runDir, `cmd-${n}.log`), `
+    appendFileSync(join5(runDir, `cmd-${n}.log`), `
 EXIT=stopped (${why})
 `);
-    writeFileSync2(join3(runDir, `cmd-${n}.exit`), "137");
+    writeFileSync3(join5(runDir, `cmd-${n}.exit`), "137");
   } catch {
   }
   return true;
 }
 function longrunCommand(runDir, n) {
   try {
-    const { program, args } = JSON.parse(readFileSync3(join3(runDir, `cmd-${n}.json`), "utf8"));
+    const { program, args } = JSON.parse(readFileSync4(join5(runDir, `cmd-${n}.json`), "utf8"));
     const a = args ?? [];
     const script = a.find((x) => /cmd-\d+\.(ps1|sh)$/.test(x));
-    if (script) return readFileSync3(script, "utf8").split(/\r?\n/)[0] ?? program;
+    if (script) return readFileSync4(script, "utf8").split(/\r?\n/)[0] ?? program;
     return [program, ...a].join(" ");
   } catch {
     return `cmd-${n}`;
@@ -37298,7 +37726,7 @@ function refresh(runDir, k) {
 function runningLongruns(runDir) {
   let names = [];
   try {
-    names = readdirSync2(runDir);
+    names = readdirSync3(runDir);
   } catch {
   }
   return names.map((f) => Number(/^cmd-(\d+)\.pid$/.exec(f)?.[1])).filter((n) => Number.isInteger(n) && longrunState(runDir, n).state === "running");
@@ -37316,7 +37744,7 @@ onExit(() => {
   for (const dir2 of [...active]) reapLongruns(dir2, "server exited");
 });
 function keptPreamble(runDir, kept, killed) {
-  const launcher = join3(runDir, LAUNCHER);
+  const launcher = join5(runDir, LAUNCHER);
   const lines = ["[codex-delegate] The lead interrupted your previous step to give you a new instruction (below)."];
   for (const k of kept) {
     lines.push(`- Still running, NOT stopped: cmd-${k.n} \`${k.command.replace(/\s+/g, " ").slice(0, 200)}\` (log ${k.log}). It is the same job you started; do not start it again.`);
@@ -37334,7 +37762,7 @@ function keptPreamble(runDir, kept, killed) {
 `;
 }
 function keptReminder(runDir, kept) {
-  const launcher = join3(runDir, LAUNCHER);
+  const launcher = join5(runDir, LAUNCHER);
   return [
     "[codex-delegate] You ended your turn, but these commands you are responsible for are still running:",
     ...kept.map((k) => `- cmd-${k.n} \`${k.command.replace(/\s+/g, " ").slice(0, 200)}\` (log ${k.log})`),
@@ -37353,6 +37781,7 @@ function threadConfig(o) {
 }
 function threadParams(o) {
   return {
+    ...o.provider ? { modelProvider: providerName(o.provider) } : {},
     cwd: o.cwd ?? null,
     sandbox: o.sandbox,
     approvalPolicy: "never",
@@ -37572,7 +38001,7 @@ var AppServerTurn = class {
         if (!/longrun\.mjs/i.test(r.command)) killed.push(r.command);
       }
       for (const n of live2) {
-        if (redirect && !redirect.kill) kept.push({ n, command: longrunCommand(runDir, n), log: join4(runDir, `cmd-${n}.log`), keptAt: Date.now(), outcome: "running" });
+        if (redirect && !redirect.kill) kept.push({ n, command: longrunCommand(runDir, n), log: join6(runDir, `cmd-${n}.log`), keptAt: Date.now(), outcome: "running" });
         else if (stopLongrun(runDir, n, redirect ? "lead redirected with kill" : "task cancelled")) killed.push(longrunCommand(runDir, n));
       }
       if (redirect) {
@@ -37597,7 +38026,7 @@ var AppServerTurn = class {
     const text2 = turn.items?.filter((i) => i.type === "agentMessage").at(-1)?.text ?? this.lastText;
     if (this.o.lastMessageFile && typeof text2 === "string") {
       try {
-        writeFileSync3(this.o.lastMessageFile, text2);
+        writeFileSync4(this.o.lastMessageFile, text2);
       } catch {
       }
     }
@@ -37636,7 +38065,7 @@ var AppServerTurn = class {
       const res = o.sessionId ? await this.rpc(o.fork ? "thread/fork" : "thread/resume", { threadId: o.sessionId, ...params, excludeTurns: true }) : await this.rpc("thread/start", params);
       this.threadId = res.thread?.id;
       this.hooks.emit({ type: "thread.started", thread_id: this.threadId });
-      if (o.outputSchemaFile) this.outputSchema = JSON.parse(readFileSync4(o.outputSchemaFile, "utf8"));
+      if (o.outputSchemaFile) this.outputSchema = JSON.parse(readFileSync5(o.outputSchemaFile, "utf8"));
       const input2 = [{ type: "text", text: o.prompt, text_elements: [] }];
       for (const path of o.images ?? []) input2.push({ type: "localImage", path });
       await this.startTurn(input2);
@@ -37662,7 +38091,7 @@ var AppServerTurn = class {
   async redirect(text2, opts = {}) {
     if (!this.threadId || !this.turnId) throw new Error("codex has not started its turn yet; try again in a few seconds");
     if (this.finished) throw new Error("codex already finished this turn");
-    const record2 = { at: Date.now(), text: text2.slice(0, 500), clientId: `redirect-${randomUUID().slice(0, 8)}`, redirect: true };
+    const record2 = { at: Date.now(), text: text2.slice(0, 500), clientId: `redirect-${randomUUID2().slice(0, 8)}`, redirect: true };
     this.steers.push(record2);
     let outcome = { kept: [], killed: [] };
     const stopped = new Promise((resolve4) => {
@@ -37706,7 +38135,7 @@ var AppServerTurn = class {
   async steer(text2, waitMs = 15e3) {
     if (!this.threadId || !this.turnId) throw new Error("codex has not started its turn yet; try again in a few seconds");
     if (this.finished) throw new Error("codex already finished this turn");
-    const record2 = { at: Date.now(), text: text2.slice(0, 500), clientId: `steer-${randomUUID().slice(0, 8)}` };
+    const record2 = { at: Date.now(), text: text2.slice(0, 500), clientId: `steer-${randomUUID2().slice(0, 8)}` };
     this.steers.push(record2);
     let timer;
     const seen = new Promise((resolve4) => {
@@ -37769,6 +38198,7 @@ function buildArgs(o) {
   if (o.sessionId && o.addDirs?.length) args.push("-c", `sandbox_workspace_write.writable_roots=[${o.addDirs.map(toml).join(",")}]`);
   else for (const dir2 of o.addDirs ?? []) args.push("--add-dir", dir2);
   for (const img of o.images ?? []) args.push("-i", img);
+  args.push(...providerArgs(o.provider));
   args.push("--", "-");
   return args;
 }
@@ -37892,21 +38322,68 @@ var EventCollector = class {
   }
 };
 function readFinal(file2) {
-  if (!file2 || !existsSync3(file2)) return void 0;
+  if (!file2 || !existsSync4(file2)) return void 0;
   try {
-    return readFileSync5(file2, "utf8").trim() || void 0;
+    return readFileSync6(file2, "utf8").trim() || void 0;
   } catch {
     return void 0;
   }
 }
-function runCodex(o) {
+async function runCodex(o) {
+  const warnings = [];
+  const sync = async () => {
+    if (o.provider?.auth === "chatgpt" && o.provider.sync === true) {
+      try {
+        await syncTokens(o.provider, o.providerPaths);
+      } catch {
+        warnings.push("Account token sync failed; check cc-switch access and retry sync");
+      }
+    }
+  };
+  let result;
+  try {
+    if (o.provider?.auth === "chatgpt") prepareProviderHome(o.provider, o.providerPaths);
+    await sync();
+    result = await runCodexProcess(o);
+    return result;
+  } finally {
+    await sync();
+    if (result) result.warnings.push(...new Set(warnings));
+  }
+}
+function runCodexProcess(o) {
+  const secrets = new Set(providerSecrets(o.provider, o.providerPaths));
+  const refreshSecrets = () => {
+    if (o.provider?.auth === "chatgpt") {
+      try {
+        for (const s of providerSecrets(o.provider, o.providerPaths)) secrets.add(s);
+      } catch {
+      }
+    }
+  };
+  const redact = (s) => {
+    refreshSecrets();
+    for (const key of secrets) s = s.replaceAll(key, "[REDACTED]");
+    return s;
+  };
+  const redactLine = (s) => {
+    refreshSecrets();
+    if (!secrets.size) return s;
+    try {
+      JSON.parse(s);
+    } catch {
+      return redact(s);
+    }
+    for (const key of secrets) s = s.replaceAll(JSON.stringify(key).slice(1, -1), "[REDACTED]");
+    return s;
+  };
   const started = Date.now();
   const collector = new EventCollector();
-  const appServer = config2.engine === "app-server";
+  const appServer = config.engine === "app-server";
   return new Promise((resolve4) => {
-    const child = spawn2(config2.codex.cmd, [...config2.codex.args, ...appServer ? APP_SERVER_ARGS : buildArgs(o)], {
+    const child = spawn2(config.codex.cmd, [...config.codex.args, ...appServer ? [...APP_SERVER_ARGS, ...providerArgs(o.provider)] : buildArgs(o)], {
       cwd: o.cwd,
-      env: { ...process.env, ...o.env },
+      env: providerEnv(o.provider, o.env, o.providerPaths),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       // Own process group on POSIX so the whole tree can be signalled (see procs.ts).
@@ -37927,7 +38404,7 @@ function runCodex(o) {
     let exitTimer;
     const turn = appServer ? new AppServerTurn(child, o, {
       emit: (event) => {
-        const line = JSON.stringify(event);
+        const line = redactLine(JSON.stringify(event));
         log?.write(`${line}
 `);
         collector.push(line);
@@ -38005,12 +38482,12 @@ function runCodex(o) {
       exitTimer ??= setTimeout(kill, 5e3);
     };
     const command = () => [...collector.inflight.values()].find((it) => it.type === "command_execution");
-    const selection = () => commandThreshold(command()?.command ?? "", o.stall?.command_s ?? (o.idleTimeoutMs === void 0 ? config2.commandIdleTimeoutSec : o.idleTimeoutMs / 1e3), o.stall?.long_commands);
+    const selection = () => commandThreshold(command()?.command ?? "", o.stall?.command_s ?? (o.idleTimeoutMs === void 0 ? config.commandIdleTimeoutSec : o.idleTimeoutMs / 1e3), o.stall?.long_commands);
     const selectedRule = () => command() ? selection().matchedRule : void 0;
     const idleWindow = () => ({
       key: command()?.id ?? "silent",
       since: windowSince ?? collector.lastEventAt,
-      timeoutMs: (threshold ?? (command() ? selection().seconds : o.stall?.silent_s ?? (o.idleTimeoutMs === void 0 ? config2.idleTimeoutSec : o.idleTimeoutMs / 1e3))) * 1e3
+      timeoutMs: (threshold ?? (command() ? selection().seconds : o.stall?.silent_s ?? (o.idleTimeoutMs === void 0 ? config.idleTimeoutSec : o.idleTimeoutMs / 1e3))) * 1e3
     });
     const watchdog = softWatchdog(child.pid, idleWindow, (evidence) => {
       const it = command();
@@ -38034,7 +38511,7 @@ function runCodex(o) {
       watchdog.touch();
       progress();
     };
-    const hardIdle = config2.hardIdleTimeoutSec * 1e3;
+    const hardIdle = config.hardIdleTimeoutSec * 1e3;
     const orphanTimer = hardIdle > 0 ? setInterval(() => {
       if (suspicion && control?.background && !control.waiting && Date.now() - Math.max(collector.lastEventAt, control.lastObservedAt) >= hardIdle) {
         stall = suspicion;
@@ -38050,13 +38527,15 @@ function runCodex(o) {
     o.signal?.addEventListener("abort", cancel, { once: true });
     if (o.signal?.aborted) kill();
     child.stdout.setEncoding("utf8").on("data", (chunk) => {
-      if (!turn) log?.write(chunk);
+      if (!turn && !secrets.size) log?.write(chunk);
       buf += chunk;
       let i;
       let sawLine = false;
       while ((i = buf.indexOf("\n")) >= 0) {
         sawLine = true;
-        const line = buf.slice(0, i);
+        const line = redactLine(buf.slice(0, i));
+        if (!turn && secrets.size) log?.write(`${line}
+`);
         if (turn) turn.line(line);
         else collector.push(line);
         buf = buf.slice(i + 1);
@@ -38077,7 +38556,12 @@ function runCodex(o) {
       watchdog.dispose();
       o.signal?.removeEventListener("abort", cancel);
       if (timer) clearTimeout(timer);
-      if (buf) turn ? turn.line(buf) : collector.push(buf);
+      if (buf) {
+        const line = redactLine(buf);
+        if (!turn && secrets.size) log?.write(line);
+        turn ? turn.line(line) : collector.push(line);
+      }
+      stderr = redact(stderr);
       if (turn) turn.finished = true;
       progress();
       announce();
@@ -38087,7 +38571,7 @@ ${stderr}
 `);
       log?.end();
       const errors = [...collector.errors];
-      if (spawnError) errors.push(spawnError);
+      if (spawnError) errors.push(redact(spawnError));
       if (timedOut) errors.push(`timed out after ${Math.round((o.timeoutMs ?? 0) / 1e3)}s`);
       else if (o.signal?.aborted) errors.push("cancelled");
       if (stall) errors.push(`stalled: no codex output for ${Math.round(stall.idleMs / 6e4)}m${stall.command ? ` while running: ${stall.command.slice(0, 200)}` : " (model silent)"}`);
@@ -38095,6 +38579,13 @@ ${stderr}
       const exitKind = timedOut ? "timeout" : stall ? "stalled" : o.signal?.aborted ? "cancelled" : spawnError ? "crashed" : collector.errors.length ? "api_error" : exitCode !== 0 && !turn || !collector.turns ? "crashed" : "completed";
       if (exitKind === "crashed" && !errors.length) errors.push(stderrTail() || "codex exited without turn.completed");
       const error62 = errors.join("; ") || void 0;
+      const final = readFinal(o.lastMessageFile);
+      if (final && o.lastMessageFile && redactLine(final) !== final) {
+        try {
+          writeFileSync5(o.lastMessageFile, redactLine(final));
+        } catch {
+        }
+      }
       resolve4({
         denials: collector.denials,
         commands: collector.commands,
@@ -38108,7 +38599,7 @@ ${stderr}
         stalled: !!stall,
         stall,
         sessionId: collector.sessionId,
-        text: readFinal(o.lastMessageFile) ?? collector.finalText,
+        text: final ? redactLine(final) : redact(collector.finalText),
         logFile: o.logFile,
         toolCalls: collector.toolCalls,
         fileChanges: collector.fileChanges,
@@ -38121,7 +38612,7 @@ ${stderr}
         durationMs: Date.now() - started
       });
     };
-    child.on("error", (err) => finish(null, `failed to start '${[config2.codex.cmd, ...config2.codex.args].join(" ")}': ${err.message}`));
+    child.on("error", (err) => finish(null, `failed to start '${[config.codex.cmd, ...config.codex.args].join(" ")}': ${err.message}`));
     child.on("close", (code) => finish(code));
   });
 }
@@ -38129,7 +38620,7 @@ ${stderr}
 // src/git.ts
 import { spawn as spawn3 } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
-import { join as join5 } from "node:path";
+import { join as join7 } from "node:path";
 function parsePorcelainZ(out) {
   const parts = out.split("\0");
   const entries2 = [];
@@ -38175,7 +38666,7 @@ async function snapshot(cwd) {
   await Promise.all(Array.from({ length: Math.min(64, entries2.length) }, async () => {
     while (next < entries2.length) {
       const i = next++;
-      fingerprints[i] = await fingerprint(join5(cwd, entries2[i].path));
+      fingerprints[i] = await fingerprint(join7(cwd, entries2[i].path));
     }
   }));
   for (const [i, e] of entries2.entries()) snap.set(e.path, { xy: e.xy, hash: fingerprints[i] });
@@ -38211,7 +38702,7 @@ async function diffStat(cwd, changes) {
   async function fileStat(c) {
     if (c.xy === "??") {
       try {
-        const file2 = join5(cwd, c.path);
+        const file2 = join7(cwd, c.path);
         if ((await stat(file2)).size > MAX_COUNT_BYTES) return { ...c };
         const buf = await readFile(file2);
         if (buf.includes(0)) return { ...c, binary: true };
@@ -38226,12 +38717,12 @@ async function diffStat(cwd, changes) {
 }
 
 // src/models.ts
-import { readFileSync as readFileSync6 } from "node:fs";
-import { join as join6 } from "node:path";
-function listModels(path = join6(config2.codexHome, "models_cache.json")) {
+import { readFileSync as readFileSync7 } from "node:fs";
+import { join as join8 } from "node:path";
+function listModels(path = join8(config.codexHome, "models_cache.json")) {
   let data;
   try {
-    data = JSON.parse(readFileSync6(path, "utf8"));
+    data = JSON.parse(readFileSync7(path, "utf8"));
   } catch {
     return [];
   }
@@ -38291,7 +38782,7 @@ function resolveModelOrThrow(query) {
 }
 
 // src/policy.ts
-import { mkdirSync, readFileSync as readFileSync7, renameSync, writeFileSync as writeFileSync4 } from "node:fs";
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync8, renameSync as renameSync2, writeFileSync as writeFileSync6 } from "node:fs";
 var DEFAULT_POLICY = {
   sandboxWrites: false,
   retention: { cmdLogMaxMB: 5, failedLogDays: 3, runDays: 30, totalMaxMB: 1024 },
@@ -38360,26 +38851,28 @@ function validatePolicy(input2, models = listModels()) {
     const id = str(t?.id)?.toLowerCase() ?? "";
     if (!TIER_ID.test(id)) return { ok: false, error: `tier id '${id}' must be 1-24 of a-z, 0-9, '-', '_'` };
     if (tiers.some((x) => x.id === id)) return { ok: false, error: `duplicate tier id '${id}'` };
+    const provider = t.provider;
+    if (provider !== void 0 && (typeof provider !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(provider))) return { ok: false, error: `tier provider must be an id or system` };
     const model2 = str(t.model) || void 0;
     if (model2 && !SLUG.test(model2)) return { ok: false, error: `tier '${id}': invalid model slug '${model2}'` };
     const effort = str(t.effort)?.toLowerCase() ?? "";
     if (!EFFORT_ORDER.includes(effort)) return { ok: false, error: `tier '${id}': unknown effort '${effort}' (known: ${EFFORT_ORDER.join(", ")})` };
     const use = str(t.use) ?? "";
     if (!use || use.length > 500) return { ok: false, error: `tier '${id}': 'use' must be 1-500 characters` };
-    const effective = model2 ?? config2.defaultModel ?? configuredModel();
+    const effective = model2 ?? config.defaultModel ?? configuredModel();
     if (model2 && allowed.length && !allowed.includes(model2)) return { ok: false, error: `tier '${id}': model '${model2}' is not in the allowed models` };
     const info = models.find((m) => m.slug === effective);
     if (info?.efforts.length && !info.efforts.includes(effort)) {
       return { ok: false, error: `tier '${id}': ${info.slug} does not support effort '${effort}' (supported: ${info.efforts.join(", ")})` };
     }
-    tiers.push({ id, ...model2 ? { model: model2 } : {}, effort, use });
+    tiers.push({ id, ...provider ? { provider } : {}, ...model2 ? { model: model2 } : {}, effort, use });
   }
   return { ok: true, policy: { sandboxWrites: raw.sandboxWrites, retention, guidance, codexGuidance, tiers, models: allowed, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
 }
-function loadPolicy(file2 = config2.policyFile) {
+function loadPolicy(file2 = config.policyFile) {
   let text2;
   try {
-    text2 = readFileSync7(file2, "utf8");
+    text2 = readFileSync8(file2, "utf8");
   } catch {
     return { policy: DEFAULT_POLICY };
   }
@@ -38394,18 +38887,18 @@ function loadPolicy(file2 = config2.policyFile) {
 }
 var findTier = (policy, id) => id ? policy.tiers.find((t) => t.id === id.toLowerCase()) : void 0;
 function tierLabel(t) {
-  const dflt = config2.defaultModel ?? configuredModel();
+  const dflt = config.defaultModel ?? configuredModel();
   return `${t.model ?? (dflt ? dflt : "codex default")}#${t.effort}`;
 }
 
 // src/checkpoints.ts
-import { readdirSync as readdirSync3, readFileSync as readFileSync8, statSync } from "node:fs";
-import { join as join7 } from "node:path";
+import { readdirSync as readdirSync4, readFileSync as readFileSync9, statSync as statSync3 } from "node:fs";
+import { join as join9 } from "node:path";
 var MAX_CHECKPOINT_CHARS = 2500;
 function checkpointContract(runDir) {
   return `
 
-Checkpoints (requested by the lead): this is a longer task, and the lead wants to review direction while you work. At each point below, write a short stage report to ${join7(runDir, "checkpoint-<n>.md")} (n = 1, 2, 3 \u2026, a new file each time, written in one go), then KEEP WORKING; do not wait for an answer. If the lead changes direction, the new instruction arrives as a user message in this conversation.
+Checkpoints (requested by the lead): this is a longer task, and the lead wants to review direction while you work. At each point below, write a short stage report to ${join9(runDir, "checkpoint-<n>.md")} (n = 1, 2, 3 \u2026, a new file each time, written in one go), then KEEP WORKING; do not wait for an answer. If the lead changes direction, the new instruction arrives as a user message in this conversation.
 Write one when:
 - investigation is done and you are about to implement: what you found, the approach you chose, the alternatives you rejected;
 - you find something that contradicts the brief or changes its scope (an assumption is wrong, the fix belongs elsewhere, much more work than expected);
@@ -38421,7 +38914,7 @@ If a choice is genuinely the lead's (product, scope, risk) and continuing would 
 function scanCheckpoints(runDir, seen = /* @__PURE__ */ new Set(), now = Date.now()) {
   let names;
   try {
-    names = readdirSync3(runDir);
+    names = readdirSync4(runDir);
   } catch {
     return [];
   }
@@ -38429,11 +38922,11 @@ function scanCheckpoints(runDir, seen = /* @__PURE__ */ new Set(), now = Date.no
   for (const name of names) {
     const n = Number(/^checkpoint-(\d+)\.md$/i.exec(name)?.[1]);
     if (!Number.isInteger(n) || seen.has(n)) continue;
-    const file2 = join7(runDir, name);
+    const file2 = join9(runDir, name);
     try {
-      const st = statSync(file2);
+      const st = statSync3(file2);
       if (!st.size || now - st.mtimeMs < 1e3) continue;
-      const text2 = readFileSync8(file2, "utf8").trim();
+      const text2 = readFileSync9(file2, "utf8").trim();
       const title = text2.split(/\r?\n/).find((l) => l.trim())?.replace(/^#+\s*/, "").slice(0, 120) ?? `checkpoint ${n}`;
       found.push({ n, file: file2, at: st.mtimeMs, title, text: text2 });
     } catch {
@@ -38449,12 +38942,12 @@ ${body}`;
 }
 
 // src/pending.ts
-import { createHash } from "node:crypto";
-import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync9, rmSync as rmSync2, writeFileSync as writeFileSync5 } from "node:fs";
-import { join as join8 } from "node:path";
+import { createHash as createHash2 } from "node:crypto";
+import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync10, rmSync as rmSync3, writeFileSync as writeFileSync7 } from "node:fs";
+import { join as join10 } from "node:path";
 var MAX_AGE_MS = 24 * 3600 * 1e3;
-var dir = () => join8(config2.runsDir, "pending");
-var fileFor = (cwd) => join8(dir(), `${createHash("sha1").update(cwd.toLowerCase()).digest("hex").slice(0, 16)}.json`);
+var dir = () => join10(config.runsDir, "pending");
+var fileFor = (cwd) => join10(dir(), `${createHash2("sha1").update(cwd.toLowerCase()).digest("hex").slice(0, 16)}.json`);
 function alive3(pid) {
   if (pid === process.pid) return true;
   try {
@@ -38466,8 +38959,8 @@ function alive3(pid) {
 }
 function savePending(rec) {
   try {
-    mkdirSync2(dir(), { recursive: true });
-    writeFileSync5(fileFor(rec.cwd), JSON.stringify(rec, null, 2));
+    mkdirSync3(dir(), { recursive: true });
+    writeFileSync7(fileFor(rec.cwd), JSON.stringify(rec, null, 2));
   } catch {
   }
 }
@@ -38475,26 +38968,26 @@ function clearPending(cwd, owner) {
   const f = fileFor(cwd);
   try {
     if (owner) {
-      if (!existsSync4(f)) return;
-      const cur = JSON.parse(readFileSync9(f, "utf8"));
+      if (!existsSync5(f)) return;
+      const cur = JSON.parse(readFileSync10(f, "utf8"));
       if (cur.pid !== owner.pid || cur.startedAt !== owner.startedAt) return;
     }
-    rmSync2(f, { force: true });
+    rmSync3(f, { force: true });
   } catch {
   }
 }
 function loadPending(cwd) {
   const f = fileFor(cwd);
-  if (!existsSync4(f)) return void 0;
+  if (!existsSync5(f)) return void 0;
   let rec;
   try {
-    rec = JSON.parse(readFileSync9(f, "utf8"));
+    rec = JSON.parse(readFileSync10(f, "utf8"));
   } catch {
     return void 0;
   }
   if (rec.cwd.toLowerCase() !== cwd.toLowerCase()) return void 0;
   if (rec.state === "running") {
-    const stale = Date.now() - rec.startedAt > (config2.timeoutSec + 300) * 1e3;
+    const stale = Date.now() - rec.startedAt > (config.timeoutSec + 300) * 1e3;
     if (!stale && (rec.pid === process.pid || alive3(rec.pid))) return void 0;
     if (rec.codexPid) killOrphan(rec.codexPid);
     rec.state = "interrupted";
@@ -38586,7 +39079,7 @@ function renderReport(r) {
 // package.json
 var package_default = {
   name: "claude-codex-delegate",
-  version: "0.10.1",
+  version: "0.11.0",
   description: "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna\u2026) while staying the orchestrator.",
   type: "module",
   license: "MIT",
@@ -38621,20 +39114,20 @@ var version3 = package_default.version;
 // src/delegate.ts
 function newRunDir() {
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
-  const dir2 = resolve(config2.runsDir, `${stamp}-${randomUUID2().slice(0, 6)}`);
+  const dir2 = resolve2(config.runsDir, `${stamp}-${randomUUID3().slice(0, 6)}`);
   try {
-    mkdirSync3(dir2, { recursive: true });
+    mkdirSync4(dir2, { recursive: true });
     return dir2;
   } catch {
     return void 0;
   }
 }
 async function delegate(input2, signal, onProgress, stallControl) {
-  const cwd = resolve(config2.defaultCwd, input2.cwd ?? ".");
-  if (!existsSync5(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
-  const auto = input2.auto ?? config2.auto;
+  const cwd = resolve2(config.defaultCwd, input2.cwd ?? ".");
+  if (!existsSync6(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
+  const auto = input2.auto ?? config.auto;
   const { policy, error: policyError } = loadPolicy();
-  const sandbox2 = effectiveSandbox(input2.sandbox, auto && config2.sandbox !== "read-only", policy.sandboxWrites);
+  const sandbox2 = effectiveSandbox(input2.sandbox, auto && config.sandbox !== "read-only", policy.sandboxWrites);
   const readOnly = sandbox2 === "read-only";
   const notes = [];
   const lockKey = cwd.toLowerCase();
@@ -38650,26 +39143,29 @@ async function delegate(input2, signal, onProgress, stallControl) {
   if (continued && !input2.session_id) input2 = { ...input2, session_id: continued.sessionId };
   if (policyError) notes.push(policyError);
   const tier = findTier(policy, input2.effort);
-  const query = input2.model ?? tier?.model ?? (input2.session_id ? void 0 : auto ? config2.defaultModel : config2.readModel);
+  const doc = (input2.provider ?? tier?.provider) === "system" && (!input2.session_id || input2.provider === "system") ? { defaultProvider: null, providers: [] } : loadProviders();
+  const resumedProvider = input2.session_id && input2.provider === void 0 ? sessionProvider(input2.session_id, doc) : void 0;
+  const provider = resumedProvider ?? ((input2.provider ?? tier?.provider) === "system" ? void 0 : selectProvider(doc, input2.provider, tier?.provider));
+  const query = selectModel(input2.model, provider, tier?.model, input2.session_id ? void 0 : auto ? config.defaultModel : config.readModel);
   let model2;
-  let effort = tier?.effort ?? input2.effort ?? (readOnly ? config2.readEffort : config2.writeEffort);
+  let effort = (tier ? void 0 : input2.effort) ?? provider?.effort ?? tier?.effort ?? (readOnly ? config.readEffort : config.writeEffort);
   if (query) {
     const r = resolveModelOrThrow(query);
     model2 = r.model;
-    if (r.effort && !input2.effort) effort = r.effort;
+    if (r.effort && !input2.effort && !provider?.effort) effort = r.effort;
     if (!r.known) notes.push(`'${r.model}' is not in codex's model cache; passed through as-is`);
   }
   if (model2 && policy.models.length && !policy.models.includes(model2)) {
     throw new Error(`model '${model2}' is not allowed by the delegation policy (allowed: ${policy.models.join(", ")}); pick a tier instead`);
   }
-  const clamped = tier ? effort : clampEffort(effort, config2.efforts);
+  const clamped = tier ? effort : clampEffort(effort, config.efforts);
   if (clamped !== effort) {
-    notes.push(`effort '${effort}' is outside the allowed range (${config2.efforts.join(", ")}); used '${clamped}'`);
+    notes.push(`effort '${effort}' is outside the allowed range (${config.efforts.join(", ")}); used '${clamped}'`);
     effort = clamped;
   }
-  const fast = input2.fast ?? config2.fast;
-  const images = input2.images?.map((f) => isAbsolute(f) ? f : resolve(cwd, f));
-  const structured = !readOnly && (input2.structured ?? config2.structured);
+  const fast = input2.fast ?? config.fast;
+  const images = input2.images?.map((f) => isAbsolute(f) ? f : resolve2(cwd, f));
+  const structured = !readOnly && (input2.structured ?? config.structured);
   let release = () => {
   };
   if (!readOnly) {
@@ -38677,10 +39173,10 @@ async function delegate(input2, signal, onProgress, stallControl) {
     activeWriters.set(lockKey, { signal, done });
   }
   try {
-    const run = { cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, fast, images, structured, notes, continued };
+    const run = { provider, cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, fast, images, structured, notes, continued };
     const stall = {
-      silent_s: input2.stall?.silent_s ?? input2.idle_timeout_s ?? policy.stall?.silent_s ?? config2.idleTimeoutSec,
-      command_s: input2.stall?.command_s ?? input2.idle_timeout_s ?? policy.stall?.command_s ?? config2.commandIdleTimeoutSec,
+      silent_s: input2.stall?.silent_s ?? input2.idle_timeout_s ?? policy.stall?.silent_s ?? config.idleTimeoutSec,
+      command_s: input2.stall?.command_s ?? input2.idle_timeout_s ?? policy.stall?.command_s ?? config.commandIdleTimeoutSec,
       long_commands: [...input2.stall?.long_commands ?? [], ...policy.stall?.long_commands ?? []]
     };
     return await execute({ ...input2, stall }, run, signal, onProgress, stallControl);
@@ -38700,6 +39196,7 @@ async function execute(input2, r, signal, onProgress, stallControl) {
     state: "running",
     title: input2.title,
     cwd,
+    provider: r.provider?.id ?? "system",
     model: model2,
     effort,
     tier,
@@ -38711,13 +39208,13 @@ async function execute(input2, r, signal, onProgress, stallControl) {
     prompt: input2.prompt.slice(0, 2e3),
     version: version3,
     phase: "codex",
-    engine: config2.engine,
+    engine: config.engine,
     pid: process.pid,
     heartbeatAt: Date.now(),
     lastEventAt: Date.now(),
-    idleTimeoutSec: input2.stall?.silent_s ?? config2.idleTimeoutSec,
-    commandIdleTimeoutSec: input2.stall?.command_s ?? config2.commandIdleTimeoutSec,
-    checkIdleTimeoutSec: config2.checkIdleTimeoutSec,
+    idleTimeoutSec: input2.stall?.silent_s ?? config.idleTimeoutSec,
+    commandIdleTimeoutSec: input2.stall?.command_s ?? config.commandIdleTimeoutSec,
+    checkIdleTimeoutSec: config.checkIdleTimeoutSec,
     stallPolicy: input2.stall
   };
   let lastWrite = 0;
@@ -38731,7 +39228,7 @@ async function execute(input2, r, signal, onProgress, stallControl) {
     lastSnapshot = serialized;
     lastWrite = Date.now();
     try {
-      if (runDir) writeFileSync6(join9(runDir, "meta.json"), serialized);
+      if (runDir) writeFileSync8(join11(runDir, "meta.json"), serialized);
     } catch {
     }
   };
@@ -38785,11 +39282,11 @@ async function execute(input2, r, signal, onProgress, stallControl) {
     progress();
     writeMeta();
   };
-  const checkpointTimer = setInterval(pollCheckpoints, config2.checkpointPollMs);
+  const checkpointTimer = setInterval(pollCheckpoints, config.checkpointPollMs);
   checkpointTimer.unref();
   try {
-    let prompt = previousDiagnosis(config2.runsDir, input2.session_id) + (continued ? continuationPreamble(continued) : "") + input2.prompt;
-    if (config2.contract) prompt += readOnly ? READ_CONTRACT : WRITE_CONTRACT;
+    let prompt = previousDiagnosis(config.runsDir, input2.session_id) + (continued ? continuationPreamble(continued) : "") + input2.prompt;
+    if (config.contract) prompt += readOnly ? READ_CONTRACT : WRITE_CONTRACT;
     if (codexGuidance) prompt += `
 
 ${codexGuidance}`;
@@ -38802,18 +39299,18 @@ ${codexGuidance}`;
 Long commands (added by the server): run every command likely to take longer than ~1 minute through the launcher, with a new n per command (1, 2, 3 \u2026):
   node "${launcher}" "${runDir}" run <n> -- <program> <args\u2026>
   node "${launcher}" "${runDir}" run <n> "<one shell command string, for pipes/redirects>"
-It streams the output, blocks until the command ends and exits with its exit code, so use it exactly like running the command directly (one blocking call; fine under any long-script rules you follow). It also writes ${join9(runDir, "cmd-<n>.log")} ending in EXIT=<code>, and keeps the command alive if your turn is interrupted, so the lead can talk to you without killing the job. Don't wrap it in tee. Absolute run directory: ${runDir}.`;
+It streams the output, blocks until the command ends and exits with its exit code, so use it exactly like running the command directly (one blocking call; fine under any long-script rules you follow). It also writes ${join11(runDir, "cmd-<n>.log")} ending in EXIT=<code>, and keeps the command alive if your turn is interrupted, so the lead can talk to you without killing the job. Don't wrap it in tee. Absolute run directory: ${runDir}.`;
     } else if (runDir) {
       prompt += `
 
-Command logs (added by the server): for commands likely to run longer than ~1 minute, tee output to ${join9(runDir, "cmd-<n>.log")} (use a new n per command). Absolute run directory: ${runDir}.`;
+Command logs (added by the server): for commands likely to run longer than ~1 minute, tee output to ${join11(runDir, "cmd-<n>.log")} (use a new n per command). Absolute run directory: ${runDir}.`;
     }
     let outputSchemaFile;
     if (runDir) {
-      writeFileSync6(join9(runDir, "prompt.md"), prompt);
+      writeFileSync8(join11(runDir, "prompt.md"), prompt);
       if (structured) {
-        outputSchemaFile = join9(runDir, "report.schema.json");
-        writeFileSync6(outputSchemaFile, JSON.stringify(REPORT_SCHEMA, null, 2));
+        outputSchemaFile = join11(runDir, "report.schema.json");
+        writeFileSync8(outputSchemaFile, JSON.stringify(REPORT_SCHEMA, null, 2));
       }
     }
     const rec = readOnly ? void 0 : {
@@ -38831,10 +39328,11 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
     };
     if (rec) savePending(rec);
     const before = await snapshot(cwd);
-    const tempDir = runDir && sandbox2 === "workspace-write" ? join9(runDir, "tmp") : void 0;
-    if (tempDir) mkdirSync3(tempDir, { recursive: true });
+    const tempDir = runDir && sandbox2 === "workspace-write" ? join11(runDir, "tmp") : void 0;
+    if (tempDir) mkdirSync4(tempDir, { recursive: true });
     const result = await runCodex({
-      addDirs: [...runDir ? [runDir] : [], ...(input2.add_dirs ?? []).map((dir2) => resolve(cwd, dir2))],
+      provider: r.provider,
+      addDirs: [...runDir ? [runDir] : [], ...(input2.add_dirs ?? []).map((dir2) => resolve2(cwd, dir2))],
       env: tempDir ? { TEMP: tempDir, TMP: tempDir } : void 0,
       onSpawn: (pid) => {
         meta3.codexPid = pid;
@@ -38880,12 +39378,12 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
       sessionId: input2.session_id,
       fork: input2.fork,
       sandbox: sandbox2,
-      timeoutMs: (input2.timeout_s ?? config2.timeoutSec) * 1e3,
+      timeoutMs: (input2.timeout_s ?? config.timeoutSec) * 1e3,
       idleTimeoutMs: input2.idle_timeout_s === void 0 ? void 0 : input2.idle_timeout_s * 1e3,
       signal,
-      lastMessageFile: runDir && join9(runDir, "last-message.txt"),
+      lastMessageFile: runDir && join11(runDir, "last-message.txt"),
       outputSchemaFile,
-      logFile: runDir && join9(runDir, "events.jsonl"),
+      logFile: runDir && join11(runDir, "events.jsonl"),
       runDir
     });
     if (runDir) {
@@ -38930,7 +39428,7 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
       meta3.checksStartedAt = Date.now();
       meta3.checks = [];
       progress();
-      checks = await runChecks(input2.checks, cwd, config2.checkTimeoutSec * 1e3, signal, {
+      checks = await runChecks(input2.checks, cwd, config.checkTimeoutSec * 1e3, signal, {
         onProgress: ({ command, startedAt, lastOutputAt, result: result2 }) => {
           const records = meta3.checks;
           if (!records.length || records.at(-1).state !== "running") records.push({ command, startedAt, state: "running" });
@@ -38972,7 +39470,7 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
       } catch {
       }
       try {
-        rmSync3(join9(runDir, "tmp"), { recursive: true, force: true });
+        rmSync4(join11(runDir, "tmp"), { recursive: true, force: true });
       } catch {
       }
     }
@@ -39082,89 +39580,27 @@ ${seen.map((p) => `  ${p}`).join("\n")}`);
   }
   if (o.checks?.length) lines.push(renderChecks(o.checks));
   if (!o.report) {
-    const where = o.runDir && join9(o.runDir, "last-message.txt");
-    lines.push("--- response ---", truncate(r.text || "(no text output)", config2.maxOutputChars, where));
+    const where = o.runDir && join11(o.runDir, "last-message.txt");
+    lines.push("--- response ---", truncate(r.text || "(no text output)", config.maxOutputChars, where));
   }
   if (o.runDir) lines.push(`run log: ${o.runDir}`);
   return [denialBlock(r.denials), ...lines].filter(Boolean).join("\n");
 }
 
 // src/index.ts
-import { watchFile } from "node:fs";
-
-// src/sessions.ts
-import { closeSync as closeSync2, openSync as openSync2, readdirSync as readdirSync4, readSync as readSync2, statSync as statSync2 } from "node:fs";
-import { join as join10, resolve as resolve2 } from "node:path";
-var HEAD_BYTES = 512 * 1024;
-function readHead(file2) {
-  const fd = openSync2(file2, "r");
-  try {
-    const buf = Buffer.alloc(HEAD_BYTES);
-    const n = readSync2(fd, buf, 0, HEAD_BYTES, 0);
-    return buf.subarray(0, n).toString("utf8");
-  } finally {
-    closeSync2(fd);
-  }
-}
-function firstPrompt(lines) {
-  for (const line of lines) {
-    if (!line.includes('"role":"user"')) continue;
-    try {
-      const p = JSON.parse(line).payload;
-      if (p?.type !== "message" || p.role !== "user") continue;
-      const text2 = (p.content ?? []).map((c) => c?.text ?? "").join(" ").trim();
-      if (text2 && !text2.startsWith("#") && !text2.startsWith("<")) return text2;
-    } catch {
-    }
-  }
-  return void 0;
-}
-function parseRollout(head, file2) {
-  const lines = head.split("\n");
-  try {
-    const first = JSON.parse(lines[0] ?? "");
-    if (first.type !== "session_meta") return void 0;
-    const p = first.payload ?? {};
-    return { id: p.id, cwd: p.cwd, timestamp: p.timestamp, prompt: firstPrompt(lines.slice(1)), file: file2 };
-  } catch {
-    return void 0;
-  }
-}
-function* rollouts(dir2) {
-  let entries2;
-  try {
-    entries2 = readdirSync4(dir2).sort().reverse();
-  } catch {
-    return;
-  }
-  for (const e of entries2) {
-    const p = join10(dir2, e);
-    if (e.startsWith("rollout-") && e.endsWith(".jsonl")) yield p;
-    else if (statSync2(p).isDirectory()) yield* rollouts(p);
-  }
-}
-function listSessions(cwd, limit, root = join10(config2.codexHome, "sessions")) {
-  const want = resolve2(cwd);
-  const out = [];
-  for (const file2 of rollouts(root)) {
-    const s = parseRollout(readHead(file2), file2);
-    if (s && resolve2(s.cwd ?? "") === want) out.push(s);
-    if (out.length >= limit) break;
-  }
-  return out;
-}
+import { watchFile as watchFile2 } from "node:fs";
 
 // src/tasks.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
-import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync10, writeFileSync as writeFileSync7 } from "node:fs";
-import { join as join11 } from "node:path";
+import { randomUUID as randomUUID4 } from "node:crypto";
+import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync11, writeFileSync as writeFileSync9 } from "node:fs";
+import { join as join12 } from "node:path";
 var MAX_FINISHED = 100;
 var tasks = /* @__PURE__ */ new Map();
-var tasksDir = () => join11(config2.runsDir, "tasks");
-var taskFile = (id) => join11(tasksDir(), `${id.replace(/[^\w-]/g, "")}.json`);
+var tasksDir = () => join12(config.runsDir, "tasks");
+var taskFile = (id) => join12(tasksDir(), `${id.replace(/[^\w-]/g, "")}.json`);
 function store(t) {
   try {
-    mkdirSync4(tasksDir(), { recursive: true });
+    mkdirSync5(tasksDir(), { recursive: true });
     const text2 = t.outcome ? formatOutcome(t.outcome) : t.error && `error: ${t.error}`;
     const rec = {
       id: t.id,
@@ -39175,15 +39611,15 @@ function store(t) {
       text: text2,
       sessionId: t.outcome?.result.sessionId ?? t.progress?.sessionId
     };
-    writeFileSync7(taskFile(t.id), JSON.stringify(rec));
+    writeFileSync9(taskFile(t.id), JSON.stringify(rec));
   } catch {
   }
 }
 function storedTask(id) {
   const f = taskFile(id);
-  if (!existsSync6(f)) return void 0;
+  if (!existsSync7(f)) return void 0;
   try {
-    const rec = JSON.parse(readFileSync10(f, "utf8"));
+    const rec = JSON.parse(readFileSync11(f, "utf8"));
     if (rec.status === "running") rec.status = "interrupted";
     return rec;
   } catch {
@@ -39196,7 +39632,7 @@ function prune() {
 }
 function startTask(input2, background = true, evidenceSampler) {
   const controller = new AbortController();
-  const task = { id: `task_${randomUUID3().slice(0, 8)}`, input: input2, status: "running", startedAt: Date.now(), controller, control: { evidenceSampler, background, lastObservedAt: Date.now() }, listeners: /* @__PURE__ */ new Set() };
+  const task = { id: `task_${randomUUID4().slice(0, 8)}`, input: input2, status: "running", startedAt: Date.now(), controller, control: { evidenceSampler, background, lastObservedAt: Date.now() }, listeners: /* @__PURE__ */ new Set() };
   task.promise = delegate(input2, controller.signal, (info) => {
     const first = info.sessionId && !task.progress?.sessionId;
     task.progress = info;
@@ -39251,9 +39687,9 @@ function formatSuspicion(task) {
     `inflight: ${s.command?.replace(/\s+/g, " ").slice(0, 300) ?? "(model silent)"}; idle: ${((Date.now() - (p.lastEventAt ?? task.startedAt)) / 1e3).toFixed(0)}s`,
     `threshold: ${s.thresholdSec}s; wakes: ${s.wakes}${s.matchedRule ? `; rule: ${s.matchedRule}` : ""}`,
     `evidence: ${JSON.stringify(s.evidence)}`,
-    logReport(join11(config2.runsDir, p.id)),
+    logReport(join12(config.runsDir, p.id)),
     trendReport(p.trend),
-    s.command ? baseline(config2.runsDir, s.command, p.id) : ""
+    s.command ? baseline(config.runsDir, s.command, p.id) : ""
   ].filter(Boolean).join("\n");
 }
 function newCheckpoints(task) {
@@ -39263,7 +39699,7 @@ function formatCheckpoints(task) {
   const fresh = newCheckpoints(task);
   task.shownCheckpoints = task.progress?.checkpoints?.length ?? 0;
   const p = task.progress;
-  const dir2 = join11(config2.runsDir, p.id);
+  const dir2 = join12(config.runsDir, p.id);
   const steer = task.control.live ? "direction should change \u2192 task_steer(task_id, prompt) (now: true makes codex read it at once; a long command it started keeps running unless you also pass kill: true)" : "direction should change \u2192 task_cancel, then delegate(session_id) with the new direction (this engine cannot steer)";
   return [
     "status: checkpoint (codex is still working; nothing was stopped)",
@@ -39273,7 +39709,7 @@ function formatCheckpoints(task) {
     `elapsed: ${((Date.now() - task.startedAt) / 1e3).toFixed(0)}s`,
     ...fresh.map((c) => {
       try {
-        return renderCheckpoint({ ...c, file: join11(dir2, `checkpoint-${c.n}.md`), text: readFileSync10(join11(dir2, `checkpoint-${c.n}.md`), "utf8").trim() });
+        return renderCheckpoint({ ...c, file: join12(dir2, `checkpoint-${c.n}.md`), text: readFileSync11(join12(dir2, `checkpoint-${c.n}.md`), "utf8").trim() });
       } catch {
         return `--- checkpoint ${c.n}: ${c.title} (file unreadable) ---`;
       }
@@ -39352,9 +39788,9 @@ async function steerTask(task, prompt, now = false, waitMs, kill = false) {
 async function inspectTask(task) {
   const p = task.progress;
   if (!p) return `task_id: ${task.id}; ${task.status}; evidence unavailable`;
-  const dir2 = join11(config2.runsDir, p.id);
+  const dir2 = join12(config.runsDir, p.id);
   const sample = task.status === "running" && p.codexPid ? await sampleTreeEvidence(p.codexPid, new AbortController().signal) : void 0;
-  const events = tailFile(join11(dir2, "events.jsonl"), 16e3).trim().split(/\r?\n/).slice(-5).map((line) => {
+  const events = tailFile(join12(dir2, "events.jsonl"), 16e3).trim().split(/\r?\n/).slice(-5).map((line) => {
     try {
       const e = JSON.parse(line);
       return `${e.type}: ${e.item?.command ?? e.item?.text ?? e.item?.type ?? e.message ?? ""}`.slice(0, 120);
@@ -39378,7 +39814,7 @@ ${events.join("\n")}`,
 installExitCleanup();
 var cleanup = () => {
   try {
-    cleanupRuns(config2.runsDir, loadPolicy().policy.retention);
+    cleanupRuns(config.runsDir, loadPolicy().policy.retention);
   } catch (e) {
     console.error(`codex-delegate cleanup: ${e}`);
   }
@@ -39404,11 +39840,12 @@ var delegateShape = {
   prompt: external_exports.string().min(1).describe(
     "Complete, self-contained task for the Codex model. It cannot see this conversation: include goal, relevant files/paths, constraints, and acceptance criteria."
   ),
+  provider: external_exports.string().optional().describe("Provider id from ~/.codex-delegate/providers.json, or system to force the system Codex configuration. Precedence: call > tier provider > defaultProvider > system. Explicit model wins; otherwise provider.model overrides the tier model."),
   model: external_exports.string().optional().describe(
-    `Codex model: exact slug (e.g. 'gpt-6-sol') or a loose name ('sol 6', 'gpt 6 luna', '5.6 terra'). Omit to use the default: ${config2.defaultModel ?? `the model in ~/.codex/config.toml${configuredModel() ? ` (${configuredModel()})` : ""}`}. On a follow-up (session_id) omitting it keeps the session's model.`
+    `Codex model: exact slug (e.g. 'gpt-6-sol') or a loose name ('sol 6', 'gpt 6 luna', '5.6 terra'). Omit to use the default: ${config.defaultModel ?? `the model in ~/.codex/config.toml${configuredModel() ? ` (${configuredModel()})` : ""}`}. On a follow-up (session_id) omitting it keeps the session's model.`
   ),
   effort: effortParam(loadPolicy().policy),
-  fast: external_exports.boolean().optional().describe(`Fast service tier (priority): faster responses, higher usage. false forces the normal tier. Default: ${config2.fast ?? "service_tier from ~/.codex/config.toml"}.`),
+  fast: external_exports.boolean().optional().describe(`Fast service tier (priority): faster responses, higher usage. false forces the normal tier. Default: ${config.fast ?? "service_tier from ~/.codex/config.toml"}.`),
   cwd: external_exports.string().optional().describe("Working directory for the task (absolute, or relative to the server's cwd). Defaults to the current project."),
   images: external_exports.array(external_exports.string()).optional().describe("Image files to attach to the prompt (screenshots, mockups)."),
   session_id: external_exports.string().optional().describe("Continue an existing Codex session (returned by a previous call) for follow-ups."),
@@ -39418,7 +39855,7 @@ var delegateShape = {
     external_exports.enum(["read-only", "write"]).optional()
   ).meta({ type: "string", enum: ["read-only", "write"] }).describe("read-only for investigations, reviews and questions; write for anything that edits files or runs builds/tests. Write uses the panel sandbox toggle (off by default)."),
   add_dirs: external_exports.array(external_exports.string()).optional().describe("Additional writable directories for the panel sandbox; one --add-dir per directory."),
-  auto: external_exports.boolean().optional().describe(`Shorthand: false = read-only sandbox, for reading files, reviews and questions. Default: ${config2.auto}. An explicit sandbox wins.`),
+  auto: external_exports.boolean().optional().describe(`Shorthand: false = read-only sandbox, for reading files, reviews and questions. Default: ${config.auto}. An explicit sandbox wins.`),
   title: external_exports.string().optional().describe("Short label shown in task_list."),
   stall: external_exports.object({
     silent_s: external_exports.number().int().min(0).optional(),
@@ -39426,11 +39863,11 @@ var delegateShape = {
     long_commands: external_exports.array(external_exports.object({ match: external_exports.string(), idle_s: external_exports.number().int().min(0) })).optional()
   }).optional().describe("Soft suspicion windows in seconds (0 disables); first case-insensitive command regex wins, call rules before policy rules; invalid regex is ignored."),
   idle_timeout_s: external_exports.number().int().min(0).optional().describe("Compatibility: set both soft suspicion windows; explicit stall fields win; 0 disables."),
-  timeout_s: external_exports.number().int().positive().optional().describe(`Kill the run after this many seconds. Default: ${config2.timeoutSec}.`),
+  timeout_s: external_exports.number().int().positive().optional().describe(`Kill the run after this many seconds. Default: ${config.timeoutSec}.`),
   checks: external_exports.array(external_exports.string()).optional().describe(
     `Shell commands (tests, build, lint) the server runs on the host in cwd after codex finishes, through ${process.platform === "win32" ? "cmd.exe (Windows: no bash syntax)" : "/bin/sh"}. Results come back as PASS/FAIL with the output tail on failure, so you don't need to re-run them yourself.`
   ),
-  structured: external_exports.boolean().optional().describe(`Ask codex to finish with a JSON report (status done/partial/blocked/needs_decision, summary, changes, verification, risks, questions). Default: ${config2.structured} for runs that may edit files; read-only runs always answer in prose.`),
+  structured: external_exports.boolean().optional().describe(`Ask codex to finish with a JSON report (status done/partial/blocked/needs_decision, summary, changes, verification, risks, questions). Default: ${config.structured} for runs that may edit files; read-only runs always answer in prose.`),
   fresh: external_exports.boolean().optional().describe("Start a new Codex session even if an interrupted run in this cwd would otherwise be continued (the user wants to drop it, or the new task is unrelated)."),
   checkpoints: external_exports.boolean().optional().describe("Ask Codex for stage reports at direction-changing points; each new report returns this call early (status: checkpoint) while Codex keeps working. For long or open-ended tasks.")
 };
@@ -39446,9 +39883,9 @@ server.registerTool(
   },
   async ({ filter }) => {
     let models = listModels();
-    if (!models.length) return text(`no model cache at ${config2.codexHome}/models_cache.json \u2014 run \`codex\` once to populate it. Model slugs are still passed through as given.`, true);
+    if (!models.length) return text(`no model cache at ${config.codexHome}/models_cache.json \u2014 run \`codex\` once to populate it. Model slugs are still passed through as given.`, true);
     if (filter) models = models.filter((m) => m.slug.toLowerCase().includes(filter.toLowerCase()));
-    const dflt = config2.defaultModel ?? configuredModel();
+    const dflt = config.defaultModel ?? configuredModel();
     const lines = models.map((m) => `${m.slug}${m.slug === dflt ? " (default)" : ""}  efforts: ${m.efforts.join(", ")}`);
     return text(lines.length ? lines.join("\n") : "(no models match)");
   }
@@ -39611,7 +40048,7 @@ server.registerTool(
     annotations: { readOnlyHint: true }
   },
   async ({ cwd, limit }) => {
-    const dir2 = resolve3(config2.defaultCwd, cwd ?? ".");
+    const dir2 = resolve3(config.defaultCwd, cwd ?? ".");
     const sessions = listSessions(dir2, limit ?? 20);
     if (!sessions.length) return text(`(no codex sessions for ${dir2})`);
     return text(
@@ -39619,7 +40056,7 @@ server.registerTool(
     );
   }
 );
-watchFile(config2.policyFile, { interval: 2e3, persistent: false }, () => {
+watchFile2(config.policyFile, { interval: 2e3, persistent: false }, () => {
   const { policy, error: error62 } = loadPolicy();
   if (error62) console.error(`codex-delegate: ${error62}`);
   const paramsSchema = { ...delegateShape, effort: effortParam(policy) };
@@ -39627,3 +40064,6 @@ watchFile(config2.policyFile, { interval: 2e3, persistent: false }, () => {
   asyncTool.update({ description: withGuidance(ASYNC_DESCRIPTION + CHECKPOINT_DESCRIPTION + STALL_DESCRIPTION, policy), paramsSchema });
 });
 await server.connect(new StdioServerTransport());
+watchProviders(() => {
+  server.sendToolListChanged();
+});

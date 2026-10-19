@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config, configuredModel, EFFORT_ORDER } from "./config.ts";
 import { listModels } from "./models.ts";
+import { providersFile as defaultProvidersFile, loadProviders, saveProviders, validateProviders, maskedProviders, readCcswitch, importCcswitch, testProvider, syncTokens, removeProviderAuth, providerHome } from "./providers.ts";
 import { DEFAULT_POLICY, loadPolicy, savePolicy, validatePolicy } from "./policy.ts";
 import type { PendingRun } from "./pending.ts";
 import type { StoredTask } from "./tasks.ts";
@@ -136,9 +137,10 @@ function sameOrigin(req: IncomingMessage): boolean {
   return /^application\/json\b/i.test(req.headers["content-type"] ?? "");
 }
 
-export function createDashboardServer(options: { runsDir?: string; policyFile?: string } = {}) {
+export function createDashboardServer(options: { runsDir?: string; policyFile?: string; providersFile?: string; ccswitchFile?: string; homesRoot?: string; codexHome?: string } = {}) {
   const runsDir = options.runsDir ?? config.runsDir;
   const policyFile = options.policyFile ?? config.policyFile;
+  const providersFile = options.providersFile ?? defaultProvidersFile;
   return createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     const json = (status: number, value: unknown) => {
@@ -147,14 +149,48 @@ export function createDashboardServer(options: { runsDir?: string; policyFile?: 
     };
     // Inspect the raw path: URL normalization would erase traversal segments before validation.
     const path = (req.url ?? "/").split("?")[0]!;
-    const allow = path === "/api/policy" ? "GET, PUT" : "GET";
+    const allow = path === "/api/policy" || path === "/api/providers" ? "GET, PUT" : path === "/api/providers/ccswitch/import" || /^\/api\/providers\/[^/]+\/(test|sync)$/.test(path) ? "POST" : "GET";
     if (!allow.split(", ").includes(req.method ?? "")) {
       res.setHeader("Allow", allow);
       json(405, { error: "Method not allowed" });
       return;
     }
     try {
-      if (path === "/api/policy") {
+      if (path === "/api/providers" || path.startsWith("/api/providers/")) {
+        if (req.method !== "GET" && !sameOrigin(req)) { json(403, { error: "Forbidden" }); return; }
+        try {
+          if (path === "/api/providers") {
+            if (req.method === "PUT") {
+              const previous = loadProviders(providersFile);
+              const doc = validateProviders(JSON.parse(await body(req)), previous);
+              // The isolated home is keyed by id, so renaming a ChatGPT account would orphan its tokens.
+              for (const p of doc.providers) if (p.source && previous.providers.some(old => old.auth === "chatgpt" && old.source?.id === p.source!.id && old.id !== p.id)) throw Error("ChatGPT account id cannot be changed");
+              saveProviders(doc, providersFile);
+              for (const p of previous.providers) if (!doc.providers.some(next => next.id === p.id && next.auth === "chatgpt")) removeProviderAuth(p, options);
+            }
+            json(200, maskedProviders(loadProviders(providersFile), options));
+          } else if (path === "/api/providers/ccswitch") {
+            json(200, maskedProviders({ defaultProvider: null, providers: readCcswitch(options.ccswitchFile) }));
+          } else if (path === "/api/providers/ccswitch/import") {
+            const input = JSON.parse(await body(req));
+            if (!Array.isArray(input?.ids) || input.ids.some((id: unknown) => typeof id !== "string")) throw Error("ids must be a string array");
+            const doc = importCcswitch(loadProviders(providersFile), readCcswitch(options.ccswitchFile), input.ids, options);
+            saveProviders(doc, providersFile);
+            json(200, maskedProviders(doc, options));
+          } else if (/^\/api\/providers\/[^/]+\/(test|sync)$/.test(path)) {
+            const id = decodeURIComponent(path.split("/")[3]!);
+            const provider = loadProviders(providersFile).providers.find(p => p.id === id);
+            if (!provider) { json(404, { error: "Unknown provider id" }); return; }
+            if (path.endsWith("/sync")) {
+              if (provider.auth !== "chatgpt" || provider.sync !== true || provider.source?.type !== "cc-switch") throw Error("Sync requires a ChatGPT cc-switch provider with sync enabled");
+              json(200, await syncTokens(provider, options));
+            } else json(200, await testProvider(provider, options));
+          } else json(404, { error: "Not found" });
+        } catch (e) {
+          // Validation errors contain field names/line numbers only, never submitted values.
+          json(400, { error: e instanceof SyntaxError ? "Invalid JSON body" : e instanceof Error ? e.message : "Invalid provider request" });
+        }
+      } else if (path === "/api/policy") {
         if (req.method === "PUT") {
           if (!sameOrigin(req)) { json(403, { error: "Forbidden" }); return; }
           let parsed: unknown;
@@ -199,7 +235,8 @@ export function createDashboardServer(options: { runsDir?: string; policyFile?: 
           if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || query.getAll("after").length > 1) {
             json(400, { error: "Invalid after sequence" }); return;
           }
-          json(200, await readTimeline(runsDir, run, Number(value)));
+          const provider = loadProviders(providersFile).providers.find(p => p.id === run.provider);
+          json(200, await readTimeline(runsDir, run, Number(value), provider?.auth === "chatgpt" ? providerHome(provider, options.homesRoot) : options.codexHome));
           return;
         }
         const [promptFull, lastMessage] = await Promise.all([

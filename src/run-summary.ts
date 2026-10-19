@@ -11,6 +11,7 @@ import pkg from "../package.json" with { type: "json" };
 export const version = pkg.version;
 
 export interface RunSummary {
+  provider?: string;
   commands?: CommandTiming[];
   denials?: Denials;
   trend?: TrendPoint[];

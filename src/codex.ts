@@ -1,6 +1,7 @@
+import { prepareProviderHome, providerArgs, providerEnv, providerSecrets, syncTokens, type Provider, type ProviderPaths } from "./providers.ts";
 import { extractDenials, type Denials, type CommandTiming } from "./observability.ts";
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, readFileSync } from "node:fs";
+import { createWriteStream, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { APP_SERVER_ARGS, AppServerTurn, type LiveTurn, type RateLimits, type SteerRecord } from "./appserver.ts";
 import { config, type Sandbox } from "./config.ts";
 import type { KeptCommand } from "./longruns.ts";
@@ -28,6 +29,8 @@ export function classifyError(text: string): ErrorKind {
 export interface RunOptions {
   addDirs?: string[];
   env?: NodeJS.ProcessEnv;
+  provider?: Provider;
+  providerPaths?: ProviderPaths;
   prompt: string;
   model?: string;
   effort?: string;
@@ -125,6 +128,7 @@ export function buildArgs(o: RunOptions): string[] {
   for (const img of o.images ?? []) args.push("-i", img);
   // The prompt goes through stdin ("-"): no argv length limit (Windows caps a command line at ~32K)
   // and the brief doesn't show up in process listings. "--" ends -i's list of files.
+  args.push(...providerArgs(o.provider));
   args.push("--", "-");
   return args;
 }
@@ -265,14 +269,44 @@ function readFinal(file: string | undefined): string | undefined {
   }
 }
 
-export function runCodex(o: RunOptions): Promise<RunResult> {
+export async function runCodex(o: RunOptions): Promise<RunResult> {
+  const warnings: string[] = [];
+  const sync = async () => {
+    if (o.provider?.auth === "chatgpt" && o.provider.sync === true) {
+      try { await syncTokens(o.provider, o.providerPaths); }
+      catch { warnings.push("Account token sync failed; check cc-switch access and retry sync"); }
+    }
+  };
+  let result: RunResult | undefined;
+  try {
+    if (o.provider?.auth === "chatgpt") prepareProviderHome(o.provider, o.providerPaths);
+    await sync();
+    result = await runCodexProcess(o);
+    return result;
+  } finally {
+    await sync();
+    if (result) result.warnings.push(...new Set(warnings));
+  }
+}
+
+function runCodexProcess(o: RunOptions): Promise<RunResult> {
+  const secrets = new Set(providerSecrets(o.provider, o.providerPaths));
+  const refreshSecrets = () => { if (o.provider?.auth === "chatgpt") { try { for (const s of providerSecrets(o.provider, o.providerPaths)) secrets.add(s); } catch {} } };
+  const redact = (s: string) => { refreshSecrets(); for (const key of secrets) s = s.replaceAll(key, "[REDACTED]"); return s; };
+  const redactLine = (s: string) => {
+    refreshSecrets();
+    if (!secrets.size) return s;
+    try { JSON.parse(s); } catch { return redact(s); }
+    for (const key of secrets) s = s.replaceAll(JSON.stringify(key).slice(1, -1), "[REDACTED]");
+    return s;
+  };
   const started = Date.now();
   const collector = new EventCollector();
   const appServer = config.engine === "app-server";
   return new Promise((resolve) => {
-    const child = spawn(config.codex.cmd, [...config.codex.args, ...(appServer ? APP_SERVER_ARGS : buildArgs(o))], {
+    const child = spawn(config.codex.cmd, [...config.codex.args, ...(appServer ? [...APP_SERVER_ARGS, ...providerArgs(o.provider)] : buildArgs(o))], {
       cwd: o.cwd,
-      env: { ...process.env, ...o.env },
+      env: providerEnv(o.provider, o.env, o.providerPaths),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       // Own process group on POSIX so the whole tree can be signalled (see procs.ts).
@@ -291,7 +325,7 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
     // app-server: stdin carries JSON-RPC; the turn's events are translated into exec event lines.
     let exitTimer: ReturnType<typeof setTimeout> | undefined;
     const turn = appServer ? new AppServerTurn(child, o, {
-      emit: (event) => { const line = JSON.stringify(event); log?.write(`${line}\n`); collector.push(line); alive(); },
+      emit: (event) => { const line = redactLine(JSON.stringify(event)); log?.write(`${line}\n`); collector.push(line); alive(); },
       activity: () => { collector.lastEventAt = Date.now(); alive(); },
       // Codex is done with the turn: let the server exit, and make sure it does.
       done: () => { child.stdin.end(); exitTimer ??= setTimeout(() => stop(child), 5000); exitTimer.unref?.(); },
@@ -376,13 +410,14 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
     if (o.signal?.aborted) kill();
 
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-      if (!turn) log?.write(chunk);
+      if (!turn && !secrets.size) log?.write(chunk);
       buf += chunk;
       let i: number;
       let sawLine = false;
       while ((i = buf.indexOf("\n")) >= 0) {
         sawLine = true;
-        const line = buf.slice(0, i);
+        const line = redactLine(buf.slice(0, i));
+        if (!turn && secrets.size) log?.write(`${line}\n`);
         if (turn) turn.line(line);
         else collector.push(line);
         buf = buf.slice(i + 1);
@@ -406,7 +441,8 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
       watchdog.dispose();
       o.signal?.removeEventListener("abort", cancel);
       if (timer) clearTimeout(timer);
-      if (buf) turn ? turn.line(buf) : collector.push(buf);
+      if (buf) { const line = redactLine(buf); if (!turn && secrets.size) log?.write(line); turn ? turn.line(line) : collector.push(line); }
+      stderr = redact(stderr);
       // The turn object stays readable on `live` (steers, finished) until the task is collected.
       if (turn) turn.finished = true;
       progress();
@@ -414,7 +450,7 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
       if (stderr.trim()) log?.write(`\n# stderr (tail)\n${stderr}\n`);
       log?.end();
       const errors = [...collector.errors];
-      if (spawnError) errors.push(spawnError);
+      if (spawnError) errors.push(redact(spawnError));
       if (timedOut) errors.push(`timed out after ${Math.round((o.timeoutMs ?? 0) / 1000)}s`);
       else if (o.signal?.aborted) errors.push("cancelled");
       if (stall) errors.push(`stalled: no codex output for ${Math.round(stall.idleMs / 60000)}m${stall.command ? ` while running: ${stall.command.slice(0, 200)}` : " (model silent)"}`);
@@ -425,6 +461,10 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
         : (exitCode !== 0 && !turn) || !collector.turns ? "crashed" : "completed";
       if (exitKind === "crashed" && !errors.length) errors.push(stderrTail() || "codex exited without turn.completed");
       const error = errors.join("; ") || undefined;
+      const final = readFinal(o.lastMessageFile);
+      if (final && o.lastMessageFile && redactLine(final) !== final) {
+        try { writeFileSync(o.lastMessageFile, redactLine(final)); } catch {}
+      }
       resolve({
         denials: collector.denials, commands: collector.commands,
         ok: exitKind === "completed",
@@ -437,7 +477,7 @@ export function runCodex(o: RunOptions): Promise<RunResult> {
         stalled: !!stall,
         stall,
         sessionId: collector.sessionId,
-        text: readFinal(o.lastMessageFile) ?? collector.finalText,
+        text: final ? redactLine(final) : redact(collector.finalText),
         logFile: o.logFile,
         toolCalls: collector.toolCalls,
         fileChanges: collector.fileChanges,

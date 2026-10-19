@@ -1,3 +1,4 @@
+import { providerName } from "./providers.ts";
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -48,8 +49,9 @@ export function threadConfig(o: RunOptions): Record<string, unknown> {
   return c;
 }
 
-function threadParams(o: RunOptions) {
+export function threadParams(o: RunOptions) {
   return {
+    ...(o.provider ? { modelProvider: providerName(o.provider) } : {}),
     cwd: o.cwd ?? null,
     sandbox: o.sandbox,
     approvalPolicy: "never",

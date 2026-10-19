@@ -424,7 +424,7 @@
   .p-sec h3 small { white-space: normal; }
   .p-sec h3 small { color: var(--muted); font-weight: 400; font-size: 12px; }
   .ladder { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: rgba(255,255,255,.015); }
-  .lrow { position: relative; display: grid; grid-template-columns: 22px 104px 176px 84px 1fr 64px; gap: 8px; align-items: center; padding: 7px 10px; border-top: 1px solid var(--line); }
+  .lrow { position: relative; display: grid; grid-template-columns: 22px 96px 128px 160px 78px 1fr 64px; gap: 8px; align-items: center; padding: 7px 10px; border-top: 1px solid var(--line); }
   .lrow:first-child { border-top: 0; }
   .lrow:not(.lhead)::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
     background: color-mix(in srgb, var(--ember) var(--heat, 0%), var(--accent)); box-shadow: 0 0 12px color-mix(in srgb, var(--ember) var(--heat, 0%), var(--accent)); }
@@ -461,6 +461,46 @@
   .toast { border-radius: 12px; padding: 10px 15px; font-size: 13px; animation: rise .4s var(--out); }
   .toast.ok { background: var(--ok-bg); color: var(--ok); border: 1px solid rgba(198,255,61,.25); } .toast.err { background: var(--err-bg); color: var(--err); border: 1px solid rgba(255,77,94,.25); }
   .toast.info { background: var(--soft); color: var(--text2); border: 1px solid var(--line); }
+  /* 服务商：沿用策略控制台的外壳，左列表右表单 */
+  #vdlg { width: min(1040px, calc(100vw - 32px)); height: min(880px, calc(100vh - 48px)); margin: auto; border-radius: 22px; border: 1px solid var(--line2); }
+  #vdlg[open] { animation: popIn .55s var(--out); }
+  #vdlg.closing { animation: popOut .24s var(--io) forwards; }
+  #vdlg::before { left: 10%; right: 10%; top: 0; bottom: auto; width: auto; height: 1px; background: linear-gradient(90deg, transparent, var(--accent), transparent); }
+  #vdlg[open] > form { display: flex; flex-direction: column; height: 100%; }
+  #vdlg .dlg-head { align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 18px; flex-wrap: wrap; }
+  #vdlg .dlg-head h2 { flex: none; }
+  #provBtn { font-weight: 600; }
+  .v-in, .v-edit input, .v-edit textarea, .v-edit select { font: inherit; font-size: 13px; color: var(--text); width: 100%; min-width: 0;
+    background: rgba(0,0,0,.25); border: 1px solid var(--line2); border-radius: 9px; padding: 7px 10px; box-shadow: none; }
+  .v-edit textarea { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; resize: vertical; min-height: 64px; }
+  .v-in:focus, .v-edit input:focus, .v-edit textarea:focus, .v-edit select:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 4px var(--accent-soft); }
+  #vDefault { max-width: 360px; }
+  .v-split { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 14px; align-items: start; }
+  .v-list { border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: rgba(255,255,255,.015); }
+  .v-item { display: block; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: none; padding: 10px 14px; position: relative; }
+  .v-item:first-child { border-top: 0; }
+  .v-item:hover { background: var(--hover); }
+  .v-item[aria-current="true"] { background: var(--accent-soft); }
+  .v-item[aria-current="true"]::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); box-shadow: 0 0 12px var(--accent); }
+  .v-item .nm { font-weight: 600; font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; gap: 6px; align-items: center; }
+  .v-item .sub { font: 11.5px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+  .v-empty { padding: 22px 14px; color: var(--muted); font-size: 12.5px; text-align: center; }
+  .v-edit { border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; background: rgba(255,255,255,.015); display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+  .v-edit .f { min-width: 0; } .v-edit .f.w { grid-column: 1 / -1; }
+  .v-edit label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  .v-edit label small { opacity: .75; }
+  .v-key { display: flex; gap: 6px; } .v-key button { flex: none; }
+  .v-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text2); }
+  .v-check input { width: auto; }
+  .v-acts { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-top: 1px solid var(--line); padding-top: 12px; }
+  .v-acts .del { margin-left: auto; color: var(--err); }
+  .v-test { grid-column: 1 / -1; font: 12px var(--mono); color: var(--text2); word-break: break-all; }
+  .v-test.ok { color: var(--ok); } .v-test.err { color: var(--err); }
+  .v-row { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border-top: 1px solid var(--line); font-size: 13px; cursor: pointer; }
+  .v-row:first-child { border-top: 0; } .v-row:hover { background: var(--hover); }
+  .v-row .nm { font-weight: 600; } .v-row .sub { color: var(--muted); font: 11.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .v-imp-acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+  @media (max-width: 760px) { .v-split, .v-edit { grid-template-columns: 1fr; } }
   /* 开场：点火 → 快门收束 → 模块依次就位 */
   #intro { display: none; }
   html.intro #intro { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--void); cursor: pointer; }
@@ -494,8 +534,8 @@
     .switch span { display: none; }
   }
   @media (max-width: 700px) {
-    .lrow { grid-template-columns: 1fr 1.3fr 80px; row-gap: 2px; } .lrow.lhead, .lrow .n { display: none; }
-    .lrow .use { grid-column: span 2; } .lrow .ops { opacity: 1; } .p-texts { grid-template-columns: 1fr; }
+    .lrow { grid-template-columns: 1fr 1fr 1.3fr 80px; row-gap: 2px; } .lrow.lhead, .lrow .n { display: none; }
+    .lrow .use { grid-column: span 3; } .lrow .ops { opacity: 1; } .p-texts { grid-template-columns: 1fr; }
     .tiles { grid-template-columns: repeat(2, 1fr); } .steps { margin-left: 0; } .typing { margin-left: 0; }
   }
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } html.boot .rv { opacity: 1; } }
@@ -522,6 +562,7 @@
       <span class="live-pill" id="updated"><span class="dot"></span><span>加载中…</span></span>
       <label class="switch" title="每 10 秒刷新"><input type="checkbox" id="auto" checked><span>自动刷新</span></label>
       <button id="refresh" type="button" class="icon" aria-label="立即刷新" title="立即刷新 (R)"><svg class="ring" viewBox="0 0 30 30" aria-hidden="true"><circle cx="15" cy="15" r="14"/></svg><svg class="ico" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg></button>
+      <button id="provBtn" type="button">服务商</button>
       <button id="policyBtn" type="button">调度策略</button>
     </div>
   </div>
@@ -614,7 +655,7 @@
       <section class="p-sec">
         <h3>成本档位 <small>从上到下由便宜到贵，失败后往下升一档</small></h3>
         <div class="ladder">
-          <div class="lrow lhead" aria-hidden="true"><span></span><span>TIER 档位</span><span>MODEL 模型</span><span>推理</span><span>适用场景（给 Claude 看）</span><span></span></div>
+          <div class="lrow lhead" aria-hidden="true"><span></span><span>TIER 档位</span><span>服务商</span><span>MODEL 模型</span><span>推理</span><span>适用场景（给 Claude 看）</span><span></span></div>
           <div id="tiers"></div>
           <button type="button" class="ladd" id="addTier">+ 添加档位</button>
         </div>
@@ -641,6 +682,40 @@
         <div class="chips" id="pModels"></div>
       </section>
       <div class="muted mono" id="pFile" style="font-size:11.5px"></div>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="vdlg" aria-labelledby="vTitle">
+  <form id="vForm" novalidate>
+    <div class="dlg-head">
+      <div style="flex:none"><div class="kicker">MODEL PROVIDERS</div><h2 id="vTitle">服务商</h2></div>
+      <div class="p-acts">
+        <span class="p-dirty" id="vDirty"></span>
+        <button type="button" class="ghost" id="vImportBtn">从 cc-switch 导入</button>
+        <button type="submit" class="primary" id="vSave" disabled>保存</button>
+        <button type="button" class="icon" id="vClose" aria-label="关闭"><svg width="16" height="16" viewBox="0 0 16 16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="m4 4 8 8M12 4l-8 8"/></svg></button>
+      </div>
+    </div>
+    <div class="p-body">
+      <div id="vMsg" class="toast" role="status" hidden></div>
+      <section class="p-sec" id="vImport" hidden>
+        <h3>从 cc-switch 导入 <small>读取 ~/.cc-switch/cc-switch.db 里的 Codex 服务商，只取服务商相关的字段，已导入的会按来源覆盖更新</small></h3>
+        <div class="ladder" id="vImportList"></div>
+        <div class="v-imp-acts"><button type="button" class="ghost" id="vImportCancel">取消</button><button type="button" class="primary" id="vImportGo" disabled>导入所选</button></div>
+      </section>
+      <section class="p-sec">
+        <h3>默认服务商 <small>档位没绑定、调用也没指定时用它；选「系统配置」就和以前一样读 ~/.codex/config.toml</small></h3>
+        <select id="vDefault" class="v-in" aria-label="默认服务商"></select>
+      </section>
+      <section class="p-sec">
+        <h3>服务商列表 <small>修改后先保存，才能测试连接</small></h3>
+        <div class="v-split">
+          <div class="v-list"><div id="vList"></div><button type="button" class="ladd" id="vAdd">+ 新建服务商</button></div>
+          <div class="v-edit" id="vEdit"></div>
+        </div>
+      </section>
+      <div class="muted mono" id="vFile" style="font-size:11.5px">~/.codex-delegate/providers.json · API Key 明文保存在这个文件里，只通过环境变量传给 codex 子进程</div>
     </div>
   </form>
 </dialog>
@@ -1273,7 +1348,7 @@ $("#auto").addEventListener("change", () => { $("#updated").classList.toggle("of
 addEventListener("scroll", () => $("#top").classList.toggle("scrolled", scrollY > 4), { passive: true });
 // Every 10 s while visible and no dialog is open; the ring on the refresh button shows the countdown.
 setInterval(() => {
-  const live = $("#auto").checked && !$("#dlg").open && !$("#pdlg").open && !document.hidden;
+  const live = $("#auto").checked && !$("#dlg").open && !$("#pdlg").open && !$("#vdlg").open && !document.hidden;
   $("#refresh").classList.toggle("paused", !live);
   if (!live) { nextLoadAt = Math.max(nextLoadAt, Date.now() + 1000); return; }
   if (Date.now() >= nextLoadAt) load();
@@ -1291,10 +1366,18 @@ function modelOpts(cur) {
     slugs.map((s) => `<option${s === cur ? " selected" : ""}>${esc(s)}</option>`).join("");
 }
 
+let provList = []; // [{id,name}] for the tier binding select
+function provOpts(cur) {
+  const opts = [...provList];
+  if (cur && cur !== "system" && !opts.some((p) => p.id === cur)) opts.push({ id: cur, name: `${cur}（不存在）` });
+  return `<option value="">跟随默认</option><option value="system"${cur === "system" ? " selected" : ""}>系统配置</option>` +
+    opts.map((p) => `<option value="${esc(p.id)}"${p.id === cur ? " selected" : ""}>${esc(p.name)}</option>`).join("");
+}
 function tierRow(t, i, n) {
   return `<div class="lrow" data-i="${i}" style="--heat:${n > 1 ? Math.round(i / (n - 1) * 100) : 0}%">
     <span class="n">${i + 1}</span>
     <input class="mono" data-k="id" value="${esc(t.id)}" aria-label="档位名" maxlength="24">
+    <select data-k="provider" aria-label="服务商">${provOpts(t.provider)}</select>
     <select class="mono" data-k="model" aria-label="模型">${modelOpts(t.model)}</select>
     <select data-k="effort" aria-label="推理等级">${effortOpts(t.model, t.effort)}</select>
     <input class="use" data-k="use" value="${esc(t.use)}" title="${esc(t.use)}" aria-label="适用场景" placeholder="什么样的任务用这一档" maxlength="500">
@@ -1309,6 +1392,7 @@ function readTiers() {
   return [...document.querySelectorAll("#tiers .lrow")].map((el) => {
     const v = (k) => el.querySelector(`[data-k="${k}"]`).value.trim();
     const t = { id: v("id"), effort: v("effort"), use: v("use") };
+    if (v("provider")) t.provider = v("provider");
     if (v("model")) t.model = v("model");
     return t;
   });
@@ -1360,6 +1444,10 @@ async function openPolicy() {
     const res = await fetch("/api/policy", { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     pol = await res.json();
+    try {
+      const pr = await fetch("/api/providers", { cache: "no-store" });
+      if (pr.ok) provList = (await pr.json()).providers.map((p) => ({ id: p.id, name: p.name }));
+    } catch {}
   } catch (e) {
     showMsg(`读取策略失败（${e.message}）`, "err");
     return;
@@ -1435,6 +1523,231 @@ $("#pdlg").addEventListener("click", (e) => {
   const b = $("#pdlg").getBoundingClientRect();
   const outside = e.clientX < b.left || e.clientX > b.right || e.clientY < b.top || e.clientY > b.bottom;
   if (outside && e.target === $("#pdlg") && leaveOk()) $("#pdlg").close();
+});
+// ---- 服务商 ----
+let prov = null;   // { defaultProvider, providers } as last loaded/saved (keys masked)
+let vSaved = "";
+let vSel = -1;     // index into prov.providers being edited
+const kvText = (o) => Object.entries(o || {}).map(([k, v]) => `${k}: ${v}`).join("\n");
+function kvParse(text, label) {
+  const out = {};
+  for (const [i, raw] of text.split("\n").entries()) {
+    const line = raw.trim();
+    if (!line) continue;
+    const at = line.search(/[:=]/);
+    if (at < 1) throw Error(`${label}第 ${i + 1} 行要写成 名称: 值`);
+    out[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+function vShow(text, kind = "info") {
+  clearTimeout(toastTimer);
+  $("#vMsg").hidden = !text;
+  $("#vMsg").className = `toast ${kind}`;
+  $("#vMsg").textContent = text || "";
+  if (text && kind === "ok") toastTimer = setTimeout(() => ($("#vMsg").hidden = true), 4000);
+}
+const vDoc = () => ({ defaultProvider: $("#vDefault").value || null, providers: prov.providers });
+function vDirty() {
+  const dirty = JSON.stringify(vDoc()) !== vSaved;
+  $("#vDirty").textContent = dirty ? "未保存" : "";
+  $("#vSave").disabled = !dirty;
+  const saved = vSel >= 0 && vSavedIds().has(prov.providers[vSel]?.id);
+  for (const id of ["vTest", "vSync"]) { const b = $(`#${id}`); if (b) b.disabled = dirty || !saved; }
+}
+const isGpt = (p) => p?.auth === "chatgpt";
+const vWhen = (iso) => { const t = Date.parse(iso || ""); return Number.isFinite(t) ? new Date(t).toLocaleString() : "未知"; };
+const vSavedIds = () => new Set(JSON.parse(vSaved || '{"providers":[]}').providers.map((p) => p.id));
+function vRenderDefault() {
+  const cur = $("#vDefault").value || prov.defaultProvider || "";
+  $("#vDefault").innerHTML = `<option value="">系统配置（~/.codex/config.toml）</option>` +
+    prov.providers.map((p) => `<option value="${esc(p.id)}"${p.id === cur ? " selected" : ""}>${esc(p.name)}</option>`).join("");
+}
+function vRenderList() {
+  $("#vList").innerHTML = prov.providers.length ? prov.providers.map((p, i) => {
+    let host = p.baseUrl; try { host = new URL(p.baseUrl).host; } catch {}
+    const tags = (p.id === $("#vDefault").value ? '<span class="tag e-high">默认</span>' : "") + (isGpt(p) ? '<span class="tag">官方登录</span>' : "") + (p.source ? '<span class="tag">cc-switch</span>' : "");
+    const sub = isGpt(p) ? `ChatGPT · ${p.account?.email || p.account?.accountId || "账号"}${p.sync ? " · 同步" : ""}` : host || "未填 Base URL";
+    return `<button type="button" class="v-item" data-i="${i}" aria-current="${i === vSel}"><div class="nm"><span style="overflow:hidden;text-overflow:ellipsis">${esc(p.name || "未命名")}</span>${tags}</div><div class="sub">${esc(sub)}${p.model ? ` · ${esc(p.model)}` : ""}</div></button>`;
+  }).join("") : '<div class="v-empty">还没有服务商。新建一个，或从 cc-switch 导入。</div>';
+}
+function vRenderEdit() {
+  const p = prov.providers[vSel];
+  if (!p) { $("#vEdit").innerHTML = '<div class="v-empty f w">选择左侧服务商进行编辑</div>'; return; }
+  const f = (k, label, val, attrs = "") => `<div class="f"><label for="ve_${k}">${label}</label><input id="ve_${k}" data-k="${k}" value="${esc(val ?? "")}" ${attrs}></div>`;
+  const acts = (test) => `<div class="v-acts"><button type="button" id="vTest">${test}</button>${isGpt(p) && p.sync ? '<button type="button" id="vSync">立即同步令牌</button>' : ""}${p.id === $("#vDefault").value ? "" : '<button type="button" class="ghost" id="vMakeDefault">设为默认</button>'}<button type="button" class="ghost del" id="vDel">删除</button></div>
+    <div class="v-test" id="vTestOut" aria-live="polite"></div>`;
+  if (isGpt(p)) {
+    $("#vEdit").innerHTML = `
+    ${f("name", "名称", p.name, 'maxlength="80"')}
+    ${f("id", "ID <small>官方账号的 ID 不能改，令牌目录按它存放</small>", p.id, 'class="mono" readonly')}
+    <div class="f w"><label>ChatGPT 账号</label><div class="v-test">${esc(p.account?.email || "（无邮箱）")} · ${esc(p.account?.accountId || "")} · 令牌刷新于 ${esc(vWhen(p.lastRefresh))}${p.hasTokens ? "" : ' · <span style="color:var(--err)">缺少令牌，请重新导入</span>'}</div></div>
+    ${f("model", "模型 <small>留空用档位的模型</small>", p.model, 'class="mono" placeholder="gpt-5.5"')}
+    ${f("effort", "推理强度 <small>留空用档位的强度</small>", p.effort, 'class="mono" placeholder="high"')}
+    <div class="f w"><label class="v-check"><input type="checkbox" data-k="sync"${p.sync ? " checked" : ""}> 与 cc-switch 双向同步令牌</label>
+      <small style="color:var(--text2)">每次调用前后比较这里、cc-switch 和 ~/.codex/auth.json（仅同一账号）的令牌，用最新的覆盖其余的。${p.sync ? "" : '<b style="color:var(--err)">已关闭：Codex 刷新令牌后旧的 refresh_token 会失效，cc-switch 里的这个账号可能需要重新登录。</b>'}</small></div>
+    ${f("websiteUrl", "官网链接", p.websiteUrl, 'placeholder="https://"')}
+    <div class="f w"><label for="ve_notes">备注</label><input id="ve_notes" data-k="notes" value="${esc(p.notes ?? "")}"></div>
+    ${acts("检查登录")}`;
+    vDirty(); return;
+  }
+  $("#vEdit").innerHTML = `
+    ${f("name", "名称", p.name, 'maxlength="80" placeholder="例如 my relay"')}
+    ${f("id", "ID <small>调用时 provider 参数用它</small>", p.id, 'class="mono" maxlength="64" pattern="[A-Za-z0-9_-]+"')}
+    ${f("websiteUrl", "官网链接", p.websiteUrl, 'placeholder="https://"')}
+    <div class="f"><label for="ve_apiKey">API Key <small>${p.hasKey ? "已保存，显示的是掩码；改掉才会替换" : "未设置"}</small></label>
+      <div class="v-key"><input id="ve_apiKey" data-k="apiKey" class="mono" type="password" autocomplete="off" value="${esc(p.apiKey ?? "")}" placeholder="sk-…"><button type="button" class="ghost" id="vEye" aria-label="显示或隐藏">显示</button></div></div>
+    ${f("baseUrl", "Base URL <small>OpenAI 兼容，通常以 /v1 结尾</small>", p.baseUrl, 'class="mono" placeholder="https://api.example.com/v1"')}
+    ${f("model", "模型 <small>留空用档位的模型</small>", p.model, 'class="mono" placeholder="gpt-5.5"')}
+    <div class="f"><label for="ve_wireApi">wire_api</label><select id="ve_wireApi" data-k="wireApi">${["responses", "chat"].concat(["responses", "chat"].includes(p.wireApi) ? [] : [p.wireApi]).map((w) => `<option${w === p.wireApi ? " selected" : ""}>${esc(w)}</option>`).join("")}</select></div>
+    <div class="f"><label>&nbsp;</label><label class="v-check"><input type="checkbox" data-k="requiresOpenaiAuth"${p.requiresOpenaiAuth ? " checked" : ""}> requires_openai_auth（用 OpenAI 登录态）</label></div>
+    <div class="f"><label for="ve_httpHeaders">自定义请求头 <small>每行 名称: 值</small></label><textarea id="ve_httpHeaders" data-k="httpHeaders" placeholder="X-Org: my-team">${esc(kvText(p.httpHeaders))}</textarea></div>
+    <div class="f"><label for="ve_queryParams">Query 参数 <small>每行 名称=值</small></label><textarea id="ve_queryParams" data-k="queryParams" placeholder="api-version=2025-01-01">${esc(kvText(p.queryParams))}</textarea></div>
+    <div class="f w"><label for="ve_extraToml">附加 config.toml 片段 <small>高级：key = value 与 [table]，会以 -c 覆盖注入，不要写 Key</small></label><textarea id="ve_extraToml" data-k="extraToml" rows="4" placeholder="model_reasoning_summary = &quot;auto&quot;">${esc(p.extraToml ?? "")}</textarea></div>
+    <div class="f w"><label for="ve_notes">备注</label><input id="ve_notes" data-k="notes" value="${esc(p.notes ?? "")}"></div>
+    ${acts("测试连接")}`;
+  vDirty();
+}
+// Form → in-memory provider; header/param parse errors surface on save.
+function vRead() {
+  const p = prov.providers[vSel];
+  if (!p) return;
+  const v = (k) => $("#vEdit").querySelector(`[data-k="${k}"]`);
+  if (isGpt(p)) {
+    for (const k of ["name", "websiteUrl", "model", "effort", "notes"]) { const val = v(k).value.trim(); if (val) p[k] = val; else delete p[k]; }
+    p.sync = v("sync").checked;
+    return;
+  }
+  for (const k of ["name", "id", "websiteUrl", "apiKey", "baseUrl", "model", "extraToml", "notes"]) {
+    const val = v(k).value.trim();
+    if (val || k === "apiKey" && p.hasKey) p[k] = val; else delete p[k];
+  }
+  p.wireApi = v("wireApi").value;
+  p.requiresOpenaiAuth = v("requiresOpenaiAuth").checked;
+  p._h = v("httpHeaders").value; p._q = v("queryParams").value;
+}
+function vRenderAll() { vRenderDefault(); vRenderList(); vRenderEdit(); vDirty(); }
+async function openProviders() {
+  vShow(""); $("#vImport").hidden = true;
+  $("#vdlg").classList.remove("closing");
+  if (!$("#vdlg").open) $("#vdlg").showModal();
+  try {
+    const res = await fetch("/api/providers", { cache: "no-store" });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error || `HTTP ${res.status}`);
+    vLoad(r);
+  } catch (e) { prov = { defaultProvider: null, providers: [] }; vRenderAll(); vShow(`读取服务商失败（${e.message}）`, "err"); }
+}
+function vLoad(r) {
+  prov = { defaultProvider: r.defaultProvider, providers: r.providers.map(({ hasKey, ...p }) => ({ ...p, hasKey })) };
+  $("#vDefault").value = ""; vRenderDefault();
+  $("#vDefault").value = prov.defaultProvider || "";
+  vSaved = JSON.stringify(vDoc());
+  if (vSel >= prov.providers.length) vSel = prov.providers.length - 1;
+  if (vSel < 0 && prov.providers.length) vSel = 0;
+  vRenderList(); vRenderEdit(); vDirty();
+}
+$("#vEdit").addEventListener("input", () => { vRead(); vRenderList(); vDirty(); });
+$("#vEdit").addEventListener("change", (e) => { vRead(); if (e.target.dataset.k === "sync") vRenderEdit(); vDirty(); });
+$("#vEdit").addEventListener("click", async (e) => {
+  const p = prov.providers[vSel];
+  if (e.target.id === "vEye") { const k = $("#ve_apiKey"); const show = k.type === "password"; k.type = show ? "text" : "password"; e.target.textContent = show ? "隐藏" : "显示"; }
+  else if (e.target.id === "vDel") {
+    if (!confirm(`删除服务商「${p.name}」？保存后生效。`)) return;
+    if ($("#vDefault").value === p.id) $("#vDefault").value = "";
+    prov.providers.splice(vSel, 1); vSel = Math.min(vSel, prov.providers.length - 1);
+    vRenderAll();
+  } else if (e.target.id === "vMakeDefault") { vRenderDefault(); $("#vDefault").value = p.id; vRenderList(); vRenderEdit(); }
+  else if (e.target.id === "vTest") {
+    const out = $("#vTestOut"); out.className = "v-test"; out.textContent = "测试中…"; e.target.disabled = true;
+    try {
+      const r = await (await fetch(`/api/providers/${encodeURIComponent(p.id)}/test`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).json();
+      const ok = r.ok && (!isGpt(p) || /Logged in/.test(r.output));
+      out.className = `v-test ${ok ? "ok" : "err"}`;
+      out.textContent = isGpt(p) ? `${ok ? "登录有效" : "登录无效"} · ${r.output || r.error || ""}（${r.ms ?? "?"} ms）` : r.ok ?`连接正常 · HTTP ${r.status} · ${r.ms} ms${r.models?.length ? ` · 模型：${r.models.join(", ")}` : ""}` : `失败：${r.error || `HTTP ${r.status}`}（${r.ms ?? "?"} ms）`;
+    } catch (err) { out.className = "v-test err"; out.textContent = `失败：${err.message}`; }
+    vDirty();
+  } else if (e.target.id === "vSync") {
+    const out = $("#vTestOut"); out.className = "v-test"; out.textContent = "同步中…"; e.target.disabled = true;
+    const names = { home: "本插件", ccswitch: "cc-switch", live: "~/.codex" };
+    try {
+      const res = await fetch(`/api/providers/${encodeURIComponent(p.id)}/sync`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const r = await res.json();
+      if (!res.ok) throw Error(r.error || `HTTP ${res.status}`);
+      const upd = r.locations.filter((l) => l.updated).map((l) => names[l.location]);
+      out.className = "v-test ok";
+      out.textContent = `${r.winner ? `最新的在 ${names[r.winner]}` : "无可用令牌"}；${upd.length ? `已更新：${upd.join("、")}` : "各处已一致"} · ` + r.locations.map((l) => `${names[l.location]} ${vWhen(l.lastRefresh)}`).join(" / ");
+      // Display-only field; sync runs only on a clean form, so the baseline moves with it.
+      const w = r.locations.find((l) => l.location === r.winner);
+      if (w) { p.lastRefresh = w.lastRefresh; vSaved = JSON.stringify(vDoc()); }
+    } catch (err) { out.className = "v-test err"; out.textContent = `同步失败：${err.message}`; }
+    vDirty();
+  }
+});
+$("#vList").addEventListener("click", (e) => { const b = e.target.closest(".v-item"); if (!b) return; vSel = +b.dataset.i; vRenderList(); vRenderEdit(); });
+$("#vDefault").addEventListener("change", () => { vRenderList(); vRenderEdit(); });
+$("#vAdd").addEventListener("click", () => {
+  let n = prov.providers.length + 1; while (prov.providers.some((p) => p.id === `provider-${n}`)) n++;
+  prov.providers.push({ id: `provider-${n}`, name: `provider-${n}`, baseUrl: "", wireApi: "responses", requiresOpenaiAuth: false, hasKey: false });
+  vSel = prov.providers.length - 1; vRenderAll(); $("#ve_name").focus(); $("#ve_name").select();
+});
+$("#vForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  let body;
+  try {
+    body = { defaultProvider: $("#vDefault").value || null, providers: prov.providers.map(({ hasKey, _h, _q, ...p }) => {
+      const label = `「${p.name}」`;
+      if (_h !== undefined) { const h = kvParse(_h, `${label}请求头`); if (h) p.httpHeaders = h; else delete p.httpHeaders; }
+      if (_q !== undefined) { const q = kvParse(_q, `${label}Query 参数`); if (q) p.queryParams = q; else delete p.queryParams; }
+      if (isGpt(p)) { delete p.lastRefresh; delete p.hasTokens; return p; }
+      if (!p.baseUrl) throw Error(`${label}缺少 Base URL`);
+      return p;
+    }) };
+  } catch (err) { vShow(`没有保存：${err.message}`, "err"); return; }
+  try {
+    const res = await fetch("/api/providers", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await res.json();
+    if (!res.ok) { vShow(`没有保存：${r.error}`, "err"); return; }
+    vLoad(r);
+    vShow("已保存，下一次调用即生效", "ok");
+  } catch (err) { vShow(`保存失败（${err.message}）`, "err"); }
+});
+// cc-switch import: list, tick, import (server upserts by source id, then we reload).
+let ccRows = [];
+$("#vImportBtn").addEventListener("click", async () => {
+  if ($("#vDirty").textContent) { vShow("先保存或放弃当前修改，再导入", "err"); return; }
+  $("#vImport").hidden = false; $("#vImportList").innerHTML = '<div class="v-empty">读取中…</div>';
+  try {
+    const res = await fetch("/api/providers/ccswitch", { cache: "no-store" });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error);
+    ccRows = r.providers;
+    const have = new Set(prov.providers.map((p) => p.source?.id).filter(Boolean));
+    $("#vImportList").innerHTML = ccRows.length ? ccRows.map((p, i) => `<label class="v-row"><input type="checkbox" value="${i}"><span class="nm">${esc(p.name)}</span><span class="sub">${isGpt(p) ? `官方登录 · ${esc(p.account?.email || p.account?.accountId || "")} · 令牌 ${esc(vWhen(p.lastRefresh))}` : `${esc(p.baseUrl)}${p.hasKey ? "" : " · 无 Key"}`}${p.model ? ` · ${esc(p.model)}` : ""}</span>${have.has(p.source?.id) ? '<span class="tag">已导入 · 将更新</span>' : ""}</label>`).join("")
+      : '<div class="v-empty">cc-switch 里没有 Codex 服务商（或没装 cc-switch）</div>';
+  } catch (e) { $("#vImportList").innerHTML = `<div class="v-empty">读取失败：${esc(e.message)}</div>`; }
+  $("#vImportGo").disabled = true;
+});
+$("#vImportList").addEventListener("change", () => { $("#vImportGo").disabled = !$("#vImportList").querySelector("input:checked"); });
+$("#vImportCancel").addEventListener("click", () => { $("#vImport").hidden = true; });
+$("#vImportGo").addEventListener("click", async () => {
+  const ids = [...$("#vImportList").querySelectorAll("input:checked")].map((c) => ccRows[+c.value].source.id);
+  try {
+    const res = await fetch("/api/providers/ccswitch/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
+    const r = await res.json();
+    if (!res.ok) { vShow(`导入失败：${r.error}`, "err"); return; }
+    vLoad(r); $("#vImport").hidden = true;
+    vShow(`已导入 ${ids.length} 个服务商`, "ok");
+  } catch (e) { vShow(`导入失败（${e.message}）`, "err"); }
+});
+$("#provBtn").addEventListener("click", openProviders);
+const vLeaveOk = () => !$("#vDirty").textContent || confirm("有未保存的修改，确定关闭？");
+$("#vClose").addEventListener("click", () => { if (vLeaveOk()) $("#vdlg").close(); });
+$("#vdlg").addEventListener("cancel", (e) => { if (!vLeaveOk()) e.preventDefault(); });
+$("#vdlg").addEventListener("click", (e) => {
+  const b = $("#vdlg").getBoundingClientRect();
+  const outside = e.clientX < b.left || e.clientX > b.right || e.clientY < b.top || e.clientY > b.bottom;
+  if (outside && e.target === $("#vdlg") && vLeaveOk()) $("#vdlg").close();
 });
 // ==== 视觉层：开场编排、数字滚动、轨道图、光标辉光（只管表现，不碰数据流） ====
 const ROOT = document.documentElement;
@@ -1722,7 +2035,7 @@ if (!RM && matchMedia("(pointer: fine)").matches) {
   }, { passive: true });
 }
 // ---- 抽屉与弹窗：关闭时先播收起动画 ----
-for (const d of [$("#dlg"), $("#pdlg")]) {
+for (const d of [$("#dlg"), $("#pdlg"), $("#vdlg")]) {
   const close = d.close.bind(d);
   d.close = (v) => {
     if (RM || !d.open || d.classList.contains("closing")) { if (!d.classList.contains("closing")) close(v); return; }
@@ -1740,7 +2053,7 @@ const tickClock = () => { const d = new Date(); $("#clock").innerHTML = `<span>$
 tickClock(); setInterval(tickClock, 1000);
 // ---- 快捷键：/ 搜索，R 刷新 ----
 addEventListener("keydown", (e) => {
-  if (e.ctrlKey || e.metaKey || e.altKey || $("#dlg").open || $("#pdlg").open || ROOT.classList.contains("intro")) return;
+  if (e.ctrlKey || e.metaKey || e.altKey || $("#dlg").open || $("#pdlg").open || $("#vdlg").open || ROOT.classList.contains("intro")) return;
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
   if (e.key === "/") { e.preventDefault(); $("#q").focus(); }
   else if (e.key === "r" || e.key === "R") load();
