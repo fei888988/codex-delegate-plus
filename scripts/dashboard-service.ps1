@@ -24,6 +24,10 @@ function Show-Status {
 function Stop-Dashboard {
   Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
   $script = Join-Path $Root "src\dashboard.ts"
+  # Ask the owning process to interrupt its runs and reap launcher jobs before force-kill.
+  try {
+    Invoke-WebRequest "http://127.0.0.1:$Port/api/shutdown" -Method Post -ContentType "application/json" -Body '{}' -UseBasicParsing -TimeoutSec 30 | Out-Null
+  } catch {}
   foreach ($name in "cmd.exe", "node.exe") {
     Get-CimInstance Win32_Process -Filter "Name='$name'" | Where-Object { $_.CommandLine -like "*$script*" } |
       ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }

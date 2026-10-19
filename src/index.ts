@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { consumeHandoffs } from "./handoffs.ts";
 import { watchProviders } from "./providers.ts";
 import { cleanupRuns } from "./observability.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -23,7 +24,11 @@ cleanup();
 setInterval(cleanup, 3600000).unref();
 const server = new McpServer({ name: "codex-delegate", version: pkg.version });
 
-const text = (t: string, isError = false) => ({ content: [{ type: "text" as const, text: t }], isError });
+const text = async (t: string, isError = false, session?: string) => {
+  const notified = await consumeHandoffs(undefined, config.runsDir, true);
+  const matching = session ? await consumeHandoffs(session) : "";
+  return { content: [{ type: "text" as const, text: [matching, notified, t].filter(Boolean).join("\n\n") }], isError };
+};
 
 /**
  * `effort` names a tier of the cost policy (policy.ts): each tier fixes a model and an effort. The
@@ -149,13 +154,15 @@ const delegateTool = server.registerTool(
       : undefined;
     try {
       const task = await delegateSync(input, extra.signal);
-      if (task.status === "running" && newUserInputs(task).length) return text(formatUserInputs(task));
-      if (task.status === "running" && newCheckpoints(task).length) return text(formatCheckpoints(task));
-      if (task.status === "running") return text(formatSuspicion(task));
-      if (task.outcome) return text(formatOutcome(task.outcome), !task.outcome.result.ok);
-      return text(task.error ?? "delegate failed", true);
+      const sessionText = (value: string, error = false) => text(value, error, task.progress?.sessionId ?? task.outcome?.result.sessionId);
+      if (task.status === "running" && newUserInputs(task).length) return sessionText(formatUserInputs(task));
+      if (task.status === "running" && newCheckpoints(task).length) return sessionText(formatCheckpoints(task));
+      if (task.status === "running" && task.progress?.suspicion) return sessionText(formatSuspicion(task));
+      if (task.status === "running") return sessionText(`${taskSummary(task)}\n${runningProgress(task)}\nstill running; call task_result to keep waiting.`);
+      if (task.outcome) return sessionText(formatOutcome(task.outcome), !task.outcome.result.ok);
+      return sessionText(task.error ?? "delegate failed", true);
     } catch (e) {
-      return text(String(e instanceof Error ? e.message : e), true);
+      return text(String(e instanceof Error ? e.message : e), true, input.session_id);
     } finally {
       if (heartbeat) clearInterval(heartbeat);
     }
@@ -198,21 +205,22 @@ server.registerTool(
   },
   async ({ task_id, wait_s, stall_after_s }) => {
     const t = getTask(task_id);
+    const sessionText = (value: string, error = false) => text(value, error, t?.progress?.sessionId ?? t?.outcome?.result.sessionId ?? storedTask(task_id)?.sessionId);
     if (!t) {
       const s = storedTask(task_id);
-      if (!s) return text(`unknown task_id '${task_id}'`, true);
-      if (s.status === "interrupted") return text(`task: ${s.id} (interrupted)\nthe server that ran it exited before it finished; ${s.sessionId ? `continue it with delegate(session_id="${s.sessionId}")` : "re-run it"} (check git status first).`, true);
-      if (s.status === "user_interrupted") return text(s.text ?? "status: user_interrupted");
-      return text(`task: ${s.id} (${s.status})\n${s.text ?? ""}`, s.status !== "done");
+      if (!s) return sessionText(`unknown task_id '${task_id}'`, true);
+      if (s.status === "interrupted") return sessionText(`task: ${s.id} (interrupted)\nthe server that ran it exited before it finished; ${s.sessionId ? `continue it with delegate(session_id="${s.sessionId}")` : "re-run it"} (check git status first).`, true);
+      if (s.status === "user_interrupted") return sessionText(s.text ?? "status: user_interrupted");
+      return sessionText(`task: ${s.id} (${s.status})\n${s.text ?? ""}`, s.status !== "done");
     }
     await waitTask(t, wait_s ?? 0, stall_after_s);
-    if (t.status === "running" && newUserInputs(t).length) return text(formatUserInputs(t));
-    if (t.status === "running" && newCheckpoints(t).length) return text(formatCheckpoints(t));
-    if (t.status === "running" && t.progress?.suspicion) return text(formatSuspicion(t));
-    if (t.status === "running") return text(`${taskSummary(t)}\n${runningProgress(t)}\nstill running — call again later or with a larger wait_s.`);
-    if (t.outcome?.result.userInterrupt) return text(formatOutcome(t.outcome));
-    if (t.outcome) return text(`task: ${t.id} (${t.status})\n${formatOutcome(t.outcome)}`, t.status !== "done");
-    return text(`task: ${t.id} (${t.status})\nerror: ${t.error}`, true);
+    if (t.status === "running" && newUserInputs(t).length) return sessionText(formatUserInputs(t));
+    if (t.status === "running" && newCheckpoints(t).length) return sessionText(formatCheckpoints(t));
+    if (t.status === "running" && t.progress?.suspicion) return sessionText(formatSuspicion(t));
+    if (t.status === "running") return sessionText(`${taskSummary(t)}\n${runningProgress(t)}\nstill running — call again later or with a larger wait_s.`);
+    if (t.outcome?.result.userInterrupt) return sessionText(formatOutcome(t.outcome));
+    if (t.outcome) return sessionText(`task: ${t.id} (${t.status})\n${formatOutcome(t.outcome)}`, t.status !== "done");
+    return sessionText(`task: ${t.id} (${t.status})\nerror: ${t.error}`, true);
   },
 );
 
@@ -226,7 +234,9 @@ server.registerTool(
   },
   async ({ task_id }) => {
     const task = getTask(task_id);
-    return task ? text(await inspectTask(task)) : text(`unknown task_id '${task_id}'`, true);
+    if (task) return text(await inspectTask(task), false, task.progress?.sessionId ?? task.outcome?.result.sessionId);
+    const stored = storedTask(task_id);
+    return stored ? text(stored.text ?? `task: ${stored.id} (${stored.status})`, false, stored.sessionId) : text(`unknown task_id '${task_id}'`, true);
   },
 );
 

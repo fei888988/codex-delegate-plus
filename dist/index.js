@@ -19,9 +19,9 @@ var __export = (target, all) => {
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    for (let key2 of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key2) && key2 !== except)
+        __defProp(to, key2, { get: () => from[key2], enumerable: !(desc = __getOwnPropDesc(from, key2)) || desc.enumerable });
   }
   return to;
 };
@@ -170,15 +170,15 @@ var require_code = __commonJS({
       return JSON.stringify(x).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
     }
     exports.safeStringify = safeStringify;
-    function getProperty(key) {
-      return typeof key == "string" && exports.IDENTIFIER.test(key) ? new _Code(`.${key}`) : _`[${key}]`;
+    function getProperty(key2) {
+      return typeof key2 == "string" && exports.IDENTIFIER.test(key2) ? new _Code(`.${key2}`) : _`[${key2}]`;
     }
     exports.getProperty = getProperty;
-    function getEsmExportName(key) {
-      if (typeof key == "string" && exports.IDENTIFIER.test(key)) {
-        return new _Code(`${key}`);
+    function getEsmExportName(key2) {
+      if (typeof key2 == "string" && exports.IDENTIFIER.test(key2)) {
+        return new _Code(`${key2}`);
       }
-      throw new Error(`CodeGen: invalid export name: ${key}, use explicit $id name mapping`);
+      throw new Error(`CodeGen: invalid export name: ${key2}, use explicit $id name mapping`);
     }
     exports.getEsmExportName = getEsmExportName;
     function regexpCode(rx) {
@@ -805,11 +805,11 @@ var require_codegen = __commonJS({
       // returns code for object literal for the passed argument list of key-value pairs
       object(...keyValues) {
         const code = ["{"];
-        for (const [key, value] of keyValues) {
+        for (const [key2, value] of keyValues) {
           if (code.length > 1)
             code.push(",");
-          code.push(key);
-          if (key !== value || this.opts.es5) {
+          code.push(key2);
+          if (key2 !== value || this.opts.es5) {
             code.push(":");
             (0, code_1.addCodeArg)(code, value);
           }
@@ -1084,17 +1084,17 @@ var require_util = __commonJS({
       if (typeof schema === "boolean")
         return;
       const rules = self.RULES.keywords;
-      for (const key in schema) {
-        if (!rules[key])
-          checkStrictMode(it, `unknown keyword: "${key}"`);
+      for (const key2 in schema) {
+        if (!rules[key2])
+          checkStrictMode(it, `unknown keyword: "${key2}"`);
       }
     }
     exports.checkUnknownRules = checkUnknownRules;
     function schemaHasRules(schema, rules) {
       if (typeof schema == "boolean")
         return !schema;
-      for (const key in schema)
-        if (rules[key])
+      for (const key2 in schema)
+        if (rules[key2])
           return true;
       return false;
     }
@@ -1102,8 +1102,8 @@ var require_util = __commonJS({
     function schemaHasRulesButRef(schema, RULES) {
       if (typeof schema == "boolean")
         return !schema;
-      for (const key in schema)
-        if (key !== "$ref" && RULES.all[key])
+      for (const key2 in schema)
+        if (key2 !== "$ref" && RULES.all[key2])
           return true;
       return false;
     }
@@ -1681,8 +1681,8 @@ var require_defaults = __commonJS({
     function assignDefaults(it, ty) {
       const { properties, items } = it.schema;
       if (ty === "object" && properties) {
-        for (const key in properties) {
-          assignDefault(it, key, properties[key].default);
+        for (const key2 in properties) {
+          assignDefault(it, key2, properties[key2].default);
         }
       } else if (ty === "array" && Array.isArray(items)) {
         items.forEach((sch, i) => assignDefault(it, i, sch.default));
@@ -2066,8 +2066,8 @@ var require_fast_deep_equal = __commonJS({
         for (i = length; i-- !== 0; )
           if (!Object.prototype.hasOwnProperty.call(b, keys[i])) return false;
         for (i = length; i-- !== 0; ) {
-          var key = keys[i];
-          if (!equal(a[key], b[key])) return false;
+          var key2 = keys[i];
+          if (!equal(a[key2], b[key2])) return false;
         }
         return true;
       }
@@ -2139,20 +2139,20 @@ var require_json_schema_traverse = __commonJS({
     function _traverse(opts, pre, post, schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex) {
       if (schema && typeof schema == "object" && !Array.isArray(schema)) {
         pre(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
-        for (var key in schema) {
-          var sch = schema[key];
+        for (var key2 in schema) {
+          var sch = schema[key2];
           if (Array.isArray(sch)) {
-            if (key in traverse.arrayKeywords) {
+            if (key2 in traverse.arrayKeywords) {
               for (var i = 0; i < sch.length; i++)
-                _traverse(opts, pre, post, sch[i], jsonPtr + "/" + key + "/" + i, rootSchema, jsonPtr, key, schema, i);
+                _traverse(opts, pre, post, sch[i], jsonPtr + "/" + key2 + "/" + i, rootSchema, jsonPtr, key2, schema, i);
             }
-          } else if (key in traverse.propsKeywords) {
+          } else if (key2 in traverse.propsKeywords) {
             if (sch && typeof sch == "object") {
               for (var prop in sch)
-                _traverse(opts, pre, post, sch[prop], jsonPtr + "/" + key + "/" + escapeJsonPtr(prop), rootSchema, jsonPtr, key, schema, prop);
+                _traverse(opts, pre, post, sch[prop], jsonPtr + "/" + key2 + "/" + escapeJsonPtr(prop), rootSchema, jsonPtr, key2, schema, prop);
             }
-          } else if (key in traverse.keywords || opts.allKeys && !(key in traverse.skipKeywords)) {
-            _traverse(opts, pre, post, sch, jsonPtr + "/" + key, rootSchema, jsonPtr, key, schema);
+          } else if (key2 in traverse.keywords || opts.allKeys && !(key2 in traverse.skipKeywords)) {
+            _traverse(opts, pre, post, sch, jsonPtr + "/" + key2, rootSchema, jsonPtr, key2, schema);
           }
         }
         post(schema, jsonPtr, rootSchema, parentJsonPtr, parentKeyword, parentSchema, keyIndex);
@@ -2209,10 +2209,10 @@ var require_resolve = __commonJS({
       "$dynamicAnchor"
     ]);
     function hasRef(schema) {
-      for (const key in schema) {
-        if (REF_KEYWORDS.has(key))
+      for (const key2 in schema) {
+        if (REF_KEYWORDS.has(key2))
           return true;
-        const sch = schema[key];
+        const sch = schema[key2];
         if (Array.isArray(sch) && sch.some(hasRef))
           return true;
         if (typeof sch == "object" && hasRef(sch))
@@ -2222,14 +2222,14 @@ var require_resolve = __commonJS({
     }
     function countKeys(schema) {
       let count = 0;
-      for (const key in schema) {
-        if (key === "$ref")
+      for (const key2 in schema) {
+        if (key2 === "$ref")
           return Infinity;
         count++;
-        if (SIMPLE_INLINED.has(key))
+        if (SIMPLE_INLINED.has(key2))
           continue;
-        if (typeof schema[key] == "object") {
-          (0, util_1.eachItem)(schema[key], (sch) => count += countKeys(sch));
+        if (typeof schema[key2] == "object") {
+          (0, util_1.eachItem)(schema[key2], (sch) => count += countKeys(sch));
         }
         if (count === Infinity)
           return Infinity;
@@ -2418,8 +2418,8 @@ var require_validate = __commonJS({
     function schemaCxtHasRules({ schema, self }) {
       if (typeof schema == "boolean")
         return !schema;
-      for (const key in schema)
-        if (self.RULES.all[key])
+      for (const key2 in schema)
+        if (self.RULES.all[key2])
           return true;
       return false;
     }
@@ -4458,7 +4458,7 @@ var require_core = __commonJS({
         }
       }
       // Adds schema to the instance
-      addSchema(schema, key, _meta, _validateSchema = this.opts.validateSchema) {
+      addSchema(schema, key2, _meta, _validateSchema = this.opts.validateSchema) {
         if (Array.isArray(schema)) {
           for (const sch of schema)
             this.addSchema(sch, void 0, _meta, _validateSchema);
@@ -4472,15 +4472,15 @@ var require_core = __commonJS({
             throw new Error(`schema ${schemaId} must be string`);
           }
         }
-        key = (0, resolve_1.normalizeId)(key || id);
-        this._checkUnique(key);
-        this.schemas[key] = this._addSchema(schema, _meta, key, _validateSchema, true);
+        key2 = (0, resolve_1.normalizeId)(key2 || id);
+        this._checkUnique(key2);
+        this.schemas[key2] = this._addSchema(schema, _meta, key2, _validateSchema, true);
         return this;
       }
       // Add schema that will be used to validate other schemas
       // options in META_IGNORE_OPTIONS are alway set to false
-      addMetaSchema(schema, key, _validateSchema = this.opts.validateSchema) {
-        this.addSchema(schema, key, true, _validateSchema);
+      addMetaSchema(schema, key2, _validateSchema = this.opts.validateSchema) {
+        this.addSchema(schema, key2, true, _validateSchema);
         return this;
       }
       //  Validate schema against its meta-schema
@@ -4636,14 +4636,14 @@ var require_core = __commonJS({
           let keywords = metaSchema;
           for (const seg of segments)
             keywords = keywords[seg];
-          for (const key in rules) {
-            const rule = rules[key];
+          for (const key2 in rules) {
+            const rule = rules[key2];
             if (typeof rule != "object")
               continue;
             const { $data } = rule.definition;
-            const schema = keywords[key];
+            const schema = keywords[key2];
             if ($data && schema)
-              keywords[key] = schemaOrData(schema);
+              keywords[key2] = schemaOrData(schema);
           }
         }
         return metaSchema;
@@ -4716,10 +4716,10 @@ var require_core = __commonJS({
     Ajv2.MissingRefError = ref_error_1.default;
     exports.default = Ajv2;
     function checkOptions(checkOpts, options, msg, log = "error") {
-      for (const key in checkOpts) {
-        const opt = key;
+      for (const key2 in checkOpts) {
+        const opt = key2;
         if (opt in options)
-          this.logger[log](`${msg}: option ${key}. ${checkOpts[opt]}`);
+          this.logger[log](`${msg}: option ${key2}. ${checkOpts[opt]}`);
       }
     }
     function getSchEnv(keyRef) {
@@ -4733,8 +4733,8 @@ var require_core = __commonJS({
       if (Array.isArray(optsSchemas))
         this.addSchema(optsSchemas);
       else
-        for (const key in optsSchemas)
-          this.addSchema(optsSchemas[key], key);
+        for (const key2 in optsSchemas)
+          this.addSchema(optsSchemas[key2], key2);
     }
     function addInitialFormats() {
       for (const name in this.opts.formats) {
@@ -5782,11 +5782,11 @@ var require_dependencies = __commonJS({
     function splitDependencies({ schema }) {
       const propertyDeps = {};
       const schemaDeps = {};
-      for (const key in schema) {
-        if (key === "__proto__")
+      for (const key2 in schema) {
+        if (key2 === "__proto__")
           continue;
-        const deps = Array.isArray(schema[key]) ? propertyDeps : schemaDeps;
-        deps[key] = schema[key];
+        const deps = Array.isArray(schema[key2]) ? propertyDeps : schemaDeps;
+        deps[key2] = schema[key2];
       }
       return [propertyDeps, schemaDeps];
     }
@@ -5863,13 +5863,13 @@ var require_propertyNames = __commonJS({
         if ((0, util_1.alwaysValidSchema)(it, schema))
           return;
         const valid = gen.name("valid");
-        gen.forIn("key", data, (key) => {
-          cxt.setParams({ propertyName: key });
+        gen.forIn("key", data, (key2) => {
+          cxt.setParams({ propertyName: key2 });
           cxt.subschema({
             keyword: "propertyNames",
-            data: key,
+            data: key2,
             dataTypes: ["string"],
-            propertyName: key,
+            propertyName: key2,
             compositeRule: true
           }, valid);
           gen.if((0, codegen_1.not)(valid), () => {
@@ -5918,38 +5918,38 @@ var require_additionalProperties = __commonJS({
         checkAdditionalProperties();
         cxt.ok((0, codegen_1._)`${errsCount} === ${names_1.default.errors}`);
         function checkAdditionalProperties() {
-          gen.forIn("key", data, (key) => {
+          gen.forIn("key", data, (key2) => {
             if (!props.length && !patProps.length)
-              additionalPropertyCode(key);
+              additionalPropertyCode(key2);
             else
-              gen.if(isAdditional(key), () => additionalPropertyCode(key));
+              gen.if(isAdditional(key2), () => additionalPropertyCode(key2));
           });
         }
-        function isAdditional(key) {
+        function isAdditional(key2) {
           let definedProp;
           if (props.length > 8) {
             const propsSchema = (0, util_1.schemaRefOrVal)(it, parentSchema.properties, "properties");
-            definedProp = (0, code_1.isOwnProperty)(gen, propsSchema, key);
+            definedProp = (0, code_1.isOwnProperty)(gen, propsSchema, key2);
           } else if (props.length) {
-            definedProp = (0, codegen_1.or)(...props.map((p) => (0, codegen_1._)`${key} === ${p}`));
+            definedProp = (0, codegen_1.or)(...props.map((p) => (0, codegen_1._)`${key2} === ${p}`));
           } else {
             definedProp = codegen_1.nil;
           }
           if (patProps.length) {
-            definedProp = (0, codegen_1.or)(definedProp, ...patProps.map((p) => (0, codegen_1._)`${(0, code_1.usePattern)(cxt, p)}.test(${key})`));
+            definedProp = (0, codegen_1.or)(definedProp, ...patProps.map((p) => (0, codegen_1._)`${(0, code_1.usePattern)(cxt, p)}.test(${key2})`));
           }
           return (0, codegen_1.not)(definedProp);
         }
-        function deleteAdditional(key) {
-          gen.code((0, codegen_1._)`delete ${data}[${key}]`);
+        function deleteAdditional(key2) {
+          gen.code((0, codegen_1._)`delete ${data}[${key2}]`);
         }
-        function additionalPropertyCode(key) {
+        function additionalPropertyCode(key2) {
           if (opts.removeAdditional === "all" || opts.removeAdditional && schema === false) {
-            deleteAdditional(key);
+            deleteAdditional(key2);
             return;
           }
           if (schema === false) {
-            cxt.setParams({ additionalProperty: key });
+            cxt.setParams({ additionalProperty: key2 });
             cxt.error();
             if (!allErrors)
               gen.break();
@@ -5958,22 +5958,22 @@ var require_additionalProperties = __commonJS({
           if (typeof schema == "object" && !(0, util_1.alwaysValidSchema)(it, schema)) {
             const valid = gen.name("valid");
             if (opts.removeAdditional === "failing") {
-              applyAdditionalSchema(key, valid, false);
+              applyAdditionalSchema(key2, valid, false);
               gen.if((0, codegen_1.not)(valid), () => {
                 cxt.reset();
-                deleteAdditional(key);
+                deleteAdditional(key2);
               });
             } else {
-              applyAdditionalSchema(key, valid);
+              applyAdditionalSchema(key2, valid);
               if (!allErrors)
                 gen.if((0, codegen_1.not)(valid), () => gen.break());
             }
           }
         }
-        function applyAdditionalSchema(key, valid, errors) {
+        function applyAdditionalSchema(key2, valid, errors) {
           const subschema = {
             keyword: "additionalProperties",
-            dataProp: key,
+            dataProp: key2,
             dataPropType: util_1.Type.Str
           };
           if (errors === false) {
@@ -6098,19 +6098,19 @@ var require_patternProperties = __commonJS({
           }
         }
         function validateProperties(pat) {
-          gen.forIn("key", data, (key) => {
-            gen.if((0, codegen_1._)`${(0, code_1.usePattern)(cxt, pat)}.test(${key})`, () => {
+          gen.forIn("key", data, (key2) => {
+            gen.if((0, codegen_1._)`${(0, code_1.usePattern)(cxt, pat)}.test(${key2})`, () => {
               const alwaysValid = alwaysValidPatterns.includes(pat);
               if (!alwaysValid) {
                 cxt.subschema({
                   keyword: "patternProperties",
                   schemaProp: pat,
-                  dataProp: key,
+                  dataProp: key2,
                   dataPropType: util_2.Type.Str
                 }, valid);
               }
               if (it.opts.unevaluated && props !== true) {
-                gen.assign((0, codegen_1._)`${props}[${key}]`, true);
+                gen.assign((0, codegen_1._)`${props}[${key2}]`, true);
               } else if (!alwaysValid && !it.allErrors) {
                 gen.if((0, codegen_1.not)(valid), () => gen.break());
               }
@@ -7200,27 +7200,156 @@ var require_dist = __commonJS({
   }
 });
 
-// src/providers.ts
-import { chmodSync, copyFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, renameSync, rmSync, statSync, watchFile, writeFileSync } from "node:fs";
-import { dirname, join as join2 } from "node:path";
-import { homedir as homedir2 } from "node:os";
-import { DatabaseSync } from "node:sqlite";
-import { createHash, randomUUID } from "node:crypto";
+// src/handoffs.ts
+import { appendFile as appendFile2, mkdir as mkdir2, readdir as readdir2, readFile as readFile2, rmdir as rmdir2 } from "node:fs/promises";
+import { join as join3 } from "node:path";
+
+// src/inbox.ts
+import { readFile, writeFile, appendFile, rename, mkdir, readdir, stat, rmdir } from "node:fs/promises";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+async function readJson(file2) {
+  try {
+    return JSON.parse(await readFile(file2, "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+async function atomic(file2, value) {
+  await mkdir(join(file2, ".."), { recursive: true });
+  const tmp = `${file2}.${randomUUID()}.tmp`;
+  await writeFile(tmp, JSON.stringify(value));
+  await rename(tmp, file2);
+}
+var inboxPath = (dir2, mid) => join(dir2, "inbox", `${mid}.json`);
+async function locked(dir2, mid, fn) {
+  const lock = inboxPath(dir2, `${mid}.lock`);
+  await mkdir(join(dir2, "inbox"), { recursive: true });
+  for (let tries = 0; ; tries++) {
+    try {
+      await mkdir(lock);
+      break;
+    } catch (e) {
+      if (e.code !== "EEXIST" || tries >= 200) throw e;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await rmdir(lock);
+  }
+}
+async function ack(dir2, mid, state, error62, turn) {
+  await atomic(inboxPath(dir2, `${mid}.ack`), { state, at: Date.now(), ...error62 ? { error: error62 } : {}, ...turn ? { turn } : {} });
+}
+async function messages(dir2) {
+  let names;
+  try {
+    names = await readdir(join(dir2, "inbox"));
+  } catch {
+    return [];
+  }
+  const result = [];
+  for (const name of names.filter((n) => /^[\w-]+(?:\.claimed|\.editing)?\.json$/.test(n) && !n.startsWith("interrupt."))) {
+    const m = await readJson(join(dir2, "inbox", name));
+    if (!m?.mid || m.from !== "user") continue;
+    const a = await readJson(inboxPath(dir2, `${m.mid}.ack`));
+    result.push({ ...m, state: a?.state ?? "queued", stateAt: a?.at ?? m.at, error: a?.error, turn: a?.turn });
+  }
+  try {
+    for (const line of (await readFile(join(dir2, "inbox", "lead.jsonl"), "utf8")).split("\n")) {
+      try {
+        const m = JSON.parse(line);
+        result.push({ ...m, notify: false, stateAt: m.at });
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return result.sort((a, b) => a.at - b.at || a.mid.localeCompare(b.mid));
+}
+async function claim(dir2, mid) {
+  return locked(dir2, mid, async () => {
+    const a = await readJson(inboxPath(dir2, `${mid}.ack`));
+    if (a && a.state !== "queued") return void 0;
+    try {
+      await rename(inboxPath(dir2, mid), inboxPath(dir2, `${mid}.claimed`));
+    } catch {
+      return void 0;
+    }
+    return readJson(inboxPath(dir2, `${mid}.claimed`));
+  });
+}
+async function markQueued(dir2, mid) {
+  await locked(dir2, mid, async () => {
+    if (await readJson(inboxPath(dir2, mid)) && !await readJson(inboxPath(dir2, `${mid}.ack`))) await ack(dir2, mid, "queued");
+  });
+}
+async function leadInput(dir2, text2, state) {
+  await mkdir(join(dir2, "inbox"), { recursive: true });
+  await appendFile(join(dir2, "inbox", "lead.jsonl"), JSON.stringify({ mid: randomUUID(), mode: "steer", text: text2, at: Date.now(), from: "lead", state }) + "\n");
+}
+async function finishInputs(dir2) {
+  for (const m of await messages(dir2)) if (m.from === "user" && m.state === "queued" && await claim(dir2, m.mid)) await ack(dir2, m.mid, "undelivered");
+  return messages(dir2);
+}
+async function launcherJobs(dir2) {
+  let names;
+  try {
+    names = await readdir(dir2);
+  } catch {
+    return [];
+  }
+  const jobs = [];
+  for (const name of names) {
+    const match = /^cmd-(\d+)\.pid$/.exec(name);
+    if (!match) continue;
+    const n = Number(match[1]);
+    try {
+      await stat(join(dir2, `cmd-${n}.exit`));
+      continue;
+    } catch {
+    }
+    const pid = Number(await readFile(join(dir2, name), "utf8"));
+    try {
+      process.kill(pid, 0);
+    } catch {
+      continue;
+    }
+    const m = await readJson(join(dir2, `cmd-${n}.json`));
+    jobs.push({ n, pid, command: [m?.program, ...m?.args ?? []].filter(Boolean).join(" "), startedAt: m?.startedAt, log: join(dir2, `cmd-${n}.log`) });
+  }
+  return jobs;
+}
+function renderInputs(inputs) {
+  const users = inputs.filter((m) => m.from === "user");
+  return users.length ? "user input during run:\n" + users.map((m) => `${m.mode} ${new Date(m.at).toISOString()} ${m.state}; turn ${m.turn ?? "(none)"}: ${m.text.slice(0, 300)}`).join("\n") : "";
+}
+function interruptText(i, session, inputs, jobs, dir2) {
+  return [
+    `status: user_interrupted`,
+    `reason: ${i.reason || "\u7528\u6237\u4E2D\u65AD\uFF0C\u539F\u56E0\u4E0D\u660E (the user interrupted without giving a reason)"}`,
+    `next: PAUSE this work. Do not resume, retry or re-delegate on your own; tell the user it was interrupted and wait for their instruction. session_id ${session ?? "(none)"} can continue it later.`,
+    ...inputs.filter((m) => m.state === "undelivered").map((m) => `undelivered ${m.mid}: ${m.text}`),
+    ...jobs.map((j) => i.killLongruns ? `stopped: cmd-${j.n} pid ${j.pid} log ${j.log}` : `kept running by user choice: cmd-${j.n} pid ${j.pid} log ${j.log} exit-file ${join(dir2, `cmd-${j.n}.exit`)}; ask the user before stopping it.`)
+  ].join("\n");
+}
 
 // src/config.ts
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join as join2 } from "node:path";
 function fallbackDirs(env, platform) {
   const home = homedir();
   if (platform === "win32") {
-    return [env.APPDATA ? join(env.APPDATA, "npm") : "", join(home, ".bun", "bin"), join(home, ".cargo", "bin")].filter(Boolean);
+    return [env.APPDATA ? join2(env.APPDATA, "npm") : "", join2(home, ".bun", "bin"), join2(home, ".cargo", "bin")].filter(Boolean);
   }
   return [
-    join(home, ".bun", "bin"),
-    join(home, ".local", "bin"),
-    join(home, ".npm-global", "bin"),
-    join(home, ".cargo", "bin"),
+    join2(home, ".bun", "bin"),
+    join2(home, ".local", "bin"),
+    join2(home, ".npm-global", "bin"),
+    join2(home, ".cargo", "bin"),
     "/usr/local/bin",
     "/opt/homebrew/bin",
     "/usr/bin"
@@ -7233,12 +7362,12 @@ function resolveCodex(env = process.env, platform = process.platform) {
   const dirs = [...path.split(platform === "win32" ? ";" : delimiter).filter(Boolean), ...fallbackDirs(env, platform)];
   for (const dir2 of dirs) {
     if (platform === "win32") {
-      const js = join(dir2, "node_modules", "@openai", "codex", "bin", "codex.js");
+      const js = join2(dir2, "node_modules", "@openai", "codex", "bin", "codex.js");
       if (existsSync(js)) return viaNode(js);
-      const exe = join(dir2, "codex.exe");
+      const exe = join2(dir2, "codex.exe");
       if (existsSync(exe)) return { cmd: exe, args: [] };
     } else {
-      const candidate = join(dir2, "codex");
+      const candidate = join2(dir2, "codex");
       if (existsSync(candidate)) return { cmd: candidate, args: [] };
     }
   }
@@ -7267,8 +7396,8 @@ function optionalBool(v) {
   if (v === void 0 || v.trim() === "") return void 0;
   return bool(v, false);
 }
-var codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
-function configuredModel(path = join(codexHome, "config.toml")) {
+var codexHome = process.env.CODEX_HOME || join2(homedir(), ".codex");
+function configuredModel(path = join2(codexHome, "config.toml")) {
   try {
     const top = readFileSync(path, "utf8").split(/^\s*\[/m)[0] ?? "";
     return top.match(/^\s*model\s*=\s*"([^"]+)"/m)?.[1];
@@ -7321,19 +7450,97 @@ var config = {
   checkpointPollMs: int(process.env.CODEX_DELEGATE_CHECKPOINT_POLL_MS, 2e3),
   // What goes back into the caller's context. The full event log stays on disk.
   maxOutputChars: int(process.env.CODEX_DELEGATE_MAX_OUTPUT, 6e3),
-  runsDir: process.env.CODEX_DELEGATE_RUNS_DIR || join(homedir(), ".codex-delegate", "runs"),
+  runsDir: process.env.CODEX_DELEGATE_RUNS_DIR || join2(homedir(), ".codex-delegate", "runs"),
   // Cost tiers and guidance prompts, edited from the dashboard (see policy.ts).
-  policyFile: process.env.CODEX_DELEGATE_POLICY || join(homedir(), ".codex-delegate", "policy.json"),
+  policyFile: process.env.CODEX_DELEGATE_POLICY || join2(homedir(), ".codex-delegate", "policy.json"),
   defaultCwd: process.env.CODEX_DELEGATE_CWD || process.cwd()
 };
 
+// src/handoffs.ts
+var key = (session) => encodeURIComponent(session);
+async function appendHandoff(dir2, session, record2) {
+  await mkdir2(join3(dir2, "handoffs"), { recursive: true });
+  await appendFile2(join3(dir2, "handoffs", key(session) + ".jsonl"), JSON.stringify(record2) + "\n");
+}
+async function handoffs(dir2) {
+  const result = /* @__PURE__ */ new Map();
+  let files;
+  try {
+    files = await readdir2(join3(dir2, "handoffs"));
+  } catch {
+    return result;
+  }
+  for (const file2 of files.filter((f) => f.endsWith(".jsonl"))) {
+    const records = /* @__PURE__ */ new Map();
+    for (const line of (await readFile2(join3(dir2, "handoffs", file2), "utf8")).split("\n")) {
+      try {
+        const e = JSON.parse(line);
+        if (e.runId) records.set(e.runId, { ...records.get(e.runId), ...e });
+      } catch {
+      }
+    }
+    result.set(file2.slice(0, -6), [...records.values()]);
+  }
+  return result;
+}
+function renderHandoffs(records) {
+  return "user continued this codex session from the dashboard:\n" + records.map((r) => `${new Date(r.at ?? r.endedAt ?? Date.now()).toISOString()} run ${r.runId}
+user: ${r.text}
+state: ${r.state}
+codex: ${r.reply ?? "(still running)"}
+changed files: ${r.changes?.join(", ") || "(unavailable)"}`).join("\n") + "\nnext: take the user's changes into account; the session's latest state includes them.";
+}
+async function consumeHandoffs(session, dir2 = config.runsDir, notifyOnly = false) {
+  const blocks = [];
+  for (const [id, records] of await handoffs(dir2)) {
+    if (session && id !== key(session)) continue;
+    const lock = join3(dir2, "handoffs", id + ".lock");
+    let acquired = false;
+    for (let n = 0; n < 200; n++) {
+      try {
+        await mkdir2(lock);
+        acquired = true;
+        break;
+      } catch (e) {
+        if (e.code !== "EEXIST") throw e;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    }
+    if (!acquired) continue;
+    try {
+      const file2 = join3(dir2, "handoffs", id + ".consumed.json");
+      const consumed = await readJson(file2) ?? [];
+      const fresh = records.filter((r) => !consumed.includes(r.runId) && (!notifyOnly || r.notify && r.parentPid === process.pid));
+      if (!fresh.length) continue;
+      blocks.push((notifyOnly ? `status: user_continued (another codex run, started by the user from the dashboard, is ${fresh.some((r) => r.state === "started") ? "running" : "finished"})
+` : "") + renderHandoffs(fresh));
+      await atomic(file2, [...consumed, ...fresh.map((r) => r.runId)]);
+    } finally {
+      await rmdir2(lock);
+    }
+  }
+  return blocks.join("\n\n");
+}
+async function hasNotifyHandoffs(dir2 = config.runsDir) {
+  for (const [id, records] of await handoffs(dir2)) {
+    const consumed = await readJson(join3(dir2, "handoffs", id + ".consumed.json")) ?? [];
+    if (records.some((r) => r.notify && r.parentPid === process.pid && !consumed.includes(r.runId))) return true;
+  }
+  return false;
+}
+
 // src/providers.ts
-var providersFile = join2(homedir2(), ".codex-delegate", "providers.json");
-var homesRoot = join2(homedir2(), ".codex-delegate", "homes");
-var ccswitchFile = join2(homedir2(), ".cc-switch", "cc-switch.db");
+import { chmodSync, copyFileSync, existsSync as existsSync2, mkdirSync, readFileSync as readFileSync2, renameSync, rmSync, statSync, watchFile, writeFileSync } from "node:fs";
+import { dirname, join as join4 } from "node:path";
+import { homedir as homedir2 } from "node:os";
+import { DatabaseSync } from "node:sqlite";
+import { createHash, randomUUID as randomUUID2 } from "node:crypto";
+var providersFile = join4(homedir2(), ".codex-delegate", "providers.json");
+var homesRoot = join4(homedir2(), ".codex-delegate", "homes");
+var ccswitchFile = join4(homedir2(), ".cc-switch", "cc-switch.db");
 function providerHome(p, root = homesRoot) {
   if (!ID.test(p.id)) throw Error("Invalid provider id");
-  return join2(root, p.id);
+  return join4(root, p.id);
 }
 var refreshTime = (a) => {
   const time3 = Date.parse(a?.last_refresh ?? "");
@@ -7351,7 +7558,7 @@ function readAuth(file2) {
 }
 function atomicJson(file2, value) {
   mkdirSync(dirname(file2), { recursive: true });
-  const tmp = `${file2}.${randomUUID()}.tmp`;
+  const tmp = `${file2}.${randomUUID2()}.tmp`;
   try {
     writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: 384, flag: "wx" });
     renameSync(tmp, file2);
@@ -7362,7 +7569,7 @@ function atomicJson(file2, value) {
 }
 var PROVIDER_KEY = "CODEX_DELEGATE_PROVIDER_KEY";
 var ID = /^(?!system$)[a-zA-Z0-9_-]{1,64}$/;
-var maskKey = (key) => key ? key.length > 9 ? `${key.slice(0, 5)}\u2026${key.slice(-4)}` : "\u2026" : "";
+var maskKey = (key2) => key2 ? key2.length > 9 ? `${key2.slice(0, 5)}\u2026${key2.slice(-4)}` : "\u2026" : "";
 var tomlString = (s) => JSON.stringify(s).replace(/\x7f/g, "\\u007f");
 var tomlValue = (v) => typeof v === "string" ? tomlString(v) : Array.isArray(v) ? `[${v.map(tomlValue).join(",")}]` : typeof v === "object" ? `{${Object.entries(v).map(([k, x]) => `${tomlString(k)}=${tomlValue(x)}`).join(",")}}` : String(v);
 function parseToml(text2, ignoreUnrelated = false) {
@@ -7566,9 +7773,9 @@ function providerArgs(p) {
 }
 function prepareProviderHome(p, paths = {}) {
   const home = providerHome(p, paths.homesRoot);
-  if (!readAuth(join2(home, "auth.json"))) throw Error("Missing account auth.json; re-import from cc-switch");
+  if (!readAuth(join4(home, "auth.json"))) throw Error("Missing account auth.json; re-import from cc-switch");
   for (const name of ["config.toml", "AGENTS.md"]) {
-    const source = join2(paths.codexHome ?? config.codexHome, name), dest = join2(home, name);
+    const source = join4(paths.codexHome ?? config.codexHome, name), dest = join4(home, name);
     if (existsSync2(source)) copyFileSync(source, dest);
     else rmSync(dest, { force: true });
   }
@@ -7586,13 +7793,13 @@ function providerEnv(p, extra = {}, paths = {}) {
 }
 function providerSecrets(p, paths = {}) {
   if (p?.auth !== "chatgpt") return p?.apiKey ? [p.apiKey] : [];
-  const auth = readAuth(join2(providerHome(p, paths.homesRoot), "auth.json"));
+  const auth = readAuth(join4(providerHome(p, paths.homesRoot), "auth.json"));
   return Object.values(auth?.tokens ?? {}).filter((v) => typeof v === "string" && !!v);
 }
 async function withProviderLock(p, paths, action) {
   const home = providerHome(p, paths.homesRoot);
   mkdirSync(home, { recursive: true });
-  const file2 = join2(home, ".token-sync.lock"), owner = randomUUID(), deadline = Date.now() + 1e4;
+  const file2 = join4(home, ".token-sync.lock"), owner = randomUUID2(), deadline = Date.now() + 1e4;
   for (; ; ) {
     try {
       writeFileSync(file2, owner, { flag: "wx", mode: 384 });
@@ -7621,7 +7828,7 @@ async function syncTokens(p, paths = {}) {
   if (p.sync !== true || p.source?.type !== "cc-switch") return { winner: null, locations: [] };
   try {
     return await withProviderLock(p, paths, () => {
-      const homeFile = join2(providerHome(p, paths.homesRoot), "auth.json");
+      const homeFile = join4(providerHome(p, paths.homesRoot), "auth.json");
       const home = readAuth(homeFile);
       const accountId = home?.tokens?.account_id;
       if (!accountId || p.account && maskAccount(accountId) !== p.account.accountId) throw Error("Account mismatch");
@@ -7652,7 +7859,7 @@ async function syncTokens(p, paths = {}) {
             } });
           }
         }
-        const liveFile = join2(paths.codexHome ?? config.codexHome, "auth.json");
+        const liveFile = join4(paths.codexHome ?? config.codexHome, "auth.json");
         addFile("live", liveFile, readAuth(liveFile));
         const newest = Math.max(...locations.map((l) => refreshTime(l.auth)));
         const winners = locations.filter((l) => refreshTime(l.auth) === newest);
@@ -7676,7 +7883,7 @@ async function syncTokens(p, paths = {}) {
 
 // src/observability.ts
 import { closeSync, openSync, readSync, readdirSync, readFileSync as readFileSync3, lstatSync, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { join as join3, relative } from "node:path";
+import { join as join5, relative } from "node:path";
 function effectiveSandbox(sandbox2, auto, sandboxWrites) {
   return (sandbox2 ?? (auto ? "write" : "read-only")) === "read-only" ? "read-only" : sandboxWrites ? "workspace-write" : "danger-full-access";
 }
@@ -7706,7 +7913,7 @@ function entries(dir2) {
 }
 function readMeta(dir2) {
   try {
-    return JSON.parse(readFileSync3(join3(dir2, "meta.json"), "utf8"));
+    return JSON.parse(readFileSync3(join5(dir2, "meta.json"), "utf8"));
   } catch {
     return void 0;
   }
@@ -7727,7 +7934,7 @@ function tailFile(file2, bytes) {
 }
 function commandLogs(dir2) {
   return entries(dir2).filter((e) => e.isFile() && /^cmd-.*\.log$/.test(e.name)).flatMap((e) => {
-    const file2 = join3(dir2, e.name);
+    const file2 = join5(dir2, e.name);
     try {
       const stat3 = lstatSync(file2);
       return [{ file: file2, name: e.name, bytes: stat3.size, mtime: stat3.mtimeMs }];
@@ -7778,7 +7985,7 @@ function baseline(runsDir, command, exclude) {
   const values = [];
   for (const e of entries(runsDir)) {
     if (!e.isDirectory() || e.name === exclude) continue;
-    const meta3 = readMeta(join3(runsDir, e.name));
+    const meta3 = readMeta(join5(runsDir, e.name));
     for (const c of [...meta3?.commands ?? [], ...meta3?.checks ?? []]) {
       if (c.durationMs !== void 0 && commandClass(c.command) === cls) values.push(c.durationMs / 1e3);
     }
@@ -7786,7 +7993,7 @@ function baseline(runsDir, command, exclude) {
   return values.length >= 3 ? `baseline: ${cls} p50 ${percentile(values, 0.5).toFixed(0)}s p90 ${percentile(values, 0.9).toFixed(0)}s (n=${values.length})` : "";
 }
 function evidenceDelta(current, previous) {
-  const delta = (key) => current[key] === void 0 || previous?.[key] === void 0 ? "?" : Math.max(0, current[key] - previous[key]).toFixed(0);
+  const delta = (key2) => current[key2] === void 0 || previous?.[key2] === void 0 ? "?" : Math.max(0, current[key2] - previous[key2]).toFixed(0);
   return `CPU \u0394${delta("cpuTotalMs")}ms; RSS ${((current.rssBytes ?? 0) / 1048576).toFixed(0)}MB; IO \u0394R${delta("ioReadBytes")}/W${delta("ioWriteBytes")}B`;
 }
 function trendReport(points = []) {
@@ -7813,7 +8020,7 @@ exit: ${meta3.exitKind ?? meta3.state}; denied paths: ${paths}; last command: ${
 }
 function previousDiagnosis(runsDir, sessionId) {
   if (!sessionId) return "";
-  const metas = entries(runsDir).filter((e) => e.isDirectory()).map((e) => readMeta(join3(runsDir, e.name))).filter((m) => !!m && m.sessionId === sessionId && (m.state !== "running" || !!m.pid && !alive(m.pid) && !alive(m.codexPid))).map((m) => m.state === "running" ? { ...m, state: "interrupted", exitKind: "crashed" } : m).sort((a, b) => b.startedAt - a.startedAt);
+  const metas = entries(runsDir).filter((e) => e.isDirectory()).map((e) => readMeta(join5(runsDir, e.name))).filter((m) => !!m && m.sessionId === sessionId && (m.state !== "running" || !!m.pid && !alive(m.pid) && !alive(m.codexPid))).map((m) => m.state === "running" ? { ...m, state: "interrupted", exitKind: "crashed" } : m).sort((a, b) => b.startedAt - a.startedAt);
   return diagnosisPrefix(metas[0]);
 }
 function alive(pid) {
@@ -7826,11 +8033,11 @@ function alive(pid) {
   }
 }
 function dirBytes(dir2) {
-  return entries(dir2).reduce((sum, e) => sum + (e.isDirectory() ? dirBytes(join3(dir2, e.name)) : e.isFile() ? lstatSync(join3(dir2, e.name)).size : 0), 0);
+  return entries(dir2).reduce((sum, e) => sum + (e.isDirectory() ? dirBytes(join5(dir2, e.name)) : e.isFile() ? lstatSync(join5(dir2, e.name)).size : 0), 0);
 }
 function cleanupRuns(runsDir, retention, active2 = /* @__PURE__ */ new Set(), now = Date.now()) {
-  const runs = entries(runsDir).filter((e) => e.isDirectory() && e.name !== "pending" && e.name !== "tasks").map((e) => {
-    const dir2 = join3(runsDir, e.name), meta3 = readMeta(dir2);
+  const runs = entries(runsDir).filter((e) => e.isDirectory() && e.name !== "pending" && e.name !== "tasks" && e.name !== "handoffs").map((e) => {
+    const dir2 = join5(runsDir, e.name), meta3 = readMeta(dir2);
     return { dir: dir2, meta: meta3, age: now - (meta3?.endedAt ?? meta3?.startedAt ?? lstatSync(dir2).mtimeMs), bytes: dirBytes(dir2), protected: active2.has(e.name) || meta3?.state === "running" && (alive(meta3.pid) || alive(meta3.codexPid) || (meta3.heartbeatAt !== void 0 ? now - meta3.heartbeatAt < 9e4 : meta3.pid === void 0 && meta3.codexPid === void 0)) };
   }).sort((a, b) => b.age - a.age);
   let total = dirBytes(runsDir);
@@ -7851,7 +8058,7 @@ function recentFiles(cwd, now = Date.now()) {
     for (const e of entries(dir2)) {
       if (++visited > 2e4) return;
       if (e.name === ".git" || e.name === "node_modules") continue;
-      const file2 = join3(dir2, e.name);
+      const file2 = join5(dir2, e.name);
       if (e.isDirectory()) walk(file2);
       else if (e.isFile()) {
         try {
@@ -7900,9 +8107,9 @@ var util;
   };
   util2.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object3) => {
     const keys = [];
-    for (const key in object3) {
-      if (Object.prototype.hasOwnProperty.call(object3, key)) {
-        keys.push(key);
+    for (const key2 in object3) {
+      if (Object.prototype.hasOwnProperty.call(object3, key2)) {
+        keys.push(key2);
       }
     }
     return keys;
@@ -8309,10 +8516,10 @@ var ParseStatus = class _ParseStatus {
   static async mergeObjectAsync(status, pairs) {
     const syncPairs = [];
     for (const pair of pairs) {
-      const key = await pair.key;
+      const key2 = await pair.key;
       const value = await pair.value;
       syncPairs.push({
-        key,
+        key: key2,
         value
       });
     }
@@ -8321,17 +8528,17 @@ var ParseStatus = class _ParseStatus {
   static mergeObjectSync(status, pairs) {
     const finalObject = {};
     for (const pair of pairs) {
-      const { key, value } = pair;
-      if (key.status === "aborted")
+      const { key: key2, value } = pair;
+      if (key2.status === "aborted")
         return INVALID;
       if (value.status === "aborted")
         return INVALID;
-      if (key.status === "dirty")
+      if (key2.status === "dirty")
         status.dirty();
       if (value.status === "dirty")
         status.dirty();
-      if (key.value !== "__proto__" && (typeof value.value !== "undefined" || pair.alwaysSet)) {
-        finalObject[key.value] = value.value;
+      if (key2.value !== "__proto__" && (typeof value.value !== "undefined" || pair.alwaysSet)) {
+        finalObject[key2.value] = value.value;
       }
     }
     return { status: status.value, value: finalObject };
@@ -8356,12 +8563,12 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path, key) {
+  constructor(parent, value, path, key2) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
     this._path = path;
-    this._key = key;
+    this._key = key2;
   }
   get path() {
     if (!this._cachedPath.length) {
@@ -10106,9 +10313,9 @@ ZodArray.create = (schema, params) => {
 function deepPartialify(schema) {
   if (schema instanceof ZodObject) {
     const newShape = {};
-    for (const key in schema.shape) {
-      const fieldSchema = schema.shape[key];
-      newShape[key] = ZodOptional.create(deepPartialify(fieldSchema));
+    for (const key2 in schema.shape) {
+      const fieldSchema = schema.shape[key2];
+      newShape[key2] = ZodOptional.create(deepPartialify(fieldSchema));
     }
     return new ZodObject({
       ...schema._def,
@@ -10159,29 +10366,29 @@ var ZodObject = class _ZodObject extends ZodType {
     const { shape, keys: shapeKeys } = this._getCached();
     const extraKeys = [];
     if (!(this._def.catchall instanceof ZodNever && this._def.unknownKeys === "strip")) {
-      for (const key in ctx.data) {
-        if (!shapeKeys.includes(key)) {
-          extraKeys.push(key);
+      for (const key2 in ctx.data) {
+        if (!shapeKeys.includes(key2)) {
+          extraKeys.push(key2);
         }
       }
     }
     const pairs = [];
-    for (const key of shapeKeys) {
-      const keyValidator = shape[key];
-      const value = ctx.data[key];
+    for (const key2 of shapeKeys) {
+      const keyValidator = shape[key2];
+      const value = ctx.data[key2];
       pairs.push({
-        key: { status: "valid", value: key },
-        value: keyValidator._parse(new ParseInputLazyPath(ctx, value, ctx.path, key)),
-        alwaysSet: key in ctx.data
+        key: { status: "valid", value: key2 },
+        value: keyValidator._parse(new ParseInputLazyPath(ctx, value, ctx.path, key2)),
+        alwaysSet: key2 in ctx.data
       });
     }
     if (this._def.catchall instanceof ZodNever) {
       const unknownKeys = this._def.unknownKeys;
       if (unknownKeys === "passthrough") {
-        for (const key of extraKeys) {
+        for (const key2 of extraKeys) {
           pairs.push({
-            key: { status: "valid", value: key },
-            value: { status: "valid", value: ctx.data[key] }
+            key: { status: "valid", value: key2 },
+            value: { status: "valid", value: ctx.data[key2] }
           });
         }
       } else if (unknownKeys === "strict") {
@@ -10198,15 +10405,15 @@ var ZodObject = class _ZodObject extends ZodType {
       }
     } else {
       const catchall = this._def.catchall;
-      for (const key of extraKeys) {
-        const value = ctx.data[key];
+      for (const key2 of extraKeys) {
+        const value = ctx.data[key2];
         pairs.push({
-          key: { status: "valid", value: key },
+          key: { status: "valid", value: key2 },
           value: catchall._parse(
-            new ParseInputLazyPath(ctx, value, ctx.path, key)
+            new ParseInputLazyPath(ctx, value, ctx.path, key2)
             //, ctx.child(key), value, getParsedType(value)
           ),
-          alwaysSet: key in ctx.data
+          alwaysSet: key2 in ctx.data
         });
       }
     }
@@ -10214,10 +10421,10 @@ var ZodObject = class _ZodObject extends ZodType {
       return Promise.resolve().then(async () => {
         const syncPairs = [];
         for (const pair of pairs) {
-          const key = await pair.key;
+          const key2 = await pair.key;
           const value = await pair.value;
           syncPairs.push({
-            key,
+            key: key2,
             value,
             alwaysSet: pair.alwaysSet
           });
@@ -10342,8 +10549,8 @@ var ZodObject = class _ZodObject extends ZodType {
   //   }) as any;
   //   return merged;
   // }
-  setKey(key, schema) {
-    return this.augment({ [key]: schema });
+  setKey(key2, schema) {
+    return this.augment({ [key2]: schema });
   }
   // merge<Incoming extends AnyZodObject>(
   //   merging: Incoming
@@ -10374,9 +10581,9 @@ var ZodObject = class _ZodObject extends ZodType {
   }
   pick(mask) {
     const shape = {};
-    for (const key of util.objectKeys(mask)) {
-      if (mask[key] && this.shape[key]) {
-        shape[key] = this.shape[key];
+    for (const key2 of util.objectKeys(mask)) {
+      if (mask[key2] && this.shape[key2]) {
+        shape[key2] = this.shape[key2];
       }
     }
     return new _ZodObject({
@@ -10386,9 +10593,9 @@ var ZodObject = class _ZodObject extends ZodType {
   }
   omit(mask) {
     const shape = {};
-    for (const key of util.objectKeys(this.shape)) {
-      if (!mask[key]) {
-        shape[key] = this.shape[key];
+    for (const key2 of util.objectKeys(this.shape)) {
+      if (!mask[key2]) {
+        shape[key2] = this.shape[key2];
       }
     }
     return new _ZodObject({
@@ -10404,12 +10611,12 @@ var ZodObject = class _ZodObject extends ZodType {
   }
   partial(mask) {
     const newShape = {};
-    for (const key of util.objectKeys(this.shape)) {
-      const fieldSchema = this.shape[key];
-      if (mask && !mask[key]) {
-        newShape[key] = fieldSchema;
+    for (const key2 of util.objectKeys(this.shape)) {
+      const fieldSchema = this.shape[key2];
+      if (mask && !mask[key2]) {
+        newShape[key2] = fieldSchema;
       } else {
-        newShape[key] = fieldSchema.optional();
+        newShape[key2] = fieldSchema.optional();
       }
     }
     return new _ZodObject({
@@ -10419,16 +10626,16 @@ var ZodObject = class _ZodObject extends ZodType {
   }
   required(mask) {
     const newShape = {};
-    for (const key of util.objectKeys(this.shape)) {
-      if (mask && !mask[key]) {
-        newShape[key] = this.shape[key];
+    for (const key2 of util.objectKeys(this.shape)) {
+      if (mask && !mask[key2]) {
+        newShape[key2] = this.shape[key2];
       } else {
-        const fieldSchema = this.shape[key];
+        const fieldSchema = this.shape[key2];
         let newField = fieldSchema;
         while (newField instanceof ZodOptional) {
           newField = newField._def.innerType;
         }
-        newShape[key] = newField;
+        newShape[key2] = newField;
       }
     }
     return new _ZodObject({
@@ -10672,18 +10879,18 @@ function mergeValues(a, b) {
     return { valid: true, data: a };
   } else if (aType === ZodParsedType.object && bType === ZodParsedType.object) {
     const bKeys = util.objectKeys(b);
-    const sharedKeys = util.objectKeys(a).filter((key) => bKeys.indexOf(key) !== -1);
+    const sharedKeys = util.objectKeys(a).filter((key2) => bKeys.indexOf(key2) !== -1);
     const newObj = { ...a, ...b };
     if (Object.prototype.hasOwnProperty.call(newObj, "__proto__"))
       delete newObj.__proto__;
-    for (const key of sharedKeys) {
-      if (key === "__proto__")
+    for (const key2 of sharedKeys) {
+      if (key2 === "__proto__")
         continue;
-      const sharedValue = mergeValues(a[key], b[key]);
+      const sharedValue = mergeValues(a[key2], b[key2]);
       if (!sharedValue.valid) {
         return { valid: false };
       }
-      newObj[key] = sharedValue.data;
+      newObj[key2] = sharedValue.data;
     }
     return { valid: true, data: newObj };
   } else if (aType === ZodParsedType.array && bType === ZodParsedType.array) {
@@ -10847,11 +11054,11 @@ var ZodRecord = class _ZodRecord extends ZodType {
     const pairs = [];
     const keyType = this._def.keyType;
     const valueType = this._def.valueType;
-    for (const key in ctx.data) {
+    for (const key2 in ctx.data) {
       pairs.push({
-        key: keyType._parse(new ParseInputLazyPath(ctx, key, ctx.path, key)),
-        value: valueType._parse(new ParseInputLazyPath(ctx, ctx.data[key], ctx.path, key)),
-        alwaysSet: key in ctx.data
+        key: keyType._parse(new ParseInputLazyPath(ctx, key2, ctx.path, key2)),
+        value: valueType._parse(new ParseInputLazyPath(ctx, ctx.data[key2], ctx.path, key2)),
+        alwaysSet: key2 in ctx.data
       });
     }
     if (ctx.common.async) {
@@ -10899,9 +11106,9 @@ var ZodMap = class extends ZodType {
     }
     const keyType = this._def.keyType;
     const valueType = this._def.valueType;
-    const pairs = [...ctx.data.entries()].map(([key, value], index) => {
+    const pairs = [...ctx.data.entries()].map(([key2, value], index) => {
       return {
-        key: keyType._parse(new ParseInputLazyPath(ctx, key, ctx.path, [index, "key"])),
+        key: keyType._parse(new ParseInputLazyPath(ctx, key2, ctx.path, [index, "key"])),
         value: valueType._parse(new ParseInputLazyPath(ctx, value, ctx.path, [index, "value"]))
       };
     });
@@ -10909,30 +11116,30 @@ var ZodMap = class extends ZodType {
       const finalMap = /* @__PURE__ */ new Map();
       return Promise.resolve().then(async () => {
         for (const pair of pairs) {
-          const key = await pair.key;
+          const key2 = await pair.key;
           const value = await pair.value;
-          if (key.status === "aborted" || value.status === "aborted") {
+          if (key2.status === "aborted" || value.status === "aborted") {
             return INVALID;
           }
-          if (key.status === "dirty" || value.status === "dirty") {
+          if (key2.status === "dirty" || value.status === "dirty") {
             status.dirty();
           }
-          finalMap.set(key.value, value.value);
+          finalMap.set(key2.value, value.value);
         }
         return { status: status.value, value: finalMap };
       });
     } else {
       const finalMap = /* @__PURE__ */ new Map();
       for (const pair of pairs) {
-        const key = pair.key;
+        const key2 = pair.key;
         const value = pair.value;
-        if (key.status === "aborted" || value.status === "aborted") {
+        if (key2.status === "aborted" || value.status === "aborted") {
           return INVALID;
         }
-        if (key.status === "dirty" || value.status === "dirty") {
+        if (key2.status === "dirty" || value.status === "dirty") {
           status.dirty();
         }
-        finalMap.set(key.value, value.value);
+        finalMap.set(key2.value, value.value);
       }
       return { status: status.value, value: finalMap };
     }
@@ -12220,9 +12427,9 @@ function floatSafeRemainder2(val, step) {
   return ratio - roundedRatio;
 }
 var EVALUATING = /* @__PURE__ */ Symbol("evaluating");
-function defineLazy(object3, key, getter) {
+function defineLazy(object3, key2, getter) {
   let value = void 0;
-  Object.defineProperty(object3, key, {
+  Object.defineProperty(object3, key2, {
     get() {
       if (value === EVALUATING) {
         return void 0;
@@ -12234,7 +12441,7 @@ function defineLazy(object3, key, getter) {
       return value;
     },
     set(v) {
-      Object.defineProperty(object3, key, {
+      Object.defineProperty(object3, key2, {
         value: v
         // configurable: true,
       });
@@ -12260,47 +12467,47 @@ function rawShape(def) {
 function sourceShape(schema) {
   return rawShape(schema._zod.def) ?? schema._zod.def.shape;
 }
-function deferProp(target, key, getter) {
-  Object.defineProperty(target, key, {
+function deferProp(target, key2, getter) {
+  Object.defineProperty(target, key2, {
     get() {
       const value = getter();
-      assignProp(this, key, value);
+      assignProp(this, key2, value);
       return value;
     },
     enumerable: true,
     configurable: true
   });
 }
-function putProp(target, key, value) {
-  if (key in target)
-    assignProp(target, key, value);
+function putProp(target, key2, value) {
+  if (key2 in target)
+    assignProp(target, key2, value);
   else
-    target[key] = value;
+    target[key2] = value;
 }
 function mirrorShape(target, source, keys, wrap) {
   const raw = sourceShape(source);
-  for (const key of keys) {
-    const desc = Object.getOwnPropertyDescriptor(raw, key);
+  for (const key2 of keys) {
+    const desc = Object.getOwnPropertyDescriptor(raw, key2);
     if (!desc.enumerable)
       continue;
     if (desc.get) {
-      deferProp(target, key, () => {
-        const value = source._zod.def.shape[key];
-        return wrap ? wrap(value, key) : value;
+      deferProp(target, key2, () => {
+        const value = source._zod.def.shape[key2];
+        return wrap ? wrap(value, key2) : value;
       });
     } else
-      putProp(target, key, wrap ? wrap(desc.value, key) : desc.value);
+      putProp(target, key2, wrap ? wrap(desc.value, key2) : desc.value);
   }
 }
 function mirrorProps(target, source) {
-  for (const key of Reflect.ownKeys(source)) {
-    const desc = Object.getOwnPropertyDescriptor(source, key);
+  for (const key2 of Reflect.ownKeys(source)) {
+    const desc = Object.getOwnPropertyDescriptor(source, key2);
     if (!desc.enumerable)
       continue;
     if (desc.get)
-      deferProp(target, key, () => source[key]);
+      deferProp(target, key2, () => source[key2]);
     else
-      putProp(target, key, desc.value);
+      putProp(target, key2, desc.value);
   }
 }
 function mergeDefs(...defs) {
@@ -12317,11 +12524,11 @@ function cloneDef(schema) {
 function getElementAtPath(obj, path) {
   if (!path)
     return obj;
-  return path.reduce((acc, key) => acc?.[key], obj);
+  return path.reduce((acc, key2) => acc?.[key2], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
-  const promises = keys.map((key) => promisesObj[key]);
+  const promises = keys.map((key2) => promisesObj[key2]);
   return Promise.all(promises).then((results) => {
     const resolvedObj = {};
     for (let i = 0; i < keys.length; i++) {
@@ -12393,8 +12600,8 @@ function shallowClone(o) {
 }
 function numKeys(data) {
   let keyCount = 0;
-  for (const key in data) {
-    if (Object.prototype.hasOwnProperty.call(data, key)) {
+  for (const key2 in data) {
+    if (Object.prototype.hasOwnProperty.call(data, key2)) {
       keyCount++;
     }
   }
@@ -12548,12 +12755,12 @@ function pick(schema, mask) {
 function maskedKeys(schema, mask) {
   const raw = sourceShape(schema);
   const keys = [];
-  for (const key of Reflect.ownKeys(mask)) {
-    if (!Object.getOwnPropertyDescriptor(raw, key)?.enumerable) {
-      throw new Error(`Unrecognized key: "${String(key)}"`);
+  for (const key2 of Reflect.ownKeys(mask)) {
+    if (!Object.getOwnPropertyDescriptor(raw, key2)?.enumerable) {
+      throw new Error(`Unrecognized key: "${String(key2)}"`);
     }
-    if (mask[key])
-      keys.push(key);
+    if (mask[key2])
+      keys.push(key2);
   }
   return keys;
 }
@@ -12566,7 +12773,7 @@ function omit(schema, mask) {
   }
   const omitted = new Set(maskedKeys(schema, mask));
   const newShape = {};
-  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)).filter((key) => !omitted.has(key)));
+  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)).filter((key2) => !omitted.has(key2)));
   return clone(schema, mergeDefs(currDef, { shape: newShape, checks: [] }));
 }
 function extend(schema, shape) {
@@ -12577,8 +12784,8 @@ function extend(schema, shape) {
   const hasChecks = checks && checks.length > 0;
   if (hasChecks) {
     const existingShape = sourceShape(schema);
-    for (const key of Reflect.ownKeys(shape)) {
-      if (Object.getOwnPropertyDescriptor(existingShape, key) !== void 0) {
+    for (const key2 of Reflect.ownKeys(shape)) {
+      if (Object.getOwnPropertyDescriptor(existingShape, key2) !== void 0) {
         throw new Error("Cannot overwrite keys on object schemas containing refinements. Use `.safeExtend()` instead.");
       }
     }
@@ -12625,15 +12832,15 @@ function partial(Class2, schema, mask, name = "partial") {
   }
   const selected = mask ? new Set(maskedKeys(schema, mask)) : void 0;
   const newShape = {};
-  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)), Class2 && ((value, key) => selected && !selected.has(key) ? value : new Class2({ type: "optional", innerType: value })));
+  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)), Class2 && ((value, key2) => selected && !selected.has(key2) ? value : new Class2({ type: "optional", innerType: value })));
   return clone(schema, mergeDefs(schema._zod.def, { shape: newShape, checks: [] }));
 }
 function required(Class2, schema, mask) {
   const selected = mask ? new Set(maskedKeys(schema, mask)) : void 0;
   const newShape = {};
-  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)), (value, key) => (
+  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)), (value, key2) => (
     // overwrite with non-optional
-    selected && !selected.has(key) ? value : new Class2({ type: "nonoptional", innerType: value })
+    selected && !selected.has(key2) ? value : new Class2({ type: "nonoptional", innerType: value })
   ));
   return clone(schema, mergeDefs(schema._zod.def, { shape: newShape }));
 }
@@ -12808,50 +13015,50 @@ var Class = class {
   }
 };
 function members(proto, table) {
-  for (const key in table) {
-    const desc = Object.getOwnPropertyDescriptor(table, key);
+  for (const key2 in table) {
+    const desc = Object.getOwnPropertyDescriptor(table, key2);
     if (desc.get)
-      Object.defineProperty(proto, key, { ...desc, enumerable: false });
+      Object.defineProperty(proto, key2, { ...desc, enumerable: false });
     else
-      defineBound(proto, key, desc.value);
+      defineBound(proto, key2, desc.value);
   }
 }
-function own(inst, key, value, enumerable = true) {
-  Object.defineProperty(inst, key, { configurable: true, writable: true, enumerable, value });
+function own(inst, key2, value, enumerable = true) {
+  Object.defineProperty(inst, key2, { configurable: true, writable: true, enumerable, value });
   return value;
 }
-function hide(inst, key, value) {
-  return own(inst, key, value, false);
+function hide(inst, key2, value) {
+  return own(inst, key2, value, false);
 }
 // @__NO_SIDE_EFFECTS__
 function derived(computes, table) {
-  for (const key in computes) {
-    const compute = computes[key];
-    Object.defineProperty(table, key, {
+  for (const key2 in computes) {
+    const compute = computes[key2];
+    Object.defineProperty(table, key2, {
       configurable: true,
       enumerable: true,
       get() {
-        return own(this, key, compute(this));
+        return own(this, key2, compute(this));
       },
       set(value) {
-        own(this, key, value);
+        own(this, key2, value);
       }
     });
   }
   return table;
 }
-function defineBound(proto, key, fn) {
-  Object.defineProperty(proto, key, {
+function defineBound(proto, key2, fn) {
+  Object.defineProperty(proto, key2, {
     configurable: true,
     get() {
-      return this == null ? fn : own(this, key, fn.bind(this));
+      return this == null ? fn : own(this, key2, fn.bind(this));
     },
     set(value) {
-      own(this, key, value);
+      own(this, key2, value);
     }
   });
 }
-function claim(inst, sentinel) {
+function claim2(inst, sentinel) {
   const proto = Object.getPrototypeOf(inst);
   return sentinel in proto ? void 0 : proto;
 }
@@ -12864,53 +13071,53 @@ var breaker = {
     return void 0;
   }
 };
-function defineLazyInternal(inst, key, compute) {
+function defineLazyInternal(inst, key2, compute) {
   const proto = Object.getPrototypeOf(inst._zod);
-  if (key in proto && installing !== inst._zod) {
+  if (key2 in proto && installing !== inst._zod) {
     installing = void 0;
     return;
   }
   installing = inst._zod;
-  Object.defineProperty(proto, key, {
+  Object.defineProperty(proto, key2, {
     configurable: true,
     get() {
-      Object.defineProperty(this, key, breaker);
+      Object.defineProperty(this, key2, breaker);
       const outer = broke;
       broke = false;
       try {
         const value = compute(this);
         if (broke)
-          delete this[key];
+          delete this[key2];
         else
-          Object.defineProperty(this, key, { configurable: true, writable: true, value });
+          Object.defineProperty(this, key2, { configurable: true, writable: true, value });
         broke = broke || outer;
         return value;
       } catch (err) {
-        delete this[key];
+        delete this[key2];
         broke = broke || outer;
         throw err;
       }
     },
     set(value) {
-      Object.defineProperty(this, key, { configurable: true, writable: true, value });
+      Object.defineProperty(this, key2, { configurable: true, writable: true, value });
     }
   });
 }
-function installLazyProp(inst, key, make, enumerable) {
-  const proto = claim(inst, key);
+function installLazyProp(inst, key2, make, enumerable) {
+  const proto = claim2(inst, key2);
   if (!proto)
     return;
-  Object.defineProperty(proto, key, {
+  Object.defineProperty(proto, key2, {
     configurable: true,
     get() {
       const desc = { configurable: true, writable: true, enumerable, value: void 0 };
-      Object.defineProperty(this, key, desc);
+      Object.defineProperty(this, key2, desc);
       desc.value = make(this);
-      Object.defineProperty(this, key, desc);
+      Object.defineProperty(this, key2, desc);
       return desc.value;
     },
     set(value) {
-      Object.defineProperty(this, key, { configurable: true, writable: true, enumerable, value });
+      Object.defineProperty(this, key2, { configurable: true, writable: true, enumerable, value });
     }
   });
 }
@@ -13087,15 +13294,15 @@ var $ZodError = $constructor("$ZodError", initializer);
 var $ZodRealError = $constructor("$ZodError", initializer, void 0, {
   Parent: Error
 });
-function node(obj, key, make) {
-  if (!Object.prototype.hasOwnProperty.call(obj, key)) {
-    if (key === "__proto__") {
-      Object.defineProperty(obj, key, { value: make(), writable: true, enumerable: true, configurable: true });
+function node(obj, key2, make) {
+  if (!Object.prototype.hasOwnProperty.call(obj, key2)) {
+    if (key2 === "__proto__") {
+      Object.defineProperty(obj, key2, { value: make(), writable: true, enumerable: true, configurable: true });
     } else {
-      obj[key] = make();
+      obj[key2] = make();
     }
   }
-  return obj[key];
+  return obj[key2];
 }
 function flattenError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = {};
@@ -14004,16 +14211,16 @@ var $ZodCheckProperties = /* @__PURE__ */ $constructor("$ZodCheckProperties", (i
       payload.issues.push({ expected: "object", code: "invalid_type", input: payload.value, inst });
       return void 0;
     }
-    entries2 ?? (entries2 = Reflect.ownKeys(def.shape).map((key) => [key, def.shape[key]]));
+    entries2 ?? (entries2 = Reflect.ownKeys(def.shape).map((key2) => [key2, def.shape[key2]]));
     const input2 = payload.value;
     let proms;
-    for (const [key, schema] of entries2) {
-      const result = schema._zod.run({ value: input2[key], issues: [] }, {});
+    for (const [key2, schema] of entries2) {
+      const result = schema._zod.run({ value: input2[key2], issues: [] }, {});
       if (result instanceof Promise) {
         proms ?? (proms = []);
-        proms.push(result.then((result2) => handleCheckPropertyResult(result2, payload, key)));
+        proms.push(result.then((result2) => handleCheckPropertyResult(result2, payload, key2)));
       } else {
-        handleCheckPropertyResult(result, payload, key);
+        handleCheckPropertyResult(result, payload, key2);
       }
     }
     if (proms)
@@ -14888,8 +15095,8 @@ var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
     return payload;
   };
 });
-function handlePropertyResult(result, final, key, input2, optin, optout) {
-  const isPresent = key in input2;
+function handlePropertyResult(result, final, key2, input2, optin, optout) {
+  const isPresent = key2 in input2;
   const isOptionalOut = optout === "optional";
   if (!isPresent && isOptionalOut && optin === "optional") {
     return;
@@ -14898,7 +15105,7 @@ function handlePropertyResult(result, final, key, input2, optin, optout) {
     if (optin !== void 0 && isOptionalOut && !isPresent) {
       return;
     }
-    final.issues.push(...prefixIssues(key, result.issues));
+    final.issues.push(...prefixIssues(key2, result.issues));
   }
   if (!isPresent && optin === void 0) {
     if (!result.issues.length) {
@@ -14906,17 +15113,17 @@ function handlePropertyResult(result, final, key, input2, optin, optout) {
         code: "invalid_type",
         expected: "nonoptional",
         input: void 0,
-        path: [key]
+        path: [key2]
       });
     }
     return;
   }
   if (result.value === void 0) {
     if (isPresent || optin === "defaulted" && !isOptionalOut) {
-      final.value[key] = void 0;
+      final.value[key2] = void 0;
     }
   } else {
-    final.value[key] = result.value;
+    final.value[key2] = result.value;
   }
 }
 var NO_SYMBOL_KEYS = [];
@@ -14949,28 +15156,28 @@ function handleCatchall(proms, input2, payload, ctx, def, inst, abortEarly) {
   const optin = _catchall.optin;
   const optout = _catchall.optout;
   let seen = 0;
-  for (const key in input2) {
+  for (const key2 in input2) {
     if (abortEarly && payload.issues.length !== seen) {
       if (aborted(payload, seen))
         break;
       seen = payload.issues.length;
     }
-    if (keySet.has(key))
+    if (keySet.has(key2))
       continue;
-    if (key === "__proto__") {
+    if (key2 === "__proto__") {
       if (t === "never")
-        unrecognized.push(key);
+        unrecognized.push(key2);
       continue;
     }
     if (t === "never") {
-      unrecognized.push(key);
+      unrecognized.push(key2);
       continue;
     }
-    const r = _catchall.run({ value: input2[key], issues: [] }, ctx);
+    const r = _catchall.run({ value: input2[key2], issues: [] }, ctx);
     if (r instanceof Promise) {
-      proms.push(r.then((r2) => handlePropertyResult(r2, payload, key, input2, optin, optout)));
+      proms.push(r.then((r2) => handlePropertyResult(r2, payload, key2, input2, optin, optout)));
     } else {
-      handlePropertyResult(r, payload, key, input2, optin, optout);
+      handlePropertyResult(r, payload, key2, input2, optin, optout);
     }
   }
   if (unrecognized.length) {
@@ -15007,16 +15214,16 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
   defineLazyInternal(inst, "propValues", (zod) => {
     const shape = zod.def.shape;
     const propValues = {};
-    for (const key in shape) {
-      const field = shape[key]._zod;
+    for (const key2 in shape) {
+      const field = shape[key2]._zod;
       if (field.values) {
-        if (!Object.prototype.hasOwnProperty.call(propValues, key)) {
-          assignProp(propValues, key, /* @__PURE__ */ new Set());
+        if (!Object.prototype.hasOwnProperty.call(propValues, key2)) {
+          assignProp(propValues, key2, /* @__PURE__ */ new Set());
         }
         for (const v of field.values)
-          propValues[key].add(v);
+          propValues[key2].add(v);
         if (field.optin !== void 0)
-          propValues[key].add(void 0);
+          propValues[key2].add(void 0);
       }
     }
     return propValues;
@@ -15043,22 +15250,22 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     const shape = value.shape;
     const abortEarly = ctx?.abortEarly;
     let seen = payload.issues.length;
-    for (const key of value.allKeys) {
+    for (const key2 of value.allKeys) {
       if (abortEarly && payload.issues.length !== seen) {
         if (aborted(payload, seen))
           break;
         seen = payload.issues.length;
       }
-      if (key === "__proto__")
+      if (key2 === "__proto__")
         continue;
-      const el = shape[key];
+      const el = shape[key2];
       const optin = el._zod.optin;
       const optout = el._zod.optout;
-      const r = el._zod.run({ value: input2[key], issues: [] }, ctx);
+      const r = el._zod.run({ value: input2[key2], issues: [] }, ctx);
       if (r instanceof Promise) {
-        proms.push(r.then((r2) => handlePropertyResult(r2, payload, key, input2, optin, optout)));
+        proms.push(r.then((r2) => handlePropertyResult(r2, payload, key2, input2, optin, optout)));
       } else {
-        handlePropertyResult(r, payload, key, input2, optin, optout);
+        handlePropertyResult(r, payload, key2, input2, optin, optout);
       }
     }
     if (!catchall) {
@@ -15092,17 +15299,17 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     doc.write(`const input = payload.value;`);
     const ids = /* @__PURE__ */ Object.create(null);
     let counter = 0;
-    for (const key of normalized.allKeys) {
-      ids[key] = `key_${counter++}`;
+    for (const key2 of normalized.allKeys) {
+      ids[key2] = `key_${counter++}`;
     }
     doc.write(memo2 ? `const newResult = memo.alloc(inst, payload, {}, ctx);` : `const newResult = {};`);
-    for (const key of normalized.allKeys) {
-      if (key === "__proto__")
+    for (const key2 of normalized.allKeys) {
+      if (key2 === "__proto__")
         continue;
-      const id = ids[key];
-      const k = typeof key === "symbol" ? `syms[${syms.indexOf(key)}]` : esc(key);
+      const id = ids[key2];
+      const k = typeof key2 === "symbol" ? `syms[${syms.indexOf(key2)}]` : esc(key2);
       const isPresent = `${k} in input`;
-      const schema = shape[key];
+      const schema = shape[key2];
       const optin = schema?._zod?.optin;
       const isOptionalIn = optin !== void 0;
       const isOptionalOut = schema?._zod?.optout === "optional";
@@ -15436,21 +15643,21 @@ function mergeValues2(a, b) {
   }
   if (isPlainObject(a) && isPlainObject(b)) {
     const bKeys = Object.keys(b);
-    const sharedKeys = Object.keys(a).filter((key) => bKeys.indexOf(key) !== -1);
+    const sharedKeys = Object.keys(a).filter((key2) => bKeys.indexOf(key2) !== -1);
     const newObj = { ...a, ...b };
     if (Object.prototype.hasOwnProperty.call(newObj, "__proto__"))
       delete newObj.__proto__;
-    for (const key of sharedKeys) {
-      if (key === "__proto__")
+    for (const key2 of sharedKeys) {
+      if (key2 === "__proto__")
         continue;
-      const sharedValue = mergeValues2(a[key], b[key]);
+      const sharedValue = mergeValues2(a[key2], b[key2]);
       if (!sharedValue.valid) {
         return {
           valid: false,
-          mergeErrorPath: [key, ...sharedValue.mergeErrorPath]
+          mergeErrorPath: [key2, ...sharedValue.mergeErrorPath]
         };
       }
-      newObj[key] = sharedValue.data;
+      newObj[key2] = sharedValue.data;
     }
     return { valid: true, data: newObj };
   }
@@ -15609,9 +15816,9 @@ var $ZodTuple = /* @__PURE__ */ $constructor("$ZodTuple", (inst, def) => {
     return handleTupleResults(itemResults, payload, items, input2, optoutStart);
   };
 });
-function getTupleOptStart(items, key) {
+function getTupleOptStart(items, key2) {
   for (let i = items.length - 1; i >= 0; i--) {
-    const omittable = key === "optin" ? items[i]._zod.optin !== void 0 : items[i]._zod.optout === "optional";
+    const omittable = key2 === "optin" ? items[i]._zod.optin !== void 0 : items[i]._zod.optout === "optional";
     if (!omittable)
       return i + 1;
   }
@@ -15669,12 +15876,12 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
     if (values && !def.partial) {
       payload.value = memo2 ? memo2.alloc(inst, payload, {}, ctx) : {};
       const recordKeys = /* @__PURE__ */ new Set();
-      for (const key of values) {
-        if (typeof key === "string" || typeof key === "number" || typeof key === "symbol") {
-          recordKeys.add(typeof key === "number" ? key.toString() : key);
-          if (key === "__proto__")
+      for (const key2 of values) {
+        if (typeof key2 === "string" || typeof key2 === "number" || typeof key2 === "symbol") {
+          recordKeys.add(typeof key2 === "number" ? key2.toString() : key2);
+          if (key2 === "__proto__")
             continue;
-          const keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
+          const keyResult = def.keyType._zod.run({ value: key2, issues: [] }, ctx);
           if (keyResult instanceof Promise) {
             throw new Error("Async schemas not supported in object keys currently");
           }
@@ -15683,8 +15890,8 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
               code: "invalid_key",
               origin: "record",
               issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config2())),
-              input: key,
-              path: [key],
+              input: key2,
+              path: [key2],
               inst
             });
             continue;
@@ -15692,32 +15899,32 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
           const outKey = keyResult.value;
           if (outKey === "__proto__")
             continue;
-          const result = def.valueType._zod.run({ value: input2[key], issues: [] }, ctx);
+          const result = def.valueType._zod.run({ value: input2[key2], issues: [] }, ctx);
           if (result instanceof Promise) {
             proms.push(result.then((result2) => {
               if (result2.issues.length) {
-                payload.issues.push(...prefixIssues(key, result2.issues));
+                payload.issues.push(...prefixIssues(key2, result2.issues));
               }
               payload.value[outKey] = result2.value;
             }));
           } else {
             if (result.issues.length) {
-              payload.issues.push(...prefixIssues(key, result.issues));
+              payload.issues.push(...prefixIssues(key2, result.issues));
             }
             payload.value[outKey] = result.value;
           }
         }
       }
       let unrecognized;
-      for (const key in input2) {
-        if (!recordKeys.has(key)) {
+      for (const key2 in input2) {
+        if (!recordKeys.has(key2)) {
           if (def.mode === "loose") {
-            if (key === "__proto__")
+            if (key2 === "__proto__")
               continue;
-            payload.value[key] = input2[key];
+            payload.value[key2] = input2[key2];
           } else {
             unrecognized = unrecognized ?? [];
-            unrecognized.push(key);
+            unrecognized.push(key2);
           }
         }
       }
@@ -15733,18 +15940,18 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
     } else {
       payload.value = memo2 ? memo2.alloc(inst, payload, {}, ctx) : {};
       let unrecognized;
-      for (const key of Reflect.ownKeys(input2)) {
-        if (key === "__proto__")
+      for (const key2 of Reflect.ownKeys(input2)) {
+        if (key2 === "__proto__")
           continue;
-        if (!Object.prototype.propertyIsEnumerable.call(input2, key))
+        if (!Object.prototype.propertyIsEnumerable.call(input2, key2))
           continue;
-        let keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
+        let keyResult = def.keyType._zod.run({ value: key2, issues: [] }, ctx);
         if (keyResult instanceof Promise) {
           throw new Error("Async schemas not supported in object keys currently");
         }
-        const checkNumericKey = typeof key === "string" && number.test(key) && keyResult.issues.length;
+        const checkNumericKey = typeof key2 === "string" && number.test(key2) && keyResult.issues.length;
         if (checkNumericKey) {
-          const retryResult = def.keyType._zod.run({ value: Number(key), issues: [] }, ctx);
+          const retryResult = def.keyType._zod.run({ value: Number(key2), issues: [] }, ctx);
           if (retryResult instanceof Promise) {
             throw new Error("Async schemas not supported in object keys currently");
           }
@@ -15754,17 +15961,17 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
         }
         if (keyResult.issues.length) {
           if (def.mode === "loose") {
-            payload.value[key] = input2[key];
+            payload.value[key2] = input2[key2];
           } else if (values) {
             unrecognized = unrecognized ?? [];
-            unrecognized.push(key);
+            unrecognized.push(key2);
           } else {
             payload.issues.push({
               code: "invalid_key",
               origin: "record",
               issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config2())),
-              input: key,
-              path: [key],
+              input: key2,
+              path: [key2],
               inst
             });
           }
@@ -15773,17 +15980,17 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
         const outKey = keyResult.value;
         if (outKey === "__proto__")
           continue;
-        const result = def.valueType._zod.run({ value: input2[key], issues: [] }, ctx);
+        const result = def.valueType._zod.run({ value: input2[key2], issues: [] }, ctx);
         if (result instanceof Promise) {
           proms.push(result.then((result2) => {
             if (result2.issues.length) {
-              payload.issues.push(...prefixIssues(key, result2.issues));
+              payload.issues.push(...prefixIssues(key2, result2.issues));
             }
             payload.value[outKey] = result2.value;
           }));
         } else {
           if (result.issues.length) {
-            payload.issues.push(...prefixIssues(key, result.issues));
+            payload.issues.push(...prefixIssues(key2, result.issues));
           }
           payload.value[outKey] = result.value;
         }
@@ -15823,20 +16030,20 @@ var $ZodMap = /* @__PURE__ */ $constructor("$ZodMap", (inst, def) => {
     payload.value = memo2 ? memo2.alloc(inst, payload, /* @__PURE__ */ new Map(), ctx) : /* @__PURE__ */ new Map();
     const abortEarly = ctx?.abortEarly;
     let seen = payload.issues.length;
-    for (const [key, value] of input2) {
+    for (const [key2, value] of input2) {
       if (abortEarly && payload.issues.length !== seen) {
         if (aborted(payload, seen))
           break;
         seen = payload.issues.length;
       }
-      const keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
+      const keyResult = def.keyType._zod.run({ value: key2, issues: [] }, ctx);
       const valueResult = def.valueType._zod.run({ value, issues: [] }, ctx);
       if (keyResult instanceof Promise || valueResult instanceof Promise) {
         proms.push(Promise.all([keyResult, valueResult]).then(([keyResult2, valueResult2]) => {
-          handleMapResult(keyResult2, valueResult2, payload, key, input2, inst, ctx);
+          handleMapResult(keyResult2, valueResult2, payload, key2, input2, inst, ctx);
         }));
       } else {
-        handleMapResult(keyResult, valueResult, payload, key, input2, inst, ctx);
+        handleMapResult(keyResult, valueResult, payload, key2, input2, inst, ctx);
       }
     }
     if (proms.length)
@@ -15844,10 +16051,10 @@ var $ZodMap = /* @__PURE__ */ $constructor("$ZodMap", (inst, def) => {
     return payload;
   };
 });
-function handleMapResult(keyResult, valueResult, final, key, input2, inst, ctx) {
+function handleMapResult(keyResult, valueResult, final, key2, input2, inst, ctx) {
   if (keyResult.issues.length) {
-    if (propertyKeyTypes.has(typeof key)) {
-      final.issues.push(...prefixIssues(key, keyResult.issues));
+    if (propertyKeyTypes.has(typeof key2)) {
+      final.issues.push(...prefixIssues(key2, keyResult.issues));
     } else {
       final.issues.push({
         code: "invalid_key",
@@ -15859,15 +16066,15 @@ function handleMapResult(keyResult, valueResult, final, key, input2, inst, ctx) 
     }
   }
   if (valueResult.issues.length) {
-    if (propertyKeyTypes.has(typeof key)) {
-      final.issues.push(...prefixIssues(key, valueResult.issues));
+    if (propertyKeyTypes.has(typeof key2)) {
+      final.issues.push(...prefixIssues(key2, valueResult.issues));
     } else {
       final.issues.push({
         origin: "map",
         code: "invalid_element",
         input: input2,
         inst,
-        key,
+        key: key2,
         issues: valueResult.issues.map((iss) => finalizeIssue(iss, ctx, config2()))
       });
     }
@@ -16541,8 +16748,8 @@ function isRecursive(inst, stack, resolve4) {
   };
   const shape = (sh, spread) => {
     let answer = NONE;
-    for (const key of Reflect.ownKeys(sh)) {
-      const desc = Object.getOwnPropertyDescriptor(sh, key);
+    for (const key2 of Reflect.ownKeys(sh)) {
+      const desc = Object.getOwnPropertyDescriptor(sh, key2);
       if (spread && !desc.enumerable)
         continue;
       const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve4) : NONE;
@@ -16638,8 +16845,8 @@ function isRecursive(inst, stack, resolve4) {
       break;
     default: {
       kind;
-      for (const key in def) {
-        const desc = Object.getOwnPropertyDescriptor(def, key);
+      for (const key2 in def) {
+        const desc = Object.getOwnPropertyDescriptor(def, key2);
         if (!desc || desc.get)
           continue;
         const value = desc.value;
@@ -24772,11 +24979,11 @@ function generatePropertiesChecks(doc, ctx, def, accessor) {
   }
   doc.write(`if (${accessor} == null) return INVALID;`);
   const shape = def.shape;
-  for (const key of Reflect.ownKeys(shape)) {
-    const keyExpr = typeof key === "symbol" ? addConstant(ctx, key) : esc(key);
+  for (const key2 of Reflect.ownKeys(shape)) {
+    const keyExpr = typeof key2 === "symbol" ? addConstant(ctx, key2) : esc(key2);
     const inputVar = newVar(ctx);
     doc.write(`const ${inputVar} = ${accessor}[${keyExpr}];`);
-    compileChild(doc, ctx, shape[key], inputVar, false);
+    compileChild(doc, ctx, shape[key2], inputVar, false);
   }
 }
 function generatePropertyCheck(doc, ctx, def, accessor) {
@@ -25169,9 +25376,9 @@ function generateObjectCheck(doc, ctx, schema, accessor, buildsValue = true) {
     throw new ZodCompileUnsupportedError('object shape key "__proto__"');
   }
   const propOutputs = /* @__PURE__ */ new Map();
-  for (const key of allKeys) {
-    const propSchema = propShape[key];
-    const kx = keyExpr(key);
+  for (const key2 of allKeys) {
+    const propSchema = propShape[key2];
+    const kx = keyExpr(key2);
     const inputVar = newVar(ctx);
     doc.write(`const ${inputVar} = ${accessor}[${kx}];`);
     if (propSchema._zod.optin !== void 0) {
@@ -25192,14 +25399,14 @@ function generateObjectCheck(doc, ctx, schema, accessor, buildsValue = true) {
       } else {
         doc.write(`if (${outputVar2} === INVALID) return INVALID;`);
       }
-      propOutputs.set(key, outputVar2);
+      propOutputs.set(key2, outputVar2);
     } else {
       if (requiresPresenceCheck(propSchema)) {
         doc.write(`if (!(${kx} in ${accessor})) return INVALID;`);
       }
       const outputAccessor = compileChild(doc, ctx, propSchema, inputVar, buildsValue);
       if (outputAccessor !== null)
-        propOutputs.set(key, outputAccessor);
+        propOutputs.set(key2, outputAccessor);
     }
   }
   const catchall = def.catchall;
@@ -25614,9 +25821,9 @@ function generateTupleCheck(doc, ctx, schema, accessor) {
   }
   return outputVar;
 }
-function getTupleOptStart2(items, key) {
+function getTupleOptStart2(items, key2) {
   for (let i = items.length - 1; i >= 0; i--) {
-    const omittable = key === "optin" ? items[i]._zod.optin !== void 0 : items[i]._zod.optout === "optional";
+    const omittable = key2 === "optin" ? items[i]._zod.optin !== void 0 : items[i]._zod.optout === "optional";
     if (!omittable)
       return i + 1;
   }
@@ -25746,16 +25953,16 @@ function generateRecordCheck(doc, ctx, schema, accessor) {
   const keyValues = recordDef.partial ? void 0 : def.keyType._zod.values;
   if (keyValues) {
     const inputKeys = [];
-    for (const key of keyValues) {
-      if (!(typeof key === "string" || typeof key === "number" || typeof key === "symbol")) {
-        throw new ZodCompileUnsupportedError(`record key value ${String(key)}`);
+    for (const key2 of keyValues) {
+      if (!(typeof key2 === "string" || typeof key2 === "number" || typeof key2 === "symbol")) {
+        throw new ZodCompileUnsupportedError(`record key value ${String(key2)}`);
       }
-      const inputKey = typeof key === "number" ? key.toString() : key;
+      const inputKey = typeof key2 === "number" ? key2.toString() : key2;
       if (inputKey === "__proto__") {
         throw new ZodCompileUnsupportedError('record key "__proto__"');
       }
       inputKeys.push(inputKey);
-      const keyConst = addConstant(ctx, key);
+      const keyConst = addConstant(ctx, key2);
       const outKey = generateCheck(doc, ctx, def.keyType, keyConst);
       const valueVar = newVar(ctx);
       doc.write(`const ${valueVar} = ${accessor}[${literalPropertyKey(ctx, inputKey)}];`);
@@ -25833,10 +26040,10 @@ function emitOwnKeys(doc, ctx, accessor, kVar, body, onSymbol) {
   });
   doc.write(`}`);
 }
-function literalPropertyKey(ctx, key) {
-  if (typeof key === "string")
-    return esc(key);
-  return addConstant(ctx, key);
+function literalPropertyKey(ctx, key2) {
+  if (typeof key2 === "string")
+    return esc(key2);
+  return addConstant(ctx, key2);
 }
 function generateMapCheck(doc, ctx, schema, accessor) {
   const def = schema._zod.def;
@@ -27063,9 +27270,9 @@ function _stringFormat(Class2, format, fnOrRegex, _params = {}) {
 // node_modules/zod/v4/core/to-json-schema.js
 function assignProps(target, ...sources) {
   for (const source of sources) {
-    for (const key of Reflect.ownKeys(source)) {
-      if (Object.prototype.propertyIsEnumerable.call(source, key)) {
-        assignProp(target, key, source[key]);
+    for (const key2 of Reflect.ownKeys(source)) {
+      if (Object.prototype.propertyIsEnumerable.call(source, key2)) {
+        assignProp(target, key2, source[key2]);
       }
     }
   }
@@ -27211,8 +27418,8 @@ function extractDefs(ctx, schema) {
     if (defId)
       seen.defId = defId;
     const schema2 = seen.schema;
-    for (const key in schema2) {
-      delete schema2[key];
+    for (const key2 in schema2) {
+      delete schema2[key2];
     }
     schema2.$ref = ref;
   };
@@ -27293,8 +27500,8 @@ function foldObjects(members2) {
   for (const member of members2) {
     if (typeof member !== "object" || member.type !== "object")
       return null;
-    for (const key in member) {
-      if (!FOLDABLE_KEYS.has(key))
+    for (const key2 in member) {
+      if (!FOLDABLE_KEYS.has(key2))
         return null;
     }
     objects.push(member);
@@ -27302,22 +27509,22 @@ function foldObjects(members2) {
   const properties = {};
   const required2 = /* @__PURE__ */ new Set();
   for (const object3 of objects) {
-    for (const key in object3.properties) {
-      if (Object.prototype.hasOwnProperty.call(properties, key))
+    for (const key2 in object3.properties) {
+      if (Object.prototype.hasOwnProperty.call(properties, key2))
         continue;
       const parts = [];
       for (const other of objects) {
-        const part = other.properties?.[key] ?? undeclaredConstraint(other);
+        const part = other.properties?.[key2] ?? undeclaredConstraint(other);
         if (part === null || part === void 0)
           continue;
         if (!parts.some((seen) => JSON.stringify(seen) === JSON.stringify(part)))
           parts.push(part);
       }
       const merged = parts.length === 1 ? parts[0] : foldObjects(parts) ?? { allOf: parts };
-      assignProp(properties, key, merged);
+      assignProp(properties, key2, merged);
     }
-    for (const key of object3.required ?? [])
-      required2.add(key);
+    for (const key2 of object3.required ?? [])
+      required2.add(key2);
   }
   const folded = { type: "object", properties };
   if (required2.size)
@@ -27342,8 +27549,8 @@ function foldIntersection(json2) {
   const allOf = json2.allOf;
   if (!Array.isArray(allOf) || allOf.length < 2)
     return;
-  for (const key of FOLDABLE_KEYS)
-    if (key in json2)
+  for (const key2 of FOLDABLE_KEYS)
+    if (key2 in json2)
       return;
   const unions = allOf.filter((m) => UNION_KEYS.some((k) => Array.isArray(m[k])));
   let folded = null;
@@ -27390,20 +27597,20 @@ function finalize(ctx, schema) {
       assignProps(schema2, _cached);
       const isParentRef = zodSchema._zod.parent === ref;
       if (isParentRef) {
-        for (const key in schema2) {
-          if (key === "$ref" || key === "allOf")
+        for (const key2 in schema2) {
+          if (key2 === "$ref" || key2 === "allOf")
             continue;
-          if (!(key in _cached)) {
-            delete schema2[key];
+          if (!(key2 in _cached)) {
+            delete schema2[key2];
           }
         }
       }
       if (refSchema.$ref && refSeen.def) {
-        for (const key in schema2) {
-          if (key === "$ref" || key === "allOf")
+        for (const key2 in schema2) {
+          if (key2 === "$ref" || key2 === "allOf")
             continue;
-          if (key in refSeen.def && JSON.stringify(schema2[key]) === JSON.stringify(refSeen.def[key])) {
-            delete schema2[key];
+          if (key2 in refSeen.def && JSON.stringify(schema2[key2]) === JSON.stringify(refSeen.def[key2])) {
+            delete schema2[key2];
           }
         }
       }
@@ -27415,11 +27622,11 @@ function finalize(ctx, schema) {
       if (parentSeen?.schema.$ref) {
         schema2.$ref = parentSeen.schema.$ref;
         if (parentSeen.def) {
-          for (const key in schema2) {
-            if (key === "$ref" || key === "allOf")
+          for (const key2 in schema2) {
+            if (key2 === "$ref" || key2 === "allOf")
               continue;
-            if (key in parentSeen.def && JSON.stringify(schema2[key]) === JSON.stringify(parentSeen.def[key])) {
-              delete schema2[key];
+            if (key2 in parentSeen.def && JSON.stringify(schema2[key2]) === JSON.stringify(parentSeen.def[key2])) {
+              delete schema2[key2];
             }
           }
         }
@@ -27552,8 +27759,8 @@ function isTransforming(_schema, _ctx) {
     return isTransforming(def.in, ctx) || isTransforming(def.out, ctx);
   }
   if (def.type === "object") {
-    for (const key in def.shape) {
-      if (isTransforming(def.shape[key], ctx))
+    for (const key2 in def.shape) {
+      if (isTransforming(def.shape[key2], ctx))
         return true;
     }
     return false;
@@ -27591,13 +27798,13 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
 };
 
 // node_modules/zod/v4/core/json-schema-processors.js
-var narrowMin = (agg, key, value) => {
-  if (agg[key] === void 0 || value > agg[key])
-    agg[key] = value;
+var narrowMin = (agg, key2, value) => {
+  if (agg[key2] === void 0 || value > agg[key2])
+    agg[key2] = value;
 };
-var narrowMax = (agg, key, value) => {
-  if (agg[key] === void 0 || value < agg[key])
-    agg[key] = value;
+var narrowMax = (agg, key2, value) => {
+  if (agg[key2] === void 0 || value < agg[key2])
+    agg[key2] = value;
 };
 var narrowBoth = (agg, value) => {
   narrowMin(agg, "minimum", value);
@@ -27935,17 +28142,17 @@ var objectProcessor = (schema, ctx, _json, params) => {
   }
   json2.type = "object";
   json2.properties = {};
-  for (const key in shape) {
-    assignProp(json2.properties, key, processSchema(shape[key], ctx, {
+  for (const key2 in shape) {
+    assignProp(json2.properties, key2, processSchema(shape[key2], ctx, {
       ...params,
-      path: [...params.path, "properties", key]
+      path: [...params.path, "properties", key2]
     }));
   }
   const requiredKeys = [];
-  for (const key of Object.keys(shape)) {
-    const field = def.shape[key];
+  for (const key2 of Object.keys(shape)) {
+    const field = def.shape[key2];
     if (ctx.io === "input" ? inputOptin(field) === void 0 : field._zod.optout === void 0) {
-      requiredKeys.push(key);
+      requiredKeys.push(key2);
     }
   }
   if (requiredKeys.length > 0) {
@@ -28320,9 +28527,9 @@ function toJSONSchema(input2, params) {
     };
     ctx2.external = external;
     for (const entry of registry2._idmap.entries()) {
-      const [key, schema] = entry;
+      const [key2, schema] = entry;
       extractDefs(ctx2, schema);
-      assignProp(schemas, key, finalize(ctx2, schema));
+      assignProp(schemas, key2, finalize(ctx2, schema));
     }
     if (Object.keys(defs).length > 0) {
       const defsSegment = ctx2.target === "draft-2020-12" ? "$defs" : "definitions";
@@ -29281,17 +29488,17 @@ __export(checks_exports2, {
 
 // node_modules/zod/v4/classic/errors.js
 var _installedErrorProtos = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
-function _lazyMethod(proto, key, make) {
-  Object.defineProperty(proto, key, {
+function _lazyMethod(proto, key2, make) {
+  Object.defineProperty(proto, key2, {
     configurable: true,
     enumerable: false,
     get() {
       const value = make(this);
-      Object.defineProperty(this, key, { value, configurable: true, writable: true });
+      Object.defineProperty(this, key2, { value, configurable: true, writable: true });
       return value;
     },
     set(value) {
-      Object.defineProperty(this, key, { value, configurable: true, writable: true });
+      Object.defineProperty(this, key2, { value, configurable: true, writable: true });
     }
   });
 }
@@ -30961,11 +31168,11 @@ function resolveRef(ref, ctx) {
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
   if (path[0] === defsKey) {
-    const key = path[1] === void 0 ? void 0 : decodeJSONPointerSegment(path[1]);
-    if (!key || !ctx.defs[key]) {
+    const key2 = path[1] === void 0 ? void 0 : decodeJSONPointerSegment(path[1]);
+    if (!key2 || !ctx.defs[key2]) {
       throw new Error(`Reference not found: ${ref}`);
     }
-    return ctx.defs[key];
+    return ctx.defs[key2];
   }
   throw new Error(`Reference not found: ${ref}`);
 }
@@ -31000,16 +31207,16 @@ function checkObjectGuards(objectSchema, guards) {
       });
     }
     if (guards.keySchema) {
-      for (const key of keys) {
-        const result = guards.keySchema.safeParse(key);
+      for (const key2 of keys) {
+        const result = guards.keySchema.safeParse(key2);
         if (result.success)
           continue;
         payload.issues.push({
           code: "invalid_key",
           origin: "record",
           issues: result.error.issues,
-          input: key,
-          path: [key],
+          input: key2,
+          path: [key2],
           continue: true
         });
       }
@@ -31034,20 +31241,20 @@ function canonicalKey(value, seen) {
     if (Array.isArray(value)) {
       const parts2 = [];
       for (const item of value) {
-        const key = canonicalKey(item, seen);
-        if (key === null)
+        const key2 = canonicalKey(item, seen);
+        if (key2 === null)
           return null;
-        parts2.push(key);
+        parts2.push(key2);
       }
       return `a${parts2.length}:[${parts2.join(",")}]`;
     }
     const keys = Object.keys(value).sort();
     const parts = [];
     for (const k of keys) {
-      const key = canonicalKey(value[k], seen);
-      if (key === null)
+      const key2 = canonicalKey(value[k], seen);
+      if (key2 === null)
         return null;
-      parts.push(`${k.length}:${k}=${key}`);
+      parts.push(`${k.length}:${k}=${key2}`);
     }
     return `o${parts.length}:{${parts.join(",")}}`;
   } finally {
@@ -31087,10 +31294,10 @@ function containsRef(value) {
     return value.some(containsRef);
   if (typeof value.$ref === "string")
     return true;
-  return Object.entries(value).some(([key, sub]) => {
-    if (SCHEMA_KEYWORDS.has(key))
+  return Object.entries(value).some(([key2, sub]) => {
+    if (SCHEMA_KEYWORDS.has(key2))
       return containsRef(sub);
-    if (!SCHEMA_MAP_KEYWORDS.has(key) || typeof sub !== "object" || sub === null)
+    if (!SCHEMA_MAP_KEYWORDS.has(key2) || typeof sub !== "object" || sub === null)
       return false;
     return Object.values(sub).some(containsRef);
   });
@@ -31106,12 +31313,12 @@ function checkArrayGuards(arraySchema, guards) {
     if (guards.uniqueItems === true) {
       const firstSeen = /* @__PURE__ */ new Map();
       for (let i = 0; i < items.length; i++) {
-        const key = canonicalKey(items[i], /* @__PURE__ */ new Set());
-        if (key === null)
+        const key2 = canonicalKey(items[i], /* @__PURE__ */ new Set());
+        if (key2 === null)
           continue;
-        const first = firstSeen.get(key);
+        const first = firstSeen.get(key2);
         if (first === void 0) {
-          firstSeen.set(key, i);
+          firstSeen.set(key2, i);
           continue;
         }
         payload.issues.push({
@@ -31350,9 +31557,9 @@ function convertBaseSchema(schema, ctx) {
       const properties = schema.properties || {};
       const requiredSet = new Set(schema.required || []);
       const additionalSchema = typeof schema.additionalProperties === "object" ? convertSchema(schema.additionalProperties, ctx) : void 0;
-      for (const [key, propSchema] of Object.entries(properties)) {
+      for (const [key2, propSchema] of Object.entries(properties)) {
         const propZodSchema = convertSchema(propSchema, ctx);
-        assignProp(shape, key, requiredSet.has(key) ? propZodSchema : propZodSchema.optional());
+        assignProp(shape, key2, requiredSet.has(key2) ? propZodSchema : propZodSchema.optional());
       }
       if (schema.patternProperties) {
         const patternProps = schema.patternProperties;
@@ -31387,12 +31594,12 @@ function convertBaseSchema(schema, ctx) {
             if (!isPlainObject(payload.value))
               return;
             const unrecognized = [];
-            for (const key of Object.keys(payload.value)) {
-              if (propertyKeys.includes(key))
+            for (const key2 of Object.keys(payload.value)) {
+              if (propertyKeys.includes(key2))
                 continue;
-              if (patterns.some((regex) => regex.test(key)))
+              if (patterns.some((regex) => regex.test(key2)))
                 continue;
-              unrecognized.push(key);
+              unrecognized.push(key2);
             }
             if (unrecognized.length) {
               payload.issues.push({
@@ -31523,38 +31730,38 @@ function convertSchema(schema, ctx) {
   }
   const extraMeta = {};
   const coreMetadataKeys = ["$id", "id", "$comment", "$anchor", "$vocabulary", "$dynamicRef", "$dynamicAnchor"];
-  for (const key of coreMetadataKeys) {
-    if (key in schema) {
-      extraMeta[key] = schema[key];
+  for (const key2 of coreMetadataKeys) {
+    if (key2 in schema) {
+      extraMeta[key2] = schema[key2];
     }
   }
   const contentMetadataKeys = ["contentEncoding", "contentMediaType", "contentSchema"];
-  for (const key of contentMetadataKeys) {
-    if (key in schema) {
-      extraMeta[key] = schema[key];
+  for (const key2 of contentMetadataKeys) {
+    if (key2 in schema) {
+      extraMeta[key2] = schema[key2];
     }
   }
   if (schema.type === "object" && schema.$ref === void 0) {
     if (schema.propertyNames !== void 0 && !containsRef(schema.propertyNames)) {
       extraMeta.propertyNames = schema.propertyNames;
     }
-    for (const key of ["minProperties", "maxProperties"]) {
-      if (schema[key] !== void 0)
-        extraMeta[key] = schema[key];
+    for (const key2 of ["minProperties", "maxProperties"]) {
+      if (schema[key2] !== void 0)
+        extraMeta[key2] = schema[key2];
     }
   }
   if (schema.type === "array" && schema.$ref === void 0) {
     if (schema.contains !== void 0 && !containsRef(schema.contains)) {
       extraMeta.contains = schema.contains;
     }
-    for (const key of ["uniqueItems", "minContains", "maxContains"]) {
-      if (schema[key] !== void 0)
-        extraMeta[key] = schema[key];
+    for (const key2 of ["uniqueItems", "minContains", "maxContains"]) {
+      if (schema[key2] !== void 0)
+        extraMeta[key2] = schema[key2];
     }
   }
-  for (const key of Object.keys(schema)) {
-    if (!RECOGNIZED_KEYS.has(key)) {
-      assignProp(extraMeta, key, schema[key]);
+  for (const key2 of Object.keys(schema)) {
+    if (!RECOGNIZED_KEYS.has(key2)) {
+      assignProp(extraMeta, key2, schema[key2]);
     }
   }
   if (Object.keys(extraMeta).length > 0) {
@@ -33247,19 +33454,19 @@ var getRefs = (options) => {
 };
 
 // node_modules/zod-to-json-schema/dist/esm/errorMessages.js
-function addErrorMessage(res, key, errorMessage2, refs) {
+function addErrorMessage(res, key2, errorMessage2, refs) {
   if (!refs?.errorMessages)
     return;
   if (errorMessage2) {
     res.errorMessage = {
       ...res.errorMessage,
-      [key]: errorMessage2
+      [key2]: errorMessage2
     };
   }
 }
-function setResponseValueAndErrors(res, key, value, errorMessage2, refs) {
-  res[key] = value;
-  addErrorMessage(res, key, errorMessage2, refs);
+function setResponseValueAndErrors(res, key2, value, errorMessage2, refs) {
+  res[key2] = value;
+  addErrorMessage(res, key2, errorMessage2, refs);
 }
 
 // node_modules/zod-to-json-schema/dist/esm/getRelativePath.js
@@ -33851,11 +34058,11 @@ function parseRecordDef(def, refs) {
     return {
       type: "object",
       required: def.keyType._def.values,
-      properties: def.keyType._def.values.reduce((acc, key) => ({
+      properties: def.keyType._def.values.reduce((acc, key2) => ({
         ...acc,
-        [key]: parseDef(def.valueType._def, {
+        [key2]: parseDef(def.valueType._def, {
           ...refs,
-          currentPath: [...refs.currentPath, "properties", key]
+          currentPath: [...refs.currentPath, "properties", key2]
         }) ?? parseAnyDef(refs)
       }), {}),
       additionalProperties: refs.rejectedAdditionalProperties
@@ -33922,10 +34129,10 @@ function parseMapDef(def, refs) {
 // node_modules/zod-to-json-schema/dist/esm/parsers/nativeEnum.js
 function parseNativeEnumDef(def) {
   const object3 = def.values;
-  const actualKeys = Object.keys(def.values).filter((key) => {
-    return typeof object3[object3[key]] !== "number";
+  const actualKeys = Object.keys(def.values).filter((key2) => {
+    return typeof object3[object3[key2]] !== "number";
   });
-  const actualValues = actualKeys.map((key) => object3[key]);
+  const actualValues = actualKeys.map((key2) => object3[key2]);
   const parsedTypes = Array.from(new Set(actualValues.map((values) => typeof values)));
   return {
     type: parsedTypes.length === 1 ? parsedTypes[0] === "string" ? "string" : "number" : ["string", "number"],
@@ -35456,8 +35663,8 @@ function isPlainObject2(value) {
 }
 function mergeCapabilities(base, additional) {
   const result = { ...base };
-  for (const key in additional) {
-    const k = key;
+  for (const key2 in additional) {
+    const k = key2;
     const addValue = additional[k];
     if (addValue === void 0)
       continue;
@@ -37147,141 +37354,12 @@ var StdioServerTransport = class {
 // src/index.ts
 import { resolve as resolve3 } from "node:path";
 
-// src/inbox.ts
-import { readFile, writeFile, appendFile, rename, mkdir, readdir, stat, rmdir } from "node:fs/promises";
-import { join as join4 } from "node:path";
-import { randomUUID as randomUUID2 } from "node:crypto";
-async function readJson(file2) {
-  try {
-    return JSON.parse(await readFile(file2, "utf8"));
-  } catch {
-    return void 0;
-  }
-}
-async function atomic(file2, value) {
-  await mkdir(join4(file2, ".."), { recursive: true });
-  const tmp = `${file2}.${randomUUID2()}.tmp`;
-  await writeFile(tmp, JSON.stringify(value));
-  await rename(tmp, file2);
-}
-var inboxPath = (dir2, mid) => join4(dir2, "inbox", `${mid}.json`);
-async function locked(dir2, mid, fn) {
-  const lock = inboxPath(dir2, `${mid}.lock`);
-  await mkdir(join4(dir2, "inbox"), { recursive: true });
-  for (let tries = 0; ; tries++) {
-    try {
-      await mkdir(lock);
-      break;
-    } catch (e) {
-      if (e.code !== "EEXIST" || tries >= 200) throw e;
-      await new Promise((r) => setTimeout(r, 5));
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    await rmdir(lock);
-  }
-}
-async function ack(dir2, mid, state, error62, turn) {
-  await atomic(inboxPath(dir2, `${mid}.ack`), { state, at: Date.now(), ...error62 ? { error: error62 } : {}, ...turn ? { turn } : {} });
-}
-async function messages(dir2) {
-  let names;
-  try {
-    names = await readdir(join4(dir2, "inbox"));
-  } catch {
-    return [];
-  }
-  const result = [];
-  for (const name of names.filter((n) => /^[\w-]+(?:\.claimed|\.editing)?\.json$/.test(n) && !n.startsWith("interrupt."))) {
-    const m = await readJson(join4(dir2, "inbox", name));
-    if (!m?.mid || m.from !== "user") continue;
-    const a = await readJson(inboxPath(dir2, `${m.mid}.ack`));
-    result.push({ ...m, state: a?.state ?? "queued", stateAt: a?.at ?? m.at, error: a?.error, turn: a?.turn });
-  }
-  try {
-    for (const line of (await readFile(join4(dir2, "inbox", "lead.jsonl"), "utf8")).split("\n")) {
-      try {
-        const m = JSON.parse(line);
-        result.push({ ...m, notify: false, stateAt: m.at });
-      } catch {
-      }
-    }
-  } catch {
-  }
-  return result.sort((a, b) => a.at - b.at || a.mid.localeCompare(b.mid));
-}
-async function claim2(dir2, mid) {
-  return locked(dir2, mid, async () => {
-    const a = await readJson(inboxPath(dir2, `${mid}.ack`));
-    if (a && a.state !== "queued") return void 0;
-    try {
-      await rename(inboxPath(dir2, mid), inboxPath(dir2, `${mid}.claimed`));
-    } catch {
-      return void 0;
-    }
-    return readJson(inboxPath(dir2, `${mid}.claimed`));
-  });
-}
-async function markQueued(dir2, mid) {
-  await locked(dir2, mid, async () => {
-    if (await readJson(inboxPath(dir2, mid)) && !await readJson(inboxPath(dir2, `${mid}.ack`))) await ack(dir2, mid, "queued");
-  });
-}
-async function leadInput(dir2, text2, state) {
-  await mkdir(join4(dir2, "inbox"), { recursive: true });
-  await appendFile(join4(dir2, "inbox", "lead.jsonl"), JSON.stringify({ mid: randomUUID2(), mode: "steer", text: text2, at: Date.now(), from: "lead", state }) + "\n");
-}
-async function finishInputs(dir2) {
-  for (const m of await messages(dir2)) if (m.from === "user" && m.state === "queued" && await claim2(dir2, m.mid)) await ack(dir2, m.mid, "undelivered");
-  return messages(dir2);
-}
-async function launcherJobs(dir2) {
-  let names;
-  try {
-    names = await readdir(dir2);
-  } catch {
-    return [];
-  }
-  const jobs = [];
-  for (const name of names) {
-    const match = /^cmd-(\d+)\.pid$/.exec(name);
-    if (!match) continue;
-    const n = Number(match[1]);
-    try {
-      await stat(join4(dir2, `cmd-${n}.exit`));
-      continue;
-    } catch {
-    }
-    const pid = Number(await readFile(join4(dir2, name), "utf8"));
-    try {
-      process.kill(pid, 0);
-    } catch {
-      continue;
-    }
-    const m = await readJson(join4(dir2, `cmd-${n}.json`));
-    jobs.push({ n, pid, command: [m?.program, ...m?.args ?? []].filter(Boolean).join(" "), startedAt: m?.startedAt, log: join4(dir2, `cmd-${n}.log`) });
-  }
-  return jobs;
-}
-function renderInputs(inputs) {
-  const users = inputs.filter((m) => m.from === "user");
-  return users.length ? "user input during run:\n" + users.map((m) => `${m.mode} ${new Date(m.at).toISOString()} ${m.state}; turn ${m.turn ?? "(none)"}: ${m.text.slice(0, 300)}`).join("\n") : "";
-}
-function interruptText(i, session, inputs, jobs, dir2) {
-  return [
-    `status: user_interrupted`,
-    `reason: ${i.reason || "\u7528\u6237\u4E2D\u65AD\uFF0C\u539F\u56E0\u4E0D\u660E (the user interrupted without giving a reason)"}`,
-    `next: PAUSE this work. Do not resume, retry or re-delegate on your own; tell the user it was interrupted and wait for their instruction. session_id ${session ?? "(none)"} can continue it later.`,
-    ...inputs.filter((m) => m.state === "undelivered").map((m) => `undelivered ${m.mid}: ${m.text}`),
-    ...jobs.map((j) => i.killLongruns ? `stopped: cmd-${j.n} pid ${j.pid} log ${j.log}` : `kept running by user choice: cmd-${j.n} pid ${j.pid} log ${j.log} exit-file ${join4(dir2, `cmd-${j.n}.exit`)}; ask the user before stopping it.`)
-  ].join("\n");
-}
+// src/delegate.ts
+import { readFile as readFile4 } from "node:fs/promises";
 
 // src/sessions.ts
 import { closeSync as closeSync2, openSync as openSync2, readdirSync as readdirSync2, readSync as readSync2, statSync as statSync2 } from "node:fs";
-import { join as join5, resolve } from "node:path";
+import { join as join6, resolve } from "node:path";
 var HEAD_BYTES = 512 * 1024;
 function readHead(file2) {
   const fd = openSync2(file2, "r");
@@ -37325,7 +37403,7 @@ function* rollouts(dir2) {
     return;
   }
   for (const e of entries2) {
-    const p = join5(dir2, e);
+    const p = join6(dir2, e);
     if (e.startsWith("rollout-") && e.endsWith(".jsonl")) yield p;
     else if (statSync2(p).isDirectory()) yield* rollouts(p);
   }
@@ -37333,7 +37411,7 @@ function* rollouts(dir2) {
 function listSessions(cwd, limit, root) {
   if (root === void 0) {
     const providers = loadProviders().providers.filter((p) => p.auth === "chatgpt");
-    return [listSessions(cwd, limit, join5(config.codexHome, "sessions")), ...providers.map((p) => listSessions(cwd, limit, join5(providerHome(p), "sessions")).map((s) => ({ ...s, provider: p.id })))].flat().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, limit);
+    return [listSessions(cwd, limit, join6(config.codexHome, "sessions")), ...providers.map((p) => listSessions(cwd, limit, join6(providerHome(p), "sessions")).map((s) => ({ ...s, provider: p.id })))].flat().sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, limit);
   }
   const want = resolve(cwd);
   const out = [];
@@ -37346,7 +37424,7 @@ function listSessions(cwd, limit, root) {
 }
 function sessionProvider(id, doc, homesRoot2) {
   for (const p of doc.providers.filter((p2) => p2.auth === "chatgpt")) {
-    for (const file2 of rollouts(join5(providerHome(p, homesRoot2), "sessions"))) {
+    for (const file2 of rollouts(join6(providerHome(p, homesRoot2), "sessions"))) {
       if (file2.includes(id) && parseRollout(readHead(file2), file2)?.id === id) return p;
     }
   }
@@ -37572,7 +37650,7 @@ function softWatchdog(pid, window, suspected, sample = sampleTreeEvidence) {
 // src/delegate.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
 import { existsSync as existsSync6, mkdirSync as mkdirSync4, rmSync as rmSync4, writeFileSync as writeFileSync8 } from "node:fs";
-import { basename, isAbsolute, join as join12, relative as relative2, resolve as resolve2 } from "node:path";
+import { basename, isAbsolute, join as join13, relative as relative2, resolve as resolve2 } from "node:path";
 
 // src/checks.ts
 import { spawn } from "node:child_process";
@@ -37664,7 +37742,7 @@ function onExit(hook) {
   exitHooks.push(hook);
 }
 var installed = false;
-function installExitCleanup() {
+function installExitCleanup(stdin = true) {
   if (installed) return;
   installed = true;
   const cleanup2 = () => {
@@ -37677,7 +37755,7 @@ function installExitCleanup() {
     for (const c of live) killTree(c, true);
   };
   process.once("exit", cleanup2);
-  process.stdin.once("end", () => process.exit(0));
+  if (stdin) process.stdin.once("end", () => process.exit(0));
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
     process.once(sig, () => {
       cleanup2();
@@ -37777,18 +37855,18 @@ import { createWriteStream, existsSync as existsSync4, readFileSync as readFileS
 // src/appserver.ts
 import { randomUUID as randomUUID3 } from "node:crypto";
 import { readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "node:fs";
-import { join as join7 } from "node:path";
+import { join as join8 } from "node:path";
 
 // src/longruns.ts
 import { appendFileSync, copyFileSync as copyFileSync2, existsSync as existsSync3, readdirSync as readdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname2, join as join6 } from "node:path";
+import { dirname as dirname2, join as join7 } from "node:path";
 import { fileURLToPath } from "node:url";
 var LAUNCHER = "longrun.mjs";
 function installLauncher(runDir) {
   const here = dirname2(fileURLToPath(import.meta.url));
-  const src = [join6(here, LAUNCHER), join6(here, "..", "src", LAUNCHER)].find((f) => existsSync3(f));
+  const src = [join7(here, LAUNCHER), join7(here, "..", "src", LAUNCHER)].find((f) => existsSync3(f));
   if (!src) return void 0;
-  const dest = join6(runDir, LAUNCHER);
+  const dest = join7(runDir, LAUNCHER);
   try {
     copyFileSync2(src, dest);
     return dest;
@@ -37813,9 +37891,9 @@ var alive2 = (pid) => {
   }
 };
 function longrunState(runDir, n) {
-  const code = int3(join6(runDir, `cmd-${n}.exit`));
-  if (code !== void 0) return existsSync3(join6(runDir, `cmd-${n}.stopping`)) ? { state: "stopped" } : { state: "exited", code };
-  const pid = int3(join6(runDir, `cmd-${n}.pid`));
+  const code = int3(join7(runDir, `cmd-${n}.exit`));
+  if (code !== void 0) return existsSync3(join7(runDir, `cmd-${n}.stopping`)) ? { state: "stopped" } : { state: "exited", code };
+  const pid = int3(join7(runDir, `cmd-${n}.pid`));
   if (pid === void 0) return { state: "unknown" };
   return alive2(pid) ? { state: "running", pid } : { state: "gone" };
 }
@@ -37823,22 +37901,22 @@ function stopLongrun(runDir, n, why) {
   const s = longrunState(runDir, n);
   if (s.state !== "running") return false;
   try {
-    writeFileSync3(join6(runDir, `cmd-${n}.stopping`), why);
+    writeFileSync3(join7(runDir, `cmd-${n}.stopping`), why);
   } catch {
   }
   killPidTree(s.pid);
   try {
-    appendFileSync(join6(runDir, `cmd-${n}.log`), `
+    appendFileSync(join7(runDir, `cmd-${n}.log`), `
 EXIT=stopped (${why})
 `);
-    writeFileSync3(join6(runDir, `cmd-${n}.exit`), "137");
+    writeFileSync3(join7(runDir, `cmd-${n}.exit`), "137");
   } catch {
   }
   return true;
 }
 function longrunCommand(runDir, n) {
   try {
-    const { program, args } = JSON.parse(readFileSync4(join6(runDir, `cmd-${n}.json`), "utf8"));
+    const { program, args } = JSON.parse(readFileSync4(join7(runDir, `cmd-${n}.json`), "utf8"));
     const a = args ?? [];
     const script = a.find((x) => /cmd-\d+\.(ps1|sh)$/.test(x));
     if (script) return readFileSync4(script, "utf8").split(/\r?\n/)[0] ?? program;
@@ -37880,7 +37958,7 @@ function reapTrackedLongruns() {
 }
 onExit(reapTrackedLongruns);
 function keptPreamble(runDir, kept, killed) {
-  const launcher = join6(runDir, LAUNCHER);
+  const launcher = join7(runDir, LAUNCHER);
   const lines = ["[codex-delegate] The lead interrupted your previous step to give you a new instruction (below)."];
   for (const k of kept) {
     lines.push(`- Still running, NOT stopped: cmd-${k.n} \`${k.command.replace(/\s+/g, " ").slice(0, 200)}\` (log ${k.log}). It is the same job you started; do not start it again.`);
@@ -37898,7 +37976,7 @@ function keptPreamble(runDir, kept, killed) {
 `;
 }
 function keptReminder(runDir, kept) {
-  const launcher = join6(runDir, LAUNCHER);
+  const launcher = join7(runDir, LAUNCHER);
   return [
     "[codex-delegate] You ended your turn, but these commands you are responsible for are still running:",
     ...kept.map((k) => `- cmd-${k.n} \`${k.command.replace(/\s+/g, " ").slice(0, 200)}\` (log ${k.log})`),
@@ -37927,13 +38005,13 @@ function threadParams(o) {
   };
 }
 function kindFromInfo(info) {
-  const key = typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : void 0;
-  if (!key) return void 0;
-  if (/usageLimit|sessionBudget/i.test(key)) return "quota";
-  if (/rateLimit/i.test(key)) return "rate_limit";
-  if (/unauthorized/i.test(key)) return "auth";
-  if (/contextWindow/i.test(key)) return "context";
-  if (/serverOverloaded|internalServerError|ConnectionFailed|StreamDisconnected|TooManyFailedAttempts/i.test(key)) return "network";
+  const key2 = typeof info === "string" ? info : info && typeof info === "object" ? Object.keys(info)[0] : void 0;
+  if (!key2) return void 0;
+  if (/usageLimit|sessionBudget/i.test(key2)) return "quota";
+  if (/rateLimit/i.test(key2)) return "rate_limit";
+  if (/unauthorized/i.test(key2)) return "auth";
+  if (/contextWindow/i.test(key2)) return "context";
+  if (/serverOverloaded|internalServerError|ConnectionFailed|StreamDisconnected|TooManyFailedAttempts/i.test(key2)) return "network";
   return void 0;
 }
 var snake = (s) => s.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
@@ -38019,7 +38097,7 @@ var AppServerTurn = class {
         }
         await this.serialize(async () => {
           if (this.finished || this.userInterrupt) return;
-          const input2 = await claim2(dir2, m.mid);
+          const input2 = await claim(dir2, m.mid);
           if (!input2) return;
           try {
             const r = await this.redirectNow(input2.text);
@@ -38040,7 +38118,7 @@ var AppServerTurn = class {
     if (!dir2 || this.userInterrupt || this.finished) return false;
     for (const m of await messages(dir2)) {
       if (m.from !== "user" || m.mode !== "queue" || m.state !== "queued") continue;
-      const input2 = await claim2(dir2, m.mid);
+      const input2 = await claim(dir2, m.mid);
       if (!input2) continue;
       const clientId = `input-${m.mid}`;
       const delivery = { mid: m.mid, turn: void 0, consumed: false, pending: Promise.resolve() };
@@ -38227,7 +38305,7 @@ var AppServerTurn = class {
         if (!/longrun\.mjs/i.test(r.command)) killed.push(r.command);
       }
       for (const n of live2) {
-        if (redirect && !redirect.kill || this.userInterrupt && !this.userInterrupt.killLongruns) kept.push({ n, command: longrunCommand(runDir, n), log: join7(runDir, `cmd-${n}.log`), keptAt: Date.now(), outcome: "running" });
+        if (redirect && !redirect.kill || this.userInterrupt && !this.userInterrupt.killLongruns) kept.push({ n, command: longrunCommand(runDir, n), log: join8(runDir, `cmd-${n}.log`), keptAt: Date.now(), outcome: "running" });
         else if (stopLongrun(runDir, n, redirect ? "lead redirected with kill" : "task cancelled")) killed.push(longrunCommand(runDir, n));
       }
       if (redirect) {
@@ -38603,7 +38681,7 @@ function runCodexProcess(o) {
   };
   const redact = (s) => {
     refreshSecrets();
-    for (const key of secrets) s = s.replaceAll(key, "[REDACTED]");
+    for (const key2 of secrets) s = s.replaceAll(key2, "[REDACTED]");
     return s;
   };
   const redactLine = (s) => {
@@ -38614,12 +38692,12 @@ function runCodexProcess(o) {
     } catch {
       return redact(s);
     }
-    for (const key of secrets) s = s.replaceAll(JSON.stringify(key).slice(1, -1), "[REDACTED]");
+    for (const key2 of secrets) s = s.replaceAll(JSON.stringify(key2).slice(1, -1), "[REDACTED]");
     return s;
   };
   const started = Date.now();
   const collector = new EventCollector();
-  const appServer = config.engine === "app-server";
+  const appServer = (o.engine ?? config.engine) === "app-server";
   return new Promise((resolve4) => {
     const child = spawn2(config.codex.cmd, [...config.codex.args, ...appServer ? [...APP_SERVER_ARGS, ...providerArgs(o.provider)] : buildArgs(o)], {
       cwd: o.cwd,
@@ -38860,8 +38938,8 @@ ${stderr}
 
 // src/git.ts
 import { spawn as spawn3 } from "node:child_process";
-import { readFile as readFile2, stat as stat2 } from "node:fs/promises";
-import { join as join8 } from "node:path";
+import { readFile as readFile3, stat as stat2 } from "node:fs/promises";
+import { join as join9 } from "node:path";
 function parsePorcelainZ(out) {
   const parts = out.split("\0");
   const entries2 = [];
@@ -38907,7 +38985,7 @@ async function snapshot(cwd) {
   await Promise.all(Array.from({ length: Math.min(64, entries2.length) }, async () => {
     while (next < entries2.length) {
       const i = next++;
-      fingerprints[i] = await fingerprint(join8(cwd, entries2[i].path));
+      fingerprints[i] = await fingerprint(join9(cwd, entries2[i].path));
     }
   }));
   for (const [i, e] of entries2.entries()) snap.set(e.path, { xy: e.xy, hash: fingerprints[i] });
@@ -38943,9 +39021,9 @@ async function diffStat(cwd, changes) {
   async function fileStat(c) {
     if (c.xy === "??") {
       try {
-        const file2 = join8(cwd, c.path);
+        const file2 = join9(cwd, c.path);
         if ((await stat2(file2)).size > MAX_COUNT_BYTES) return { ...c };
-        const buf = await readFile2(file2);
+        const buf = await readFile3(file2);
         if (buf.includes(0)) return { ...c, binary: true };
         const text2 = buf.toString("utf8");
         return { ...c, added: text2 ? text2.split("\n").length - (text2.endsWith("\n") ? 1 : 0) : 0, removed: 0 };
@@ -38959,8 +39037,8 @@ async function diffStat(cwd, changes) {
 
 // src/models.ts
 import { readFileSync as readFileSync7 } from "node:fs";
-import { join as join9 } from "node:path";
-function listModels(path = join9(config.codexHome, "models_cache.json")) {
+import { join as join10 } from "node:path";
+function listModels(path = join10(config.codexHome, "models_cache.json")) {
   let data;
   try {
     data = JSON.parse(readFileSync7(path, "utf8"));
@@ -39134,12 +39212,12 @@ function tierLabel(t) {
 
 // src/checkpoints.ts
 import { readdirSync as readdirSync4, readFileSync as readFileSync9, statSync as statSync3 } from "node:fs";
-import { join as join10 } from "node:path";
+import { join as join11 } from "node:path";
 var MAX_CHECKPOINT_CHARS = 2500;
 function checkpointContract(runDir) {
   return `
 
-Checkpoints (requested by the lead): this is a longer task, and the lead wants to review direction while you work. At each point below, write a short stage report to ${join10(runDir, "checkpoint-<n>.md")} (n = 1, 2, 3 \u2026, a new file each time, written in one go), then KEEP WORKING; do not wait for an answer. If the lead changes direction, the new instruction arrives as a user message in this conversation.
+Checkpoints (requested by the lead): this is a longer task, and the lead wants to review direction while you work. At each point below, write a short stage report to ${join11(runDir, "checkpoint-<n>.md")} (n = 1, 2, 3 \u2026, a new file each time, written in one go), then KEEP WORKING; do not wait for an answer. If the lead changes direction, the new instruction arrives as a user message in this conversation.
 Write one when:
 - investigation is done and you are about to implement: what you found, the approach you chose, the alternatives you rejected;
 - you find something that contradicts the brief or changes its scope (an assumption is wrong, the fix belongs elsewhere, much more work than expected);
@@ -39163,7 +39241,7 @@ function scanCheckpoints(runDir, seen = /* @__PURE__ */ new Set(), now = Date.no
   for (const name of names) {
     const n = Number(/^checkpoint-(\d+)\.md$/i.exec(name)?.[1]);
     if (!Number.isInteger(n) || seen.has(n)) continue;
-    const file2 = join10(runDir, name);
+    const file2 = join11(runDir, name);
     try {
       const st = statSync3(file2);
       if (!st.size || now - st.mtimeMs < 1e3) continue;
@@ -39185,10 +39263,10 @@ ${body}`;
 // src/pending.ts
 import { createHash as createHash2 } from "node:crypto";
 import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync10, rmSync as rmSync3, writeFileSync as writeFileSync7 } from "node:fs";
-import { join as join11 } from "node:path";
+import { join as join12 } from "node:path";
 var MAX_AGE_MS = 24 * 3600 * 1e3;
-var dir = () => join11(config.runsDir, "pending");
-var fileFor = (cwd) => join11(dir(), `${createHash2("sha1").update(cwd.toLowerCase()).digest("hex").slice(0, 16)}.json`);
+var dir = () => join12(config.runsDir, "pending");
+var fileFor = (cwd) => join12(dir(), `${createHash2("sha1").update(cwd.toLowerCase()).digest("hex").slice(0, 16)}.json`);
 function alive3(pid) {
   if (pid === process.pid) return true;
   try {
@@ -39320,7 +39398,7 @@ function renderReport(r) {
 // package.json
 var package_default = {
   name: "claude-codex-delegate",
-  version: "0.12.0",
+  version: "0.13.0",
   description: "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna\u2026) while staying the orchestrator.",
   type: "module",
   license: "MIT",
@@ -39353,9 +39431,9 @@ var package_default = {
 var version3 = package_default.version;
 
 // src/delegate.ts
-function newRunDir() {
+function newRunDir(runsDir = config.runsDir) {
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
-  const dir2 = resolve2(config.runsDir, `${stamp}-${randomUUID4().slice(0, 6)}`);
+  const dir2 = resolve2(runsDir, `${stamp}-${randomUUID4().slice(0, 6)}`);
   try {
     mkdirSync4(dir2, { recursive: true });
     return dir2;
@@ -39363,13 +39441,13 @@ function newRunDir() {
     return void 0;
   }
 }
-async function delegate(input2, signal, onProgress, stallControl) {
+async function delegate(input2, signal, onProgress, stallControl, context) {
   stallControl ??= { lastObservedAt: Date.now() };
   const cwd = resolve2(config.defaultCwd, input2.cwd ?? ".");
   if (!existsSync6(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const auto = input2.auto ?? config.auto;
   const { policy, error: policyError } = loadPolicy();
-  const sandbox2 = effectiveSandbox(input2.sandbox, auto && config.sandbox !== "read-only", policy.sandboxWrites);
+  const sandbox2 = context?.original.sandbox ?? effectiveSandbox(input2.sandbox, auto && config.sandbox !== "read-only", policy.sandboxWrites);
   const readOnly = sandbox2 === "read-only";
   const notes = [];
   const lockKey = cwd.toLowerCase();
@@ -39380,12 +39458,27 @@ async function delegate(input2, signal, onProgress, stallControl) {
       throw new Error(`another delegated run is already editing ${cwd}; wait for it, or give this one its own git worktree (git worktree add) as cwd`);
     }
   }
-  const pending = !readOnly && !input2.fresh ? loadPending(cwd) : void 0;
+  let pending = !context && !readOnly && !input2.fresh ? loadPending(cwd) : void 0;
+  if (pending?.sessionId && !input2.session_id) {
+    try {
+      const events = await readFile4(join13(config.runsDir, "handoffs", encodeURIComponent(pending.sessionId) + ".jsonl"), "utf8");
+      const since = pending.startedAt;
+      if (events.split("\n").some((line) => {
+        try {
+          const event = JSON.parse(line);
+          return event.state === "started" && event.at >= since;
+        } catch {
+          return false;
+        }
+      })) pending = void 0;
+    } catch {
+    }
+  }
   const continued = pending && (!input2.session_id || input2.session_id === pending.sessionId) ? pending : void 0;
   if (continued && !input2.session_id) input2 = { ...input2, session_id: continued.sessionId };
   if (policyError) notes.push(policyError);
   const tier = findTier(policy, input2.effort);
-  const doc = (input2.provider ?? tier?.provider) === "system" && (!input2.session_id || input2.provider === "system") ? { defaultProvider: null, providers: [] } : loadProviders();
+  const doc = (input2.provider ?? tier?.provider) === "system" && (!input2.session_id || input2.provider === "system") ? { defaultProvider: null, providers: [] } : loadProviders(context?.providersFile);
   const resumedProvider = input2.session_id && input2.provider === void 0 ? sessionProvider(input2.session_id, doc) : void 0;
   const provider = resumedProvider ?? ((input2.provider ?? tier?.provider) === "system" ? void 0 : selectProvider(doc, input2.provider, tier?.provider));
   const query = selectModel(input2.model, provider, tier?.model, input2.session_id ? void 0 : auto ? config.defaultModel : config.readModel);
@@ -39397,10 +39490,10 @@ async function delegate(input2, signal, onProgress, stallControl) {
     if (r.effort && !input2.effort && !provider?.effort) effort = r.effort;
     if (!r.known) notes.push(`'${r.model}' is not in codex's model cache; passed through as-is`);
   }
-  if (model2 && policy.models.length && !policy.models.includes(model2)) {
+  if (!context && model2 && policy.models.length && !policy.models.includes(model2)) {
     throw new Error(`model '${model2}' is not allowed by the delegation policy (allowed: ${policy.models.join(", ")}); pick a tier instead`);
   }
-  const clamped = tier ? effort : clampEffort(effort, config.efforts);
+  const clamped = context || tier ? effort : clampEffort(effort, config.efforts);
   if (clamped !== effort) {
     notes.push(`effort '${effort}' is outside the allowed range (${config.efforts.join(", ")}); used '${clamped}'`);
     effort = clamped;
@@ -39411,11 +39504,12 @@ async function delegate(input2, signal, onProgress, stallControl) {
   let release = () => {
   };
   if (!readOnly) {
+    if (activeWriters.has(lockKey)) throw new Error(`another delegated run is already editing ${cwd}; wait for it, or give this one its own git worktree (git worktree add) as cwd`);
     const done = new Promise((r) => release = r);
     activeWriters.set(lockKey, { signal, done });
   }
   try {
-    const run = { provider, cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, fast, images, structured, notes, continued };
+    const run = { provider, cwd, sandbox: sandbox2, readOnly, model: context?.original.model ?? model2, effort: context?.original.effort ?? effort, tier: context ? context.original.tier : tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, fast: context ? context.original.fast : fast, images, structured, notes, continued, context };
     const stall = {
       silent_s: input2.stall?.silent_s ?? input2.idle_timeout_s ?? policy.stall?.silent_s ?? config.idleTimeoutSec,
       command_s: input2.stall?.command_s ?? input2.idle_timeout_s ?? policy.stall?.command_s ?? config.commandIdleTimeoutSec,
@@ -39431,11 +39525,15 @@ async function delegate(input2, signal, onProgress, stallControl) {
 }
 async function execute(input2, r, signal, onProgress, stallControl) {
   const { cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier, codexGuidance, fast, images, structured, notes, continued } = r;
-  const runDir = newRunDir();
+  const runDir = newRunDir(r.context?.runsDir);
+  if (r.context && !runDir) throw new Error("Cannot create dashboard run directory");
+  const engine = r.context ? "app-server" : config.engine;
   const meta3 = {
     id: runDir ? basename(runDir) : "",
     startedAt: Date.now(),
     state: "running",
+    origin: r.context?.origin,
+    parentRunId: r.context?.parentRunId,
     title: input2.title,
     cwd,
     provider: r.provider?.id ?? "system",
@@ -39450,7 +39548,7 @@ async function execute(input2, r, signal, onProgress, stallControl) {
     prompt: input2.prompt.slice(0, 2e3),
     version: version3,
     phase: "codex",
-    engine: config.engine,
+    engine,
     pid: process.pid,
     heartbeatAt: Date.now(),
     lastEventAt: Date.now(),
@@ -39470,11 +39568,12 @@ async function execute(input2, r, signal, onProgress, stallControl) {
     lastSnapshot = serialized;
     lastWrite = Date.now();
     try {
-      if (runDir) writeFileSync8(join12(runDir, "meta.json"), serialized);
+      if (runDir) writeFileSync8(join13(runDir, "meta.json"), serialized);
     } catch {
     }
   };
   const progress = () => {
+    if (r.context && meta3.phase === "done") return;
     try {
       onProgress?.({ ...meta3 });
     } catch {
@@ -39483,6 +39582,26 @@ async function execute(input2, r, signal, onProgress, stallControl) {
     else pendingWrite ??= setTimeout(writeMeta, 2e3 - (Date.now() - lastWrite));
   };
   writeMeta();
+  if (r.context && input2.session_id) {
+    try {
+      await appendHandoff(r.context.runsDir, input2.session_id, {
+        runId: meta3.id,
+        parentRunId: r.context.parentRunId,
+        sessionId: input2.session_id,
+        cwd,
+        text: r.context.text,
+        notify: r.context.notify,
+        parentPid: r.context.original.pid,
+        at: meta3.startedAt,
+        state: "started"
+      });
+    } catch (error62) {
+      meta3.state = "error";
+      meta3.endedAt = Date.now();
+      writeMeta();
+      throw error62;
+    }
+  }
   progress();
   let sampling = false;
   const sampleController = new AbortController();
@@ -39527,7 +39646,7 @@ async function execute(input2, r, signal, onProgress, stallControl) {
   const checksController = new AbortController();
   let pollingInputs = false;
   const pollInputs = async () => {
-    if (!runDir || config.engine !== "app-server" || pollingInputs) return;
+    if (!runDir || engine !== "app-server" || pollingInputs) return;
     pollingInputs = true;
     try {
       void stallControl?.live?.pollInbox?.().then(() => {
@@ -39548,7 +39667,7 @@ async function execute(input2, r, signal, onProgress, stallControl) {
   checkpointTimer.unref();
   try {
     let prompt = previousDiagnosis(config.runsDir, input2.session_id) + (continued ? continuationPreamble(continued) : "") + input2.prompt;
-    if (config.contract) prompt += readOnly ? READ_CONTRACT : WRITE_CONTRACT;
+    if (config.contract) prompt += r.context ? "\n\nReply directly to the human user in plain prose." : readOnly ? READ_CONTRACT : WRITE_CONTRACT;
     if (codexGuidance) prompt += `
 
 ${codexGuidance}`;
@@ -39561,21 +39680,21 @@ ${codexGuidance}`;
 Long commands (added by the server): run every command likely to take longer than ~1 minute through the launcher, with a new n per command (1, 2, 3 \u2026):
   node "${launcher}" "${runDir}" run <n> -- <program> <args\u2026>
   node "${launcher}" "${runDir}" run <n> "<one shell command string, for pipes/redirects>"
-It streams the output, blocks until the command ends and exits with its exit code, so use it exactly like running the command directly (one blocking call; fine under any long-script rules you follow). It also writes ${join12(runDir, "cmd-<n>.log")} ending in EXIT=<code>, and keeps the command alive if your turn is interrupted, so the lead can talk to you without killing the job. Don't wrap it in tee. Absolute run directory: ${runDir}.`;
+It streams the output, blocks until the command ends and exits with its exit code, so use it exactly like running the command directly (one blocking call; fine under any long-script rules you follow). It also writes ${join13(runDir, "cmd-<n>.log")} ending in EXIT=<code>, and keeps the command alive if your turn is interrupted, so the lead can talk to you without killing the job. Don't wrap it in tee. Absolute run directory: ${runDir}.`;
     } else if (runDir) {
       prompt += `
 
-Command logs (added by the server): for commands likely to run longer than ~1 minute, tee output to ${join12(runDir, "cmd-<n>.log")} (use a new n per command). Absolute run directory: ${runDir}.`;
+Command logs (added by the server): for commands likely to run longer than ~1 minute, tee output to ${join13(runDir, "cmd-<n>.log")} (use a new n per command). Absolute run directory: ${runDir}.`;
     }
     let outputSchemaFile;
     if (runDir) {
-      writeFileSync8(join12(runDir, "prompt.md"), prompt);
+      writeFileSync8(join13(runDir, "prompt.md"), prompt);
       if (structured) {
-        outputSchemaFile = join12(runDir, "report.schema.json");
+        outputSchemaFile = join13(runDir, "report.schema.json");
         writeFileSync8(outputSchemaFile, JSON.stringify(REPORT_SCHEMA, null, 2));
       }
     }
-    const rec = readOnly ? void 0 : {
+    const rec = readOnly || r.context !== void 0 ? void 0 : {
       cwd,
       sessionId: input2.fork ? void 0 : input2.session_id,
       state: "running",
@@ -39590,9 +39709,10 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
     };
     if (rec) savePending(rec);
     const before = await snapshot(cwd);
-    const tempDir = runDir && sandbox2 === "workspace-write" ? join12(runDir, "tmp") : void 0;
+    const tempDir = runDir && sandbox2 === "workspace-write" ? join13(runDir, "tmp") : void 0;
     if (tempDir) mkdirSync4(tempDir, { recursive: true });
     const result = await runCodex({
+      engine,
       provider: r.provider,
       addDirs: [...runDir ? [runDir] : [], ...(input2.add_dirs ?? []).map((dir2) => resolve2(cwd, dir2))],
       env: tempDir ? { TEMP: tempDir, TMP: tempDir } : void 0,
@@ -39643,12 +39763,12 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
       timeoutMs: (input2.timeout_s ?? config.timeoutSec) * 1e3,
       idleTimeoutMs: input2.idle_timeout_s === void 0 ? void 0 : input2.idle_timeout_s * 1e3,
       signal,
-      lastMessageFile: runDir && join12(runDir, "last-message.txt"),
+      lastMessageFile: runDir && join13(runDir, "last-message.txt"),
       outputSchemaFile,
-      logFile: runDir && join12(runDir, "events.jsonl"),
+      logFile: runDir && join13(runDir, "events.jsonl"),
       runDir
     });
-    if (runDir && config.engine === "app-server") {
+    if (runDir && engine === "app-server") {
       await stallControl?.live?.flushInbox?.();
       result.inputs = await finishInputs(runDir);
       meta3.inputs = result.inputs;
@@ -39708,7 +39828,7 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
         }
       });
     }
-    if (runDir && config.engine === "app-server") {
+    if (runDir && engine === "app-server") {
       result.userInterrupt ??= stallControl?.live?.userInterrupt;
       result.inputs = await finishInputs(runDir);
       if (result.userInterrupt) {
@@ -39752,7 +39872,7 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
       } catch {
       }
       try {
-        rmSync4(join12(runDir, "tmp"), { recursive: true, force: true });
+        rmSync4(join13(runDir, "tmp"), { recursive: true, force: true });
       } catch {
       }
     }
@@ -39760,11 +39880,23 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
     meta3.inflight = void 0;
     meta3.endedAt = Date.now();
     meta3.durationMs = meta3.endedAt - meta3.startedAt;
+    clearTimeout(pendingWrite);
     try {
-      onProgress?.({ ...meta3 });
-    } catch {
+      if (r.context && input2.session_id) {
+        let reply = "";
+        try {
+          reply = await readFile4(join13(runDir, "last-message.txt"), "utf8");
+        } catch {
+        }
+        await appendHandoff(r.context.runsDir, input2.session_id, { runId: meta3.id, state: meta3.state, endedAt: meta3.endedAt, reply: reply.slice(0, 1500), changes: meta3.changes?.map((c) => c.path) });
+      }
+    } finally {
+      try {
+        onProgress?.({ ...meta3 });
+      } catch {
+      }
+      writeMeta();
     }
-    writeMeta();
   }
 }
 var activeWriters = /* @__PURE__ */ new Map();
@@ -39864,7 +39996,7 @@ ${seen.map((p) => `  ${p}`).join("\n")}`);
   }
   if (o.checks?.length) lines.push(renderChecks(o.checks));
   if (!o.report) {
-    const where = o.runDir && join12(o.runDir, "last-message.txt");
+    const where = o.runDir && join13(o.runDir, "last-message.txt");
     lines.push("--- response ---", truncate(r.text || "(no text output)", config.maxOutputChars, where));
   }
   if (o.runDir) lines.push(`run log: ${o.runDir}`);
@@ -39877,11 +40009,11 @@ import { watchFile as watchFile2 } from "node:fs";
 // src/tasks.ts
 import { randomUUID as randomUUID5 } from "node:crypto";
 import { existsSync as existsSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync11, writeFileSync as writeFileSync9 } from "node:fs";
-import { join as join13 } from "node:path";
+import { join as join14 } from "node:path";
 var MAX_FINISHED = 100;
 var tasks = /* @__PURE__ */ new Map();
-var tasksDir = () => join13(config.runsDir, "tasks");
-var taskFile = (id) => join13(tasksDir(), `${id.replace(/[^\w-]/g, "")}.json`);
+var tasksDir = () => join14(config.runsDir, "tasks");
+var taskFile = (id) => join14(tasksDir(), `${id.replace(/[^\w-]/g, "")}.json`);
 function store(t) {
   try {
     mkdirSync5(tasksDir(), { recursive: true });
@@ -39971,7 +40103,7 @@ function formatSuspicion(task) {
     `inflight: ${s.command?.replace(/\s+/g, " ").slice(0, 300) ?? "(model silent)"}; idle: ${((Date.now() - (p.lastEventAt ?? task.startedAt)) / 1e3).toFixed(0)}s`,
     `threshold: ${s.thresholdSec}s; wakes: ${s.wakes}${s.matchedRule ? `; rule: ${s.matchedRule}` : ""}`,
     `evidence: ${JSON.stringify(s.evidence)}`,
-    logReport(join13(config.runsDir, p.id)),
+    logReport(join14(config.runsDir, p.id)),
     trendReport(p.trend),
     s.command ? baseline(config.runsDir, s.command, p.id) : ""
   ].filter(Boolean).join("\n");
@@ -39983,7 +40115,7 @@ function formatCheckpoints(task) {
   const fresh = newCheckpoints(task);
   task.shownCheckpoints = task.progress?.checkpoints?.length ?? 0;
   const p = task.progress;
-  const dir2 = join13(config.runsDir, p.id);
+  const dir2 = join14(config.runsDir, p.id);
   const steer = task.control.live ? "direction should change \u2192 task_steer(task_id, prompt) (now: true makes codex read it at once; a long command it started keeps running unless you also pass kill: true)" : "direction should change \u2192 task_cancel, then delegate(session_id) with the new direction (this engine cannot steer)";
   return [
     "status: checkpoint (codex is still working; nothing was stopped)",
@@ -39993,7 +40125,7 @@ function formatCheckpoints(task) {
     `elapsed: ${((Date.now() - task.startedAt) / 1e3).toFixed(0)}s`,
     ...fresh.map((c) => {
       try {
-        return renderCheckpoint({ ...c, file: join13(dir2, `checkpoint-${c.n}.md`), text: readFileSync11(join13(dir2, `checkpoint-${c.n}.md`), "utf8").trim() });
+        return renderCheckpoint({ ...c, file: join14(dir2, `checkpoint-${c.n}.md`), text: readFileSync11(join14(dir2, `checkpoint-${c.n}.md`), "utf8").trim() });
       } catch {
         return `--- checkpoint ${c.n}: ${c.title} (file unreadable) ---`;
       }
@@ -40003,7 +40135,7 @@ function formatCheckpoints(task) {
 async function waitTask(task, waitSec, stallAfterSec) {
   task.control.lastObservedAt = Date.now();
   if (task.status !== "running") return;
-  if (newCheckpoints(task).length || newUserInputs(task).length) return;
+  if (newCheckpoints(task).length || newUserInputs(task).length || await hasNotifyHandoffs()) return;
   const suspicion = task.controller.signal.aborted ? void 0 : task.progress?.suspicion;
   if (suspicion && task.seenWake !== suspicion.suspectedAt && stallAfterSec === void 0) {
     task.seenWake = suspicion.suspectedAt;
@@ -40019,9 +40151,24 @@ async function waitTask(task, waitSec, stallAfterSec) {
     };
     task.listeners.add(notify);
   });
+  let polling = false;
+  const handoffTimer = setInterval(async () => {
+    if (polling) return;
+    polling = true;
+    try {
+      if (await hasNotifyHandoffs()) notifyHandoff();
+    } catch {
+    } finally {
+      polling = false;
+    }
+  }, config.checkpointPollMs);
+  let notifyHandoff;
+  const handoffWake = new Promise((r) => {
+    notifyHandoff = r;
+  });
   task.control.waiting = (task.control.waiting ?? 0) + 1;
   try {
-    await Promise.race([task.promise, wake, new Promise((r) => {
+    await Promise.race([task.promise, wake, handoffWake, new Promise((r) => {
       timer = setTimeout(r, waitSec * 1e3);
     })]);
     if (task.progress?.suspicion) task.seenWake = task.progress.suspicion.suspectedAt;
@@ -40030,6 +40177,7 @@ async function waitTask(task, waitSec, stallAfterSec) {
     task.control.lastObservedAt = Date.now();
     task.listeners.delete(notify);
     clearTimeout(timer);
+    clearInterval(handoffTimer);
   }
 }
 async function delegateSync(input2, signal, evidenceSampler) {
@@ -40057,7 +40205,7 @@ async function steerTask(task, prompt, now = false, waitMs, kill = false) {
     const inflight = task.progress?.inflight?.command?.replace(/\s+/g, " ").slice(0, 160);
     if (now) {
       const r = await live2.redirect(prompt, { kill, waitMs });
-      if (task.progress) await leadInput(join13(config.runsDir, task.progress.id), prompt, "delivered").catch(() => {
+      if (task.progress) await leadInput(join14(config.runsDir, task.progress.id), prompt, "delivered").catch(() => {
       });
       const lines = [`redirected ${task.id}: codex stopped thinking about its current step and continues the same session with your message. Edits made before stay.`];
       for (const k of r.kept) lines.push(`kept running: cmd-${k.n} ${k.command.replace(/\s+/g, " ").slice(0, 160)} (log ${k.log}). Codex was told it must wait for it or stop it before finishing; you can watch it with task_inspect. If you decide it must stop, task_steer again saying so (or now: true, kill: true).`);
@@ -40066,11 +40214,11 @@ async function steerTask(task, prompt, now = false, waitMs, kill = false) {
       return { isError: false, text: lines.join("\n") };
     }
     const { consumed } = await live2.steer(prompt, waitMs);
-    if (task.progress) await leadInput(join13(config.runsDir, task.progress.id), prompt, consumed ? "consumed" : "delivered").catch(() => {
+    if (task.progress) await leadInput(join14(config.runsDir, task.progress.id), prompt, consumed ? "consumed" : "delivered").catch(() => {
     });
     return { isError: false, text: consumed ? `steered ${task.id}: codex has read the message and continues with it. Edits made before it stay; collect with task_result.` : `steered ${task.id}: accepted, codex will read it at its next step${inflight ? ` (busy running: ${inflight}; to have codex read it now while that keeps running, steer again with now: true)` : ""}. Collect with task_result; the result says whether codex read it.` };
   } catch (e) {
-    if (task.progress) await leadInput(join13(config.runsDir, task.progress.id), prompt, "failed").catch(() => {
+    if (task.progress) await leadInput(join14(config.runsDir, task.progress.id), prompt, "failed").catch(() => {
     });
     return { isError: true, text: `steer failed: ${e instanceof Error ? e.message : String(e)}` };
   }
@@ -40078,9 +40226,9 @@ async function steerTask(task, prompt, now = false, waitMs, kill = false) {
 async function inspectTask(task) {
   const p = task.progress;
   if (!p) return `task_id: ${task.id}; ${task.status}; evidence unavailable`;
-  const dir2 = join13(config.runsDir, p.id);
+  const dir2 = join14(config.runsDir, p.id);
   const sample = task.status === "running" && p.codexPid ? await sampleTreeEvidence(p.codexPid, new AbortController().signal) : void 0;
-  const events = tailFile(join13(dir2, "events.jsonl"), 16e3).trim().split(/\r?\n/).slice(-5).map((line) => {
+  const events = tailFile(join14(dir2, "events.jsonl"), 16e3).trim().split(/\r?\n/).slice(-5).map((line) => {
     try {
       const e = JSON.parse(line);
       return `${e.type}: ${e.item?.command ?? e.item?.text ?? e.item?.type ?? e.message ?? ""}`.slice(0, 120);
@@ -40120,7 +40268,11 @@ var cleanup = () => {
 cleanup();
 setInterval(cleanup, 36e5).unref();
 var server = new McpServer({ name: "codex-delegate", version: package_default.version });
-var text = (t, isError = false) => ({ content: [{ type: "text", text: t }], isError });
+var text = async (t, isError = false, session) => {
+  const notified = await consumeHandoffs(void 0, config.runsDir, true);
+  const matching = session ? await consumeHandoffs(session) : "";
+  return { content: [{ type: "text", text: [matching, notified, t].filter(Boolean).join("\n\n") }], isError };
+};
 function effortParam(policy) {
   const ids = policy.tiers.map((t) => t.id);
   return external_exports.enum(ids).describe(
@@ -40208,13 +40360,17 @@ var delegateTool = server.registerTool(
     }, 15e3) : void 0;
     try {
       const task = await delegateSync(input2, extra.signal);
-      if (task.status === "running" && newUserInputs(task).length) return text(formatUserInputs(task));
-      if (task.status === "running" && newCheckpoints(task).length) return text(formatCheckpoints(task));
-      if (task.status === "running") return text(formatSuspicion(task));
-      if (task.outcome) return text(formatOutcome(task.outcome), !task.outcome.result.ok);
-      return text(task.error ?? "delegate failed", true);
+      const sessionText = (value, error62 = false) => text(value, error62, task.progress?.sessionId ?? task.outcome?.result.sessionId);
+      if (task.status === "running" && newUserInputs(task).length) return sessionText(formatUserInputs(task));
+      if (task.status === "running" && newCheckpoints(task).length) return sessionText(formatCheckpoints(task));
+      if (task.status === "running" && task.progress?.suspicion) return sessionText(formatSuspicion(task));
+      if (task.status === "running") return sessionText(`${taskSummary(task)}
+${runningProgress(task)}
+still running; call task_result to keep waiting.`);
+      if (task.outcome) return sessionText(formatOutcome(task.outcome), !task.outcome.result.ok);
+      return sessionText(task.error ?? "delegate failed", true);
     } catch (e) {
-      return text(String(e instanceof Error ? e.message : e), true);
+      return text(String(e instanceof Error ? e.message : e), true, input2.session_id);
     } finally {
       if (heartbeat) clearInterval(heartbeat);
     }
@@ -40254,26 +40410,27 @@ server.registerTool(
   },
   async ({ task_id, wait_s, stall_after_s }) => {
     const t = getTask(task_id);
+    const sessionText = (value, error62 = false) => text(value, error62, t?.progress?.sessionId ?? t?.outcome?.result.sessionId ?? storedTask(task_id)?.sessionId);
     if (!t) {
       const s = storedTask(task_id);
-      if (!s) return text(`unknown task_id '${task_id}'`, true);
-      if (s.status === "interrupted") return text(`task: ${s.id} (interrupted)
+      if (!s) return sessionText(`unknown task_id '${task_id}'`, true);
+      if (s.status === "interrupted") return sessionText(`task: ${s.id} (interrupted)
 the server that ran it exited before it finished; ${s.sessionId ? `continue it with delegate(session_id="${s.sessionId}")` : "re-run it"} (check git status first).`, true);
-      if (s.status === "user_interrupted") return text(s.text ?? "status: user_interrupted");
-      return text(`task: ${s.id} (${s.status})
+      if (s.status === "user_interrupted") return sessionText(s.text ?? "status: user_interrupted");
+      return sessionText(`task: ${s.id} (${s.status})
 ${s.text ?? ""}`, s.status !== "done");
     }
     await waitTask(t, wait_s ?? 0, stall_after_s);
-    if (t.status === "running" && newUserInputs(t).length) return text(formatUserInputs(t));
-    if (t.status === "running" && newCheckpoints(t).length) return text(formatCheckpoints(t));
-    if (t.status === "running" && t.progress?.suspicion) return text(formatSuspicion(t));
-    if (t.status === "running") return text(`${taskSummary(t)}
+    if (t.status === "running" && newUserInputs(t).length) return sessionText(formatUserInputs(t));
+    if (t.status === "running" && newCheckpoints(t).length) return sessionText(formatCheckpoints(t));
+    if (t.status === "running" && t.progress?.suspicion) return sessionText(formatSuspicion(t));
+    if (t.status === "running") return sessionText(`${taskSummary(t)}
 ${runningProgress(t)}
 still running \u2014 call again later or with a larger wait_s.`);
-    if (t.outcome?.result.userInterrupt) return text(formatOutcome(t.outcome));
-    if (t.outcome) return text(`task: ${t.id} (${t.status})
+    if (t.outcome?.result.userInterrupt) return sessionText(formatOutcome(t.outcome));
+    if (t.outcome) return sessionText(`task: ${t.id} (${t.status})
 ${formatOutcome(t.outcome)}`, t.status !== "done");
-    return text(`task: ${t.id} (${t.status})
+    return sessionText(`task: ${t.id} (${t.status})
 error: ${t.error}`, true);
   }
 );
@@ -40287,7 +40444,9 @@ server.registerTool(
   },
   async ({ task_id }) => {
     const task = getTask(task_id);
-    return task ? text(await inspectTask(task)) : text(`unknown task_id '${task_id}'`, true);
+    if (task) return text(await inspectTask(task), false, task.progress?.sessionId ?? task.outcome?.result.sessionId);
+    const stored = storedTask(task_id);
+    return stored ? text(stored.text ?? `task: ${stored.id} (${stored.status})`, false, stored.sessionId) : text(`unknown task_id '${task_id}'`, true);
   }
 );
 server.registerTool(

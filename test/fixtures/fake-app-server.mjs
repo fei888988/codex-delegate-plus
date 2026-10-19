@@ -71,6 +71,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       }
       const checkpointDir = /checkpoint-<n>\.md/.test(brief) && /write a short stage report to (.+?)checkpoint-<n>\.md/.exec(brief)?.[1];
       if (checkpointDir) writeFileSync(`${checkpointDir}checkpoint-1.md`, "# Found the real cause in parser.ts\nFound: x\nPlan next: y\nOpen choice / risk: none\n");
+      // Wait without a shell child when a test only needs a live turn.
+      if (brief.includes("quiet-wait")) { waiting = true; return; }
       if (brief.includes("steer-wait")) {
         waiting = true;
         // A real long command, like codex's shell: an interrupt leaves it running unless someone kills it.

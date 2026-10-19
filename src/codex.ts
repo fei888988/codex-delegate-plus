@@ -27,6 +27,7 @@ export function classifyError(text: string): ErrorKind {
 }
 
 export interface RunOptions {
+  engine?: import("./config.ts").Engine;
   addDirs?: string[];
   env?: NodeJS.ProcessEnv;
   provider?: Provider;
@@ -305,7 +306,7 @@ function runCodexProcess(o: RunOptions): Promise<RunResult> {
   };
   const started = Date.now();
   const collector = new EventCollector();
-  const appServer = config.engine === "app-server";
+  const appServer = (o.engine ?? config.engine) === "app-server";
   return new Promise((resolve) => {
     const child = spawn(config.codex.cmd, [...config.codex.args, ...(appServer ? [...APP_SERVER_ARGS, ...providerArgs(o.provider)] : buildArgs(o))], {
       cwd: o.cwd,

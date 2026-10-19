@@ -1,3 +1,5 @@
+import { continuationAvailability, dashboardContinuations, recoverDashboardContinuations } from "./continuations.ts";
+import { installExitCleanup } from "./procs.ts";
 import { randomUUID } from "node:crypto";
 import { atomic, availability, editInput, inboxPath, launcherJobs, messages, readJson, type UserInterrupt } from "./inbox.ts";
 import { commandThreshold } from "./watchdog.ts";
@@ -60,7 +62,7 @@ export async function readRun(runsDir: string, id: string): Promise<RunSummary |
   const dir = join(runsDir, id);
   try { if (!(await lstat(dir)).isDirectory()) return undefined; } catch { return undefined; }
   const meta = await object<RunSummary>(join(dir, "meta.json"));
-  if (meta && meta.id === id && typeof meta.startedAt === "number" && ["running", "ok", "error", "interrupted", "user_interrupted"].includes(meta.state)) {
+  if (meta && meta.id === id && typeof meta.startedAt === "number" && ["running", "ok", "error", "interrupted", "user_interrupted", "needs_decision", "partial", "blocked", "cancelled"].includes(meta.state)) {
     // A server that exits mid-run never writes the final state; once the log has been quiet for
     // longer than the run timeout, nothing is coming back.
     if (meta.state === "running" && meta.pid === undefined && meta.heartbeatAt === undefined && meta.lastEventAt === undefined) {
@@ -143,7 +145,8 @@ export function createDashboardServer(options: { runsDir?: string; policyFile?: 
   const runsDir = options.runsDir ?? config.runsDir;
   const policyFile = options.policyFile ?? config.policyFile;
   const providersFile = options.providersFile ?? defaultProvidersFile;
-  return createServer(async (req, res) => {
+  const continuations = dashboardContinuations(runsDir, providersFile);
+  const server = createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     const json = (status: number, value: unknown) => {
       res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -151,8 +154,8 @@ export function createDashboardServer(options: { runsDir?: string; policyFile?: 
     };
     // Inspect the raw path: URL normalization would erase traversal segments before validation.
     const path = (req.url ?? "/").split("?")[0]!;
-    const inputRoute = /^\/api\/runs\/([\w-]+)\/(inputs|input|interrupt)(?:\/([\w-]+))?$/.exec(path);
-    const allow = inputRoute ? (inputRoute[2] === "inputs" ? "GET" : inputRoute[3] ? "PATCH, DELETE" : "POST") : path === "/api/policy" || path === "/api/providers" ? "GET, PUT" : path === "/api/providers/ccswitch/import" || /^\/api\/providers\/[^/]+\/(test|sync)$/.test(path) ? "POST" : "GET";
+    const inputRoute = /^\/api\/runs\/([\w-]+)\/(inputs|input|interrupt|continue)(?:\/([\w-]+))?$/.exec(path);
+    const allow = path === "/api/shutdown" ? "POST" : inputRoute ? (inputRoute[2] === "inputs" ? "GET" : inputRoute[3] ? "PATCH, DELETE" : "POST") : path === "/api/policy" || path === "/api/providers" ? "GET, PUT" : path === "/api/providers/ccswitch/import" || /^\/api\/providers\/[^/]+\/(test|sync)$/.test(path) ? "POST" : "GET";
     if (!allow.split(", ").includes(req.method ?? "")) {
       res.setHeader("Allow", allow);
       json(405, { error: "Method not allowed" });
@@ -160,6 +163,12 @@ export function createDashboardServer(options: { runsDir?: string; policyFile?: 
     }
     if (req.method !== "GET" && !sameOrigin(req)) { json(403, { error: "Forbidden" }); return; }
     try {
+      if (path === "/api/shutdown") {
+        await continuations.shutdown();
+        json(200, {});
+        server.close();
+        return;
+      }
       if (inputRoute) {
         const [, id, action, mid] = inputRoute;
         const run = await readRun(runsDir, id!);
@@ -169,7 +178,19 @@ export function createDashboardServer(options: { runsDir?: string; policyFile?: 
         if (action === "inputs") {
           const interrupt = await readJson<UserInterrupt>(inboxPath(dir, "interrupt"));
           const interruptAck = await readJson<{ state: string }>(inboxPath(dir, "interrupt.ack"));
-          json(200, { available: !reason, ...(reason ? { reason } : {}), inputs: await messages(dir), longruns: await launcherJobs(dir), interrupt: interrupt ? { ...interrupt, state: interruptAck?.state ?? "queued" } : null }); return;
+          const continuation = await continuationAvailability(run, runsDir);
+          json(200, { canContinue: !continuation.reason, ...(continuation.reason ? { continueReason: continuation.reason, ...(continuation.runId ? { busyRunId: continuation.runId } : {}) } : {}), available: !reason, ...(reason ? { reason } : {}), inputs: await messages(dir), longruns: await launcherJobs(dir), interrupt: interrupt ? { ...interrupt, state: interruptAck?.state ?? "queued" } : null }); return;
+        }
+        if (action === "continue") {
+          let value: any;
+          try { value = JSON.parse(await body(req)); } catch { json(400, { error: "Invalid JSON body" }); return; }
+          const text = typeof value?.text === "string" ? value.text.trim() : "";
+          if (!text || text.length > 4000 || value.notify !== undefined && typeof value.notify !== "boolean") { json(400, { error: "Invalid continuation" }); return; }
+          const unavailable = await continuationAvailability(run, runsDir);
+          if (unavailable.reason) { json(409, { error: "Cannot continue run", ...unavailable }); return; }
+          const started = await continuations.start(run, text, value.notify ?? false);
+          json(started.reason ? 409 : 201, started.reason ? { error: "Cannot continue run", ...started } : started);
+          return;
         }
         if (reason) { json(409, { error: "Run unavailable", reason }); return; }
         let value: any = {};
@@ -286,12 +307,16 @@ export function createDashboardServer(options: { runsDir?: string; policyFile?: 
       } else json(404, { error: "Not found" });
     } catch { json(500, { error: "Unable to read dashboard data" }); }
   });
+  server.on("close", () => { void continuations.shutdown(); });
+  return Object.assign(server, { shutdownContinuations: continuations.shutdown });
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  installExitCleanup(false);
   const value = process.env.CODEX_DELEGATE_DASHBOARD_PORT ?? "4318";
   const port = Number(value);
   if (!/^\d+$/.test(value) || !Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid CODEX_DELEGATE_DASHBOARD_PORT");
+  await recoverDashboardContinuations(config.runsDir);
   const server = createDashboardServer();
   server.listen(port, "127.0.0.1", () => {
     const address = server.address();

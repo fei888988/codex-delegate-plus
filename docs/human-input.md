@@ -66,3 +66,75 @@ launcher jobs stop and are listed as stopped. Otherwise each job is listed as
 excluded from run-end and server-exit reaping. The pending continuation record is
 retained. Normal reminder turns and killed_forgotten cleanup remain in force for
 runs that finish normally.
+
+## Continue a finished run from the dashboard
+
+`POST /api/runs/:id/continue` accepts `{text, notify?: boolean}` and returns
+201 `{runId}`. Text is trimmed and must contain 1..4000 characters; notify
+defaults to false. It uses the same loopback Host, matching Origin and JSON guard
+as the inbox endpoints (403 on failure).
+
+Any finished run can continue, including ok, needs_decision, partial, blocked,
+error, cancelled and user_interrupted. Conflicts return 409 `{error, reason}`:
+
+| reason | Meaning |
+| --- | --- |
+| running | Use the live run's inbox instead. |
+| no_session | The run has no saved Codex session. |
+| session_busy | Another run on this session has a heartbeat within 90 seconds; `runId` identifies it. |
+| cwd_missing | The recorded working directory no longer exists. |
+
+`GET /api/runs/:id/inputs` also returns `canContinue`, `continueReason?` and,
+for session_busy, `busyRunId`. Run list and detail metadata expose `origin` and
+`parentRunId`.
+
+The dashboard process calls the shared delegate directly, resuming the recorded
+session in the recorded cwd with its original tier, model, effort, provider,
+fast setting and sandbox. Request fields cannot override these. The engine is
+always app-server, host checks are omitted, and the answer is plain prose. The
+prompt identifies the message as coming directly from the human, not the lead.
+The new run has `origin: "dashboard"`, `parentRunId`, `resumed: true`, and a
+title derived from the message. Heartbeats and inbox steer/queue/interrupt use
+the same lifecycle as other app-server runs.
+
+Dashboard runs create no lead tasks and never write or clear pending/redirect
+records. Existing lead pending records remain intact; a pending session driven through
+the dashboard after that lead run started is excluded from silent writer auto-resume. Explicit
+`delegate(session_id)` still resumes it.
+
+### Handoffs to the lead
+
+Each continuation appends a started event to
+`<runsDir>/handoffs/<sessionId>.jsonl` with runId, parentRunId, sessionId, cwd,
+text, notify, at and state. An internal parentPid records notification ownership.
+Completion appends runId, final state, endedAt, the final reply (up to 1500
+characters), and changed paths when available. Events for a run are merged when
+read. A per-session `.consumed.json` sidecar records run IDs already shown; each
+continuation is delivered once, even if its start is shown before it finishes.
+
+A delegate returning for that session, or task_result/task_inspect on a matching
+live or stored task, prepends:
+
+```
+user continued this codex session from the dashboard:
+<time, user message, state, Codex reply, changed files>
+next: take the user's changes into account; the session's latest state includes them.
+```
+
+With notify true, only the MCP process whose PID owned the parent run can receive
+an unsolicited handoff. Waiting sync delegates and task_result calls wake on the
+existing poll cadence, with
+`status: user_continued (another codex run, started by the user from the dashboard, is running|finished)`.
+Otherwise the next tool result carries it. Non-notify handoffs wait for a
+matching-session call. Polling and consumption use asynchronous filesystem I/O
+and serialize consumption across processes.
+
+### Dashboard shutdown
+
+SIGINT/SIGTERM/exit cleanup interrupts owned continuations, persists interrupted
+metadata and reaps launcher jobs. The Windows scheduled-task service requests
+the guarded JSON `POST /api/shutdown` endpoint before its force-kill fallback;
+this waits for owned delegates to finalize and closes the HTTP listener. Dashboard
+startup recovers dashboard runs left running by an abrupt OS kill. Normal
+run-end handling, including the user's keep-versus-kill launcher choice, remains
+unchanged.

@@ -1,3 +1,4 @@
+import { hasNotifyHandoffs } from "./handoffs.ts";
 import { leadInput, renderInputs } from "./inbox.ts";
 import { baseline, denialBlock, evidenceDelta, logReport, recentFiles, tailFile, trendReport } from "./observability.ts";
 import { sampleTreeEvidence } from "./watchdog.ts";
@@ -170,7 +171,7 @@ export async function waitTask(task: Task, waitSec: number, stallAfterSec?: numb
   task.control.lastObservedAt = Date.now();
   if (task.status !== "running") return;
   // A stage report the lead hasn't seen comes back before any waiting.
-  if (newCheckpoints(task).length || newUserInputs(task).length) return;
+  if (newCheckpoints(task).length || newUserInputs(task).length || await hasNotifyHandoffs()) return;
   const suspicion = task.controller.signal.aborted ? undefined : task.progress?.suspicion;
   // Deliver an unseen wake once before allowing a later wait to re-arm it.
   if (suspicion && task.seenWake !== suspicion.suspectedAt && stallAfterSec === undefined) {
@@ -185,15 +186,24 @@ export async function waitTask(task: Task, waitSec: number, stallAfterSec?: numb
     notify = () => { if (!task.controller.signal.aborted && (task.progress?.suspicion || newCheckpoints(task).length || newUserInputs(task).length)) resolve(); };
     task.listeners.add(notify);
   });
+  let polling = false;
+  const handoffTimer = setInterval(async () => {
+    if (polling) return;
+    polling = true;
+    try { if (await hasNotifyHandoffs()) notifyHandoff(); } catch {} finally { polling = false; }
+  }, config.checkpointPollMs);
+  let notifyHandoff!: () => void;
+  const handoffWake = new Promise<void>(r => { notifyHandoff = r; });
   task.control.waiting = (task.control.waiting ?? 0) + 1;
   try {
-    await Promise.race([task.promise, wake, new Promise<void>(r => { timer = setTimeout(r, waitSec * 1000); })]);
+    await Promise.race([task.promise, wake, handoffWake, new Promise<void>(r => { timer = setTimeout(r, waitSec * 1000); })]);
     if (task.progress?.suspicion) task.seenWake = task.progress.suspicion.suspectedAt;
   } finally {
     task.control.waiting--;
     task.control.lastObservedAt = Date.now();
     task.listeners.delete(notify);
     clearTimeout(timer);
+    clearInterval(handoffTimer);
   }
 }
 

@@ -138,7 +138,7 @@ function dirBytes(dir: string): number {
 }
 /** Protect live owners/children across servers, and ambiguous legacy running records. */
 export function cleanupRuns(runsDir: string, retention: Retention, active = new Set<string>(), now = Date.now()) {
-  const runs = entries(runsDir).filter(e => e.isDirectory() && e.name !== "pending" && e.name !== "tasks").map(e => {
+  const runs = entries(runsDir).filter(e => e.isDirectory() && e.name !== "pending" && e.name !== "tasks" && e.name !== "handoffs").map(e => {
     const dir = join(runsDir, e.name), meta = readMeta(dir);
     return { dir, meta, age: now - (meta?.endedAt ?? meta?.startedAt ?? lstatSync(dir).mtimeMs), bytes: dirBytes(dir), protected: active.has(e.name) || (meta?.state === "running" && (alive(meta.pid) || alive(meta.codexPid) || (meta.heartbeatAt !== undefined ? now - meta.heartbeatAt < 90000 : meta.pid === undefined && meta.codexPid === undefined))) };
   }).sort((a, b) => b.age - a.age);

@@ -424,6 +424,9 @@
   .cnotify input { accent-color: var(--ember); }
   .chint { flex: 1; min-width: 160px; color: var(--muted); font-size: 12px; }
   .crow .primary { padding: 6px 18px; border-radius: 10px; }
+  button.linkbtn { border: 0; background: none; padding: 0 2px; color: var(--run); font-size: 12.5px; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(77,227,255,.4); }
+  button.linkbtn:hover { background: none; color: var(--text); }
+  .composer.cont .cbox:focus-within { border-color: rgba(198,255,61,.45); box-shadow: 0 0 0 4px var(--accent-soft); }
   .cnote { font-size: 12.5px; color: var(--muted); text-align: center; padding: 4px 0; }
   .cerr { color: var(--err); font-size: 12.5px; }
   /* 中断 */
@@ -1386,6 +1389,9 @@ function renderHead(r) {
   $("#dlgTitle").textContent = titleOf(r);
   const bits = [statusBadge(r), r.tier || r.effort ? `<span class="tag">${esc(r.tier || r.effort)}</span>` : "",
     esc(base(r.cwd)), r.startedAt ? `<span title="${esc(fmtFull(r.startedAt))}">${esc(fmtRel(r.startedAt))}</span>` : "", r.state !== "running" && dur(r) != null ? `用时 ${esc(fmtDur(dur(r)))}` : ""].filter(Boolean);
+  const kids = (data?.runs || []).filter((x) => x.parentRunId === r.id).sort((a, b) => b.startedAt - a.startedAt);
+  if (r.parentRunId) bits.push(`<button type="button" class="linkbtn" data-open="${esc(r.parentRunId)}">← 你在面板续接的，查看上一段</button>`);
+  if (kids.length) bits.push(`<button type="button" class="linkbtn" data-open="${esc(kids[0].id)}">已续接 ${kids.length} 次，看最新一段 →</button>`);
   $("#dlgMeta").innerHTML = bits.join('<span class="sep" aria-hidden="true"></span>');
 }
 async function refreshDrawer(full) {
@@ -1503,26 +1509,64 @@ async function pullInputs() {
   view.ioSig = sig;
   return changed;
 }
+/** Live run → interject/queue; finished run → continue the same codex session as a new run. */
+const isFinished = () => view.run && view.run.state !== "running";
 function renderComposer() {
-  const r = view.run, io = view.io, onTl = $("#dlg").open && view.tab !== "info";
+  const r = view.run, io = view.io, open = $("#dlg").open, onTl = open && view.tab !== "info";
   const live = r?.state === "running" && io?.available && !io.interrupt;
+  const cont = open && isFinished() && io?.canContinue;
   $("#dlgStop").hidden = !(r?.state === "running" && io && (io.available || io.interrupt));
   $("#dlgStop").disabled = !!io?.interrupt;
   $("#dlgStop").lastChild.textContent = io?.interrupt ? "正在中断…" : "中断";
-  $("#cmp").hidden = !(onTl && live);
-  const why = r?.state === "running" && io && !live ? (io.interrupt ? "已请求中断，等待 Codex 停下…" : IO_WHY[io.reason] || "暂时不能发送。") : "";
-  $("#cmpNote").hidden = !(onTl && why);
-  $("#cNoteText").textContent = why;
+  $("#cmp").hidden = !((onTl && live) || cont);
+  $("#cmp").classList.toggle("cont", !!cont);
+  let why = "";
+  if (r?.state === "running" && io && !live) why = io.interrupt ? "已请求中断，等待 Codex 停下…" : IO_WHY[io.reason] || "暂时不能发送。";
+  else if (open && isFinished() && io && !io.canContinue) why = io.continueReason === "session_busy"
+    ? `这个 Codex 会话正在另一次运行里继续。${io.busyRunId ? `<button type="button" class="linkbtn" data-open="${esc(io.busyRunId)}">打开那次运行</button>` : ""}`
+    : CONT_WHY[io.continueReason || io.reason] || "";
+  $("#cmpNote").hidden = !(open && why && (onTl || isFinished()));
+  $("#cNoteText").innerHTML = why;
   if ($("#cmp").hidden) return;
-  inkSeg($("#cMode"));
+  $("#cMode").hidden = !!cont;
+  if (!cont) inkSeg($("#cMode"));
+  $("#cText").placeholder = cont ? "继续和 Codex 对话…（接着这个会话的最新进度）" : "给 Codex 发消息…";
+  $("#cSend").textContent = cont ? "继续对话" : "发送";
   $("#cHint").textContent = cHint();
   $("#cSend").disabled = !$("#cText").value.trim();
-  renderQueue();
+  if (cont) $("#cQueue").innerHTML = ""; else renderQueue();
 }
+const CONT_WHY = {
+  no_session: "这次运行没有留下 Codex 会话，没法接着聊。", cwd_missing: "原来的项目目录已经不存在，没法接着聊。",
+  unsupported: "控制面板后端还不支持续接对话，重启控制面板服务后再试。",
+};
 function cHint() {
-  const q = $("#cMode [aria-pressed=true]").dataset.v === "queue", n = $("#cNotify").checked;
+  const n = $("#cNotify").checked;
+  if (isFinished()) {
+    const r = view.run;
+    return `在同一个 Codex 会话里开新一轮（${r.tier || r.effort || "原档位"}，沿用原来的沙箱），不跑 host checks`
+      + (n ? " · 同时立即告诉 Claude" : " · Claude 下次接手这个会话时会看到");
+  }
+  const q = $("#cMode [aria-pressed=true]").dataset.v === "queue";
   return (q ? "排队：Codex 做完当前这一轮后再读，每条单独一轮" : "插话：Codex 马上读到，后台长脚本继续运行")
     + (n ? " · 同时立即告诉 Claude" : " · 任务返回时再告诉 Claude");
+}
+async function continueRun() {
+  const text = $("#cText").value.trim(), id = view.id;
+  if (!text || !id) return;
+  $("#cSend").disabled = true; cErr("");
+  try {
+    const { runId } = await apiJson(runUrl(id, "/continue"), "POST", { text, notify: $("#cNotify").checked });
+    view.drafts.delete(id);
+    $("#cText").value = "";
+    await load();
+    view.mode = "chat";
+    await openRun(runId);
+  } catch (e) {
+    $("#cSend").disabled = false;
+    if (e.status === 409 && e.reason === "session_busy") { if (view.io) Object.assign(view.io, { canContinue: false, continueReason: "session_busy", busyRunId: e.runId }); renderComposer(); }
+    cErr(`没能继续：${e.status === 404 ? CONT_WHY.unsupported : CONT_WHY[e.reason] || e.message}`);
+  }
 }
 function renderQueue() {
   const tray = $("#cQueue"), q = view.inputs.filter(inQueue);
@@ -1539,7 +1583,7 @@ async function apiJson(url, method, body) {
   const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) });
   let j = {};
   try { j = await res.json(); } catch {}
-  if (!res.ok) { const e = new Error(j.error || `HTTP ${res.status}`); e.status = res.status; e.reason = j.reason; throw e; }
+  if (!res.ok) { const e = new Error(j.error || `HTTP ${res.status}`); e.status = res.status; e.reason = j.reason; e.runId = j.runId; throw e; }
   return j;
 }
 async function sendInput() {
@@ -1568,8 +1612,10 @@ async function sendInput() {
   renderComposer();
 }
 $("#cText").addEventListener("input", () => { growText(); if (view.id) view.drafts.set(view.id, $("#cText").value); $("#cSend").disabled = !$("#cText").value.trim(); });
-$("#cText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendInput(); } });
-$("#cSend").addEventListener("click", sendInput);
+const submitText = () => (isFinished() ? continueRun() : sendInput());
+$("#cText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitText(); } });
+$("#cSend").addEventListener("click", submitText);
+$("#dlg").addEventListener("click", (e) => { const id = e.target.closest("[data-open]")?.dataset.open; if (id) openRun(id); });
 $("#cNotify").addEventListener("change", () => { $("#cHint").textContent = cHint(); });
 $("#cMode").addEventListener("click", (e) => {
   const b = e.target.closest("[data-v]");
@@ -2390,7 +2436,7 @@ addEventListener("keydown", (e) => {
   else if (e.key === "r" || e.key === "R") load();
 });
 document.fonts?.ready.then(() => { inkSeg($("#fState")); inkSeg($("#distSeg")); });
-addEventListener("resize", () => { inkSeg($("#fState")); inkSeg($("#distSeg")); if ($("#dlg").open) inkTabs(); }, { passive: true });
+addEventListener("resize", () => { inkSeg($("#fState")); inkSeg($("#distSeg")); if ($("#dlg").open) { inkTabs(); growText(); } }, { passive: true });
 load();
 </script>
 </body>

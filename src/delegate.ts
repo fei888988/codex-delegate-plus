@@ -1,3 +1,5 @@
+import { appendHandoff } from "./handoffs.ts";
+import { readFile } from "node:fs/promises";
 import { finishInputs, interruptText, launcherJobs, messages, renderInputs } from "./inbox.ts";
 import { loadProviders, selectProvider, selectModel, type Provider } from "./providers.ts";
 import { sessionProvider } from "./sessions.ts";
@@ -18,6 +20,11 @@ import { installLauncher, reapLongruns, untrackRunDir, refresh, trackRunDir, typ
 import { clearPending, continuationPreamble, loadPending, savePending, type PendingRun } from "./pending.ts";
 import { parseReport, READ_CONTRACT, renderReport, REPORT_SCHEMA, WRITE_CONTRACT, type Report } from "./report.ts";
 import { version, type RunSummary } from "./run-summary.ts";
+
+export interface DelegateContext {
+  origin: "dashboard"; parentRunId: string; runsDir: string;
+  original: RunSummary; text: string; notify: boolean; providersFile?: string;
+}
 
 export interface DelegateInput {
   prompt: string;
@@ -66,9 +73,9 @@ export interface DelegateOutcome {
   checkpoints?: RunSummary["checkpoints"];
 }
 
-function newRunDir(): string | undefined {
+function newRunDir(runsDir = config.runsDir): string | undefined {
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "");
-  const dir = resolve(config.runsDir, `${stamp}-${randomUUID().slice(0, 6)}`);
+  const dir = resolve(runsDir, `${stamp}-${randomUUID().slice(0, 6)}`);
   try {
     mkdirSync(dir, { recursive: true });
     return dir;
@@ -77,13 +84,13 @@ function newRunDir(): string | undefined {
   }
 }
 
-export async function delegate(input: DelegateInput, signal?: AbortSignal, onProgress?: (info: RunSummary) => void, stallControl?: StallControl): Promise<DelegateOutcome> {
+export async function delegate(input: DelegateInput, signal?: AbortSignal, onProgress?: (info: RunSummary) => void, stallControl?: StallControl, context?: DelegateContext): Promise<DelegateOutcome> {
   stallControl ??= { lastObservedAt: Date.now() };
   const cwd = resolve(config.defaultCwd, input.cwd ?? ".");
   if (!existsSync(cwd)) throw new Error(`cwd does not exist: ${cwd}`);
   const auto = input.auto ?? config.auto;
   const { policy, error: policyError } = loadPolicy();
-  const sandbox = effectiveSandbox(input.sandbox, auto && config.sandbox !== "read-only", policy.sandboxWrites);
+  const sandbox = context?.original.sandbox ?? effectiveSandbox(input.sandbox, auto && config.sandbox !== "read-only", policy.sandboxWrites);
   const readOnly = sandbox === "read-only";
   const notes: string[] = [];
 
@@ -100,7 +107,17 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
   }
 
   // Continue a run in this directory that the user interrupted, unless told otherwise.
-  const pending = !readOnly && !input.fresh ? loadPending(cwd) : undefined;
+  let pending = !context && !readOnly && !input.fresh ? loadPending(cwd) : undefined;
+  // Preserve the lead's record, but never silently follow a session subsequently driven by a human.
+  if (pending?.sessionId && !input.session_id) {
+    try {
+      const events = await readFile(join(config.runsDir, "handoffs", encodeURIComponent(pending.sessionId) + ".jsonl"), "utf8");
+      const since = pending.startedAt;
+      if (events.split("\n").some(line => {
+        try { const event = JSON.parse(line); return event.state === "started" && event.at >= since; } catch { return false; }
+      })) pending = undefined;
+    } catch {}
+  }
   const continued = pending && (!input.session_id || input.session_id === pending.sessionId) ? pending : undefined;
   if (continued && !input.session_id) input = { ...input, session_id: continued.sessionId };
 
@@ -110,7 +127,7 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
 
   // A tier pins its model, so escalating a follow-up to a tier on another model switches models.
   // Without one, a follow-up keeps the session's model unless one is asked for explicitly.
-  const doc = (input.provider ?? tier?.provider) === "system" && (!input.session_id || input.provider === "system") ? { defaultProvider: null, providers: [] } : loadProviders();
+  const doc = (input.provider ?? tier?.provider) === "system" && (!input.session_id || input.provider === "system") ? { defaultProvider: null, providers: [] } : loadProviders(context?.providersFile);
   const resumedProvider = input.session_id && input.provider === undefined ? sessionProvider(input.session_id, doc) : undefined;
   const provider = resumedProvider ?? ((input.provider ?? tier?.provider) === "system" ? undefined : selectProvider(doc, input.provider, tier?.provider));
   const query = selectModel(input.model, provider, tier?.model, input.session_id ? undefined : auto ? config.defaultModel : config.readModel);
@@ -122,11 +139,11 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
     if (r.effort && !input.effort && !provider?.effort) effort = r.effort;
     if (!r.known) notes.push(`'${r.model}' is not in codex's model cache; passed through as-is`);
   }
-  if (model && policy.models.length && !policy.models.includes(model)) {
+  if (!context && model && policy.models.length && !policy.models.includes(model)) {
     throw new Error(`model '${model}' is not allowed by the delegation policy (allowed: ${policy.models.join(", ")}); pick a tier instead`);
   }
   // Tier efforts are the user's own choice; anything else is fitted into the allowed range.
-  const clamped = tier ? effort : clampEffort(effort, config.efforts);
+  const clamped = context || tier ? effort : clampEffort(effort, config.efforts);
   if (clamped !== effort) {
     notes.push(`effort '${effort}' is outside the allowed range (${config.efforts!.join(", ")}); used '${clamped}'`);
     effort = clamped;
@@ -137,11 +154,13 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
 
   let release = () => {};
   if (!readOnly) {
+    // The handoff lookup above yields; another writer may have acquired the cwd meanwhile.
+    if (activeWriters.has(lockKey)) throw new Error(`another delegated run is already editing ${cwd}; wait for it, or give this one its own git worktree (git worktree add) as cwd`);
     const done = new Promise<void>((r) => (release = r));
     activeWriters.set(lockKey, { signal, done });
   }
   try {
-    const run = { provider, cwd, sandbox, readOnly, model, effort, tier: tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, fast, images, structured, notes, continued };
+    const run = { provider, cwd, sandbox, readOnly, model: context?.original.model ?? model, effort: context?.original.effort ?? effort, tier: context ? context.original.tier : tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, fast: context ? context.original.fast : fast, images, structured, notes, continued, context };
     const stall: StallPolicy = {
       silent_s: input.stall?.silent_s ?? input.idle_timeout_s ?? policy.stall?.silent_s ?? config.idleTimeoutSec,
       command_s: input.stall?.command_s ?? input.idle_timeout_s ?? policy.stall?.command_s ?? config.commandIdleTimeoutSec,
@@ -157,6 +176,7 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
 }
 
 interface Resolved {
+  context?: DelegateContext;
   provider?: Provider;
   cwd: string;
   sandbox: Sandbox;
@@ -175,13 +195,16 @@ interface Resolved {
 
 async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, onProgress?: (info: RunSummary) => void, stallControl?: StallControl): Promise<DelegateOutcome> {
   const { cwd, sandbox, readOnly, model, effort, tier, codexGuidance, fast, images, structured, notes, continued } = r;
-  const runDir = newRunDir();
+  const runDir = newRunDir(r.context?.runsDir);
+  if (r.context && !runDir) throw new Error("Cannot create dashboard run directory");
+  const engine = r.context ? "app-server" : config.engine;
   const meta: RunSummary = {
     id: runDir ? basename(runDir) : "", startedAt: Date.now(), state: "running",
+    origin: r.context?.origin, parentRunId: r.context?.parentRunId,
     title: input.title, cwd, provider: r.provider?.id ?? "system", model, effort, tier, fast, sandbox, resumed: !!input.session_id,
     sessionId: input.session_id, continuedFrom: continued?.sessionId,
     prompt: input.prompt.slice(0, 2000), version,
-    phase: "codex", engine: config.engine, pid: process.pid, heartbeatAt: Date.now(), lastEventAt: Date.now(),
+    phase: "codex", engine, pid: process.pid, heartbeatAt: Date.now(), lastEventAt: Date.now(),
     idleTimeoutSec: input.stall?.silent_s ?? config.idleTimeoutSec,
     commandIdleTimeoutSec: input.stall?.command_s ?? config.commandIdleTimeoutSec,
     checkIdleTimeoutSec: config.checkIdleTimeoutSec,
@@ -202,11 +225,24 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
     } catch {}
   };
   const progress = () => {
+    if (r.context && meta.phase === "done") return;
     try { onProgress?.({ ...meta }); } catch {}
     if (Date.now() - lastWrite >= 2000) writeMeta();
     else pendingWrite ??= setTimeout(writeMeta, 2000 - (Date.now() - lastWrite));
   };
   writeMeta();
+  if (r.context && input.session_id) {
+    try {
+      await appendHandoff(r.context.runsDir, input.session_id, {
+        runId: meta.id, parentRunId: r.context.parentRunId, sessionId: input.session_id, cwd,
+        text: r.context.text, notify: r.context.notify, parentPid: r.context.original.pid,
+        at: meta.startedAt, state: "started",
+      });
+    } catch (error) {
+      meta.state = "error"; meta.endedAt = Date.now(); writeMeta();
+      throw error;
+    }
+  }
   progress();
   let sampling = false;
   const sampleController = new AbortController();
@@ -241,7 +277,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
   const checksController = new AbortController();
   let pollingInputs = false;
   const pollInputs = async () => {
-    if (!runDir || config.engine !== "app-server" || pollingInputs) return;
+    if (!runDir || engine !== "app-server" || pollingInputs) return;
     pollingInputs = true;
     try {
       void stallControl?.live?.pollInbox?.().then(() => {
@@ -255,7 +291,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
   checkpointTimer.unref();
   try {
     let prompt = previousDiagnosis(config.runsDir, input.session_id) + (continued ? continuationPreamble(continued) : "") + input.prompt;
-    if (config.contract) prompt += readOnly ? READ_CONTRACT : WRITE_CONTRACT;
+    if (config.contract) prompt += r.context ? "\n\nReply directly to the human user in plain prose." : readOnly ? READ_CONTRACT : WRITE_CONTRACT;
     if (codexGuidance) prompt += `\n\n${codexGuidance}`;
     if (runDir && input.checkpoints) prompt += checkpointContract(runDir);
     const launcher = runDir && installLauncher(runDir);
@@ -278,7 +314,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
     }
 
     // Editing runs leave a record so a Stop can be followed by a redirect (see pending.ts).
-    const rec: PendingRun | undefined = readOnly
+    const rec: PendingRun | undefined = readOnly || r.context !== undefined
       ? undefined
       : {
           cwd,
@@ -299,6 +335,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
     const tempDir = runDir && sandbox === "workspace-write" ? join(runDir, "tmp") : undefined;
     if (tempDir) mkdirSync(tempDir, { recursive: true });
     const result = await runCodex({
+      engine,
       provider: r.provider,
       addDirs: [...(runDir ? [runDir] : []), ...(input.add_dirs ?? []).map(dir => resolve(cwd, dir))],
       env: tempDir ? { TEMP: tempDir, TMP: tempDir } : undefined,
@@ -346,7 +383,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
       logFile: runDir && join(runDir, "events.jsonl"),
       runDir,
     });
-    if (runDir && config.engine === "app-server") {
+    if (runDir && engine === "app-server") {
       // A final scan covers inputs submitted between the last timer tick and run failure/end.
       await stallControl?.live?.flushInbox?.();
       result.inputs = await finishInputs(runDir);
@@ -407,7 +444,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
         },
       });
     }
-    if (runDir && config.engine === "app-server") {
+    if (runDir && engine === "app-server") {
       result.userInterrupt ??= stallControl?.live?.userInterrupt;
       result.inputs = await finishInputs(runDir);
       if (result.userInterrupt) {
@@ -448,8 +485,18 @@ It streams the output, blocks until the command ends and exits with its exit cod
     meta.inflight = undefined;
     meta.endedAt = Date.now();
     meta.durationMs = meta.endedAt - meta.startedAt;
-    try { onProgress?.({ ...meta }); } catch {}
-    writeMeta();
+    // Publish the terminal meta only after its handoff is durable. Otherwise a reader can
+    // observe "ok" while this writer still holds the cwd lock during the asynchronous append.
+    clearTimeout(pendingWrite);
+    try {
+      if (r.context && input.session_id) {
+        let reply = ""; try { reply = await readFile(join(runDir!, "last-message.txt"), "utf8"); } catch {}
+        await appendHandoff(r.context.runsDir, input.session_id, { runId: meta.id, state: meta.state, endedAt: meta.endedAt, reply: reply.slice(0, 1500), changes: meta.changes?.map(c => c.path) });
+      }
+    } finally {
+      try { onProgress?.({ ...meta }); } catch {}
+      writeMeta();
+    }
   }
 }
 

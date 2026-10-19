@@ -81,7 +81,7 @@ const exitHooks: (() => void)[] = [];
 export function onExit(hook: () => void) { exitHooks.push(hook); }
 
 let installed = false;
-export function installExitCleanup() {
+export function installExitCleanup(stdin = true) {
   if (installed) return;
   installed = true;
   const cleanup = () => {
@@ -90,7 +90,7 @@ export function installExitCleanup() {
   };
   process.once("exit", cleanup);
   // An MCP client that goes away closes our stdin; without this the server (and codex) would keep running.
-  process.stdin.once("end", () => process.exit(0));
+  if (stdin) process.stdin.once("end", () => process.exit(0));
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.once(sig, () => {
       cleanup();
