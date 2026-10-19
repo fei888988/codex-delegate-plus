@@ -108,6 +108,40 @@ test("cc-switch extraction and read-only SQLite import/upsert use only selected 
   assert.deepEqual(readFileSync(file), before);
 });
 
+test("cc-switch resolves local router companion keys and bearer tokens without mixing providers", () => {
+  const file = join(root, "cc-key-sources.db");
+  const db = new DatabaseSync(file);
+  db.exec("CREATE TABLE providers (id TEXT, app_type TEXT, name TEXT, website_url TEXT, notes TEXT, settings_config TEXT, is_current INTEGER)");
+  const insert = db.prepare("INSERT INTO providers VALUES (?,?,?,?,?,?,?)");
+  const add = (id: string, name: string, url: string, authKey = "", bearer = "") => insert.run(id, "codex", name, null, null, JSON.stringify({ auth: { OPENAI_API_KEY: authKey }, config: `model_provider="r"\n[model_providers.r]\nbase_url=${tomlString(url)}${bearer ? `\nexperimental_bearer_token=${tomlString(bearer)}` : ""}` }), 0);
+  const companion = (id: string, name: string, url: string, token: string) => insert.run(id, "claude-desktop", name, null, null, JSON.stringify({ env: { ANTHROPIC_BASE_URL: url, ANTHROPIC_AUTH_TOKEN: token } }), 0);
+  add("router", "Router", "http://127.0.0.1:18787/codex/v1");
+  companion("desktop", "Router", "http://127.0.0.1:18787", key);
+  add("explicit", "Router", "http://127.0.0.1:18787/codex/v1", "own-key");
+  add("bearer", "Bearer", "https://example.test/v1", "   ", "bearer-key");
+  add("different-name", "Other", "http://127.0.0.1:18787/codex/v1");
+  add("different-port", "Router", "http://127.0.0.1:18788/codex/v1");
+  add("different-path", "Router", "http://127.0.0.1:18787/other/v1");
+  add("remote", "Remote", "https://example.test/codex/v1");
+  companion("remote-desktop", "Remote", "https://example.test", "remote-key");
+  add("ambiguous", "Ambiguous", "http://127.0.0.1:18787/codex/v1");
+  companion("ambiguous-1", "Ambiguous", "http://127.0.0.1:18787", "first-key");
+  companion("ambiguous-2", "Ambiguous", "http://127.0.0.1:18787", "second-key");
+  db.close();
+  const before = readFileSync(file);
+  const providers = readCcswitch(file);
+  const get = (id: string) => providers.find(p => p.source?.id === id)!;
+  assert.equal(get("router").apiKey, key);
+  assert.equal(get("explicit").apiKey, "own-key");
+  assert.equal(get("bearer").apiKey, "bearer-key");
+  for (const id of ["different-name", "different-port", "different-path", "remote", "ambiguous"]) assert.equal(get(id).apiKey, undefined);
+  const imported = importCcswitch({ defaultProvider: null, providers: [] }, providers, ["router"]);
+  assert.equal(imported.providers[0]!.apiKey, key);
+  assert.equal(maskedProviders(imported).providers[0]!.hasKey, true);
+  assert(!JSON.stringify(maskedProviders(imported)).includes(key));
+  assert.deepEqual(readFileSync(file), before);
+});
+
 test("dashboard provider routes mask keys, enforce write guards, retain keys and import", async () => {
   const file = join(root, "api-providers.json");
   const server = createDashboardServer({ providersFile: file, ccswitchFile: join(root, "cc.db") });
@@ -142,6 +176,25 @@ test("provider models probe forwards credentials/maps and truncates ids; errors 
   try { const result = await testProvider(p); assert.equal(result.ok, true); assert.equal(result.status, 200); assert("models" in result); assert.equal(result.models.length, 20); }
   finally { server.close(); server.closeAllConnections(); }
   const failed = await testProvider(p); assert.equal(failed.ok, false); assert(!JSON.stringify(failed).includes(key));
+});
+
+test("models probe retries gateways requiring client_version and reads Codex model slugs", async () => {
+  const requests: string[] = [];
+  const server = createServer((req, res) => {
+    requests.push(req.url!);
+    assert.equal(req.headers.authorization, `Bearer ${key}`);
+    res.setHeader("Content-Type", "application/json");
+    if (!req.url!.includes("client_version=")) {
+      res.writeHead(400); res.end(JSON.stringify({ error: { message: "query client_version: Field required" } }));
+    } else res.end(JSON.stringify({ models: [{ slug: "gpt-router" }] }));
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  try {
+    const result = await testProvider({ ...doc().providers[0]!, baseUrl: `http://127.0.0.1:${(server.address() as any).port}/v1`, queryParams: { version: "1" } });
+    assert.equal(result.ok, true);
+    assert.deepEqual("models" in result && result.models, ["gpt-router"]);
+    assert.deepEqual(requests, ["/v1/models?version=1", "/v1/models?version=1&client_version=0.0.0"]);
+  } finally { server.close(); server.closeAllConnections(); }
 });
 
 test("both spawned engines receive provider argv and child-only key; logs/results redact echoed keys", async () => {

@@ -131,7 +131,7 @@ export function parseToml(text: string, ignoreUnrelated = false): Map<string, { 
       const match = line.match(/^((?:"(?:[^"\\]|\\.)*"|'[^']*'|[^=])+?)\s*=\s*(.*)$/);
       if (!match) throw Error();
       const path = [...table, ...keys(match[1]!.trim())], id = JSON.stringify(path);
-      if (ignoreUnrelated && path[0] === "model_providers" && !["base_url", "wire_api", "requires_openai_auth", "name", "http_headers", "query_params"].includes(path[2]!)) continue;
+      if (ignoreUnrelated && path[0] === "model_providers" && !["base_url", "wire_api", "requires_openai_auth", "name", "http_headers", "query_params", "experimental_bearer_token"].includes(path[2]!)) continue;
       if (result.has(id)) throw Error();
       result.set(id, { keys: path, value: value(match[2]!) });
     } catch { throw new Error(`Unsupported or invalid TOML at line ${i + 1}`); }
@@ -239,7 +239,7 @@ export function extractCcswitch(config: string): Partial<Provider> {
   const result: any = {};
   if (typeof top("model") === "string") result.model = top("model");
   if (typeof top("model_reasoning_effort") === "string") result.effort = top("model_reasoning_effort");
-  const fields: Record<string, string> = { base_url: "baseUrl", wire_api: "wireApi", requires_openai_auth: "requiresOpenaiAuth", name: "name", http_headers: "httpHeaders", query_params: "queryParams" };
+  const fields: Record<string, string> = { base_url: "baseUrl", wire_api: "wireApi", requires_openai_auth: "requiresOpenaiAuth", name: "name", http_headers: "httpHeaders", query_params: "queryParams", experimental_bearer_token: "apiKey" };
   for (const { keys, value } of entries) {
     if (keys[0] !== "model_providers" || keys[1] !== selected || !fields[keys[2]!] || keys.length > 4) continue;
     const dest = fields[keys[2]!]!;
@@ -254,6 +254,27 @@ export function readCcswitch(file = ccswitchFile): Provider[] {
   try {
     db = new DatabaseSync(file, { readOnly: true });
     const rows = db.prepare("SELECT id,name,website_url,notes,settings_config,is_current FROM providers WHERE app_type='codex'").all();
+    const companionRows = db.prepare("SELECT name,settings_config FROM providers WHERE app_type IN ('claude','claude-desktop')").all();
+    const nonemptyKey = (value: unknown): string | undefined => typeof value === "string" && value.trim() ? value.trim() : undefined;
+    const companionKey = (name: string, baseUrl: string | undefined): string | undefined => {
+      if (!baseUrl) return;
+      const target = new URL(baseUrl);
+      // The local smart router shares one key across its Claude and Codex entry points.
+      // Never infer credentials for remote servers or unrelated paths/providers.
+      if (!["127.0.0.1", "localhost", "[::1]"].includes(target.hostname) || !/^\/codex(?:\/v1)?\/?$/.test(target.pathname)) return;
+      const keys = new Set<string>();
+      for (const row of companionRows) {
+        if (row.name !== name) continue;
+        try {
+          const { env } = JSON.parse(String(row.settings_config));
+          const source = new URL(env?.ANTHROPIC_BASE_URL);
+          if (source.origin !== target.origin || !/^\/(?:v1\/?)?$/.test(source.pathname)) continue;
+          const key = nonemptyKey(env.ANTHROPIC_AUTH_TOKEN) ?? nonemptyKey(env.ANTHROPIC_API_KEY);
+          if (key) keys.add(key);
+        } catch { /* Ignore malformed companion providers. */ }
+      }
+      return keys.size === 1 ? [...keys][0] : undefined;
+    };
     // Broken rows are skipped independently; login credentials remain memory-only.
     return rows.flatMap((row): Provider[] => {
       try {
@@ -263,7 +284,8 @@ export function readCcswitch(file = ccswitchFile): Provider[] {
         if (!extracted.baseUrl && !chatgpt) return [];
         // Deterministic, safe local id; source.id retains the original identifier for upserts.
         const id = `cc_${createHash("sha256").update(String(row.id)).digest("hex").slice(0, 24)}`;
-        const providers = validateProviders({ providers: [{ ...extracted, id, name: String(row.name), websiteUrl: row.website_url ?? undefined, notes: row.notes ?? undefined, ...(chatgpt ? { auth: "chatgpt", sync: true, account: { accountId: maskAccount(settings.auth.tokens.account_id), email: settings.auth.email ?? settings.auth.tokens.email } } : { apiKey: settings.auth?.OPENAI_API_KEY }), source: { type: "cc-switch", id: String(row.id) } }] }).providers;
+        const apiKey = chatgpt ? undefined : nonemptyKey(settings.auth?.OPENAI_API_KEY) ?? nonemptyKey(extracted.apiKey) ?? companionKey(String(row.name), extracted.baseUrl);
+        const providers = validateProviders({ providers: [{ ...extracted, id, name: String(row.name), websiteUrl: row.website_url ?? undefined, notes: row.notes ?? undefined, ...(chatgpt ? { auth: "chatgpt", sync: true, account: { accountId: maskAccount(settings.auth.tokens.account_id), email: settings.auth.email ?? settings.auth.tokens.email } } : { apiKey }), source: { type: "cc-switch", id: String(row.id) } }] }).providers;
         if (chatgpt) importedAuth.set(providers[0]!, settings.auth);
         return providers;
       } catch { return []; }
@@ -418,8 +440,17 @@ export async function testProvider(p: Provider, paths: ProviderPaths = {}) {
   try {
     const url = new URL(`${p.baseUrl!.replace(/\/+$/, "")}/models`);
     for (const [k, v] of Object.entries(p.queryParams ?? {})) url.searchParams.set(k, v);
-    const response = await fetch(url, { headers: { ...p.httpHeaders, ...(p.apiKey ? { Authorization: `Bearer ${p.apiKey}` } : {}) }, signal: AbortSignal.timeout(10000), redirect: "error" });
-    const data: any = await response.json().catch(() => undefined);
-    return { ok: response.ok, status: response.status, ms: Date.now() - start, ...(response.ok ? { models: (Array.isArray(data?.data) ? data.data : []).map((m: any) => m.id).filter((id: unknown) => typeof id === "string").slice(0, 20).map((s: string) => p.apiKey ? s.replaceAll(p.apiKey, "[REDACTED]") : s) } : { error: `HTTP ${response.status}` }) };
+    const options = { headers: { ...p.httpHeaders, ...(p.apiKey ? { Authorization: `Bearer ${p.apiKey}` } : {}) }, signal: AbortSignal.timeout(10000), redirect: "error" as const };
+    let response = await fetch(url, options);
+    let data: any = await response.json().catch(() => undefined);
+    // Codex account gateways require a client version for model discovery.
+    // Retry only that explicit validation error; preserve configured query values.
+    if (response.status === 400 && !url.searchParams.has("client_version") && /client_version/.test(JSON.stringify(data?.error ?? ""))) {
+      url.searchParams.set("client_version", "0.0.0");
+      response = await fetch(url, options);
+      data = await response.json().catch(() => undefined);
+    }
+    const models = Array.isArray(data?.data) ? data.data : Array.isArray(data?.models) ? data.models : [];
+    return { ok: response.ok, status: response.status, ms: Date.now() - start, ...(response.ok ? { models: models.map((m: any) => m?.id ?? m?.slug).filter((id: unknown) => typeof id === "string").slice(0, 20).map((s: string) => p.apiKey ? s.replaceAll(p.apiKey, "[REDACTED]") : s) } : { error: `HTTP ${response.status}` }) };
   } catch { return { ok: false, status: 0, ms: Date.now() - start, error: "Provider request failed or timed out" }; }
 }
