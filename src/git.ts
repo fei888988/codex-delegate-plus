@@ -1,6 +1,5 @@
-import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 export interface StatusEntry {
@@ -23,31 +22,49 @@ export function parsePorcelainZ(out: string): StatusEntry[] {
   return entries;
 }
 
-function git(cwd: string, args: string[]) {
-  return spawnSync("git", ["-c", "core.quotepath=off", ...args], { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+function git(cwd: string, args: string[]): Promise<{ status: number | null; stdout: string } | undefined> {
+  return new Promise((resolve) => {
+    try {
+      const child = spawn("git", ["-c", "core.quotepath=off", ...args], { cwd, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+      const chunks: Buffer[] = [];
+      child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+      child.on("error", () => resolve(undefined));
+      child.on("close", (status) => resolve({ status, stdout: Buffer.concat(chunks).toString("utf8") }));
+    } catch {
+      resolve(undefined);
+    }
+  });
 }
 
-const MAX_HASH_BYTES = 32 * 1024 * 1024;
+const MAX_COUNT_BYTES = 32 * 1024 * 1024;
 
-function fingerprint(file: string): string {
+async function fingerprint(file: string): Promise<string> {
   try {
-    const st = statSync(file);
+    const st = await stat(file);
     if (!st.isFile()) return "dir";
-    if (st.size > MAX_HASH_BYTES) return `big:${st.size}:${st.mtimeMs}`;
-    return createHash("sha1").update(readFileSync(file)).digest("hex");
+    return `${st.size}:${st.mtimeMs}`;
   } catch {
     return "deleted";
   }
 }
 
-/** Dirty paths → content fingerprint. Comparing two snapshots catches edits to already-modified files. */
+/** Dirty paths to metadata fingerprints. Comparing snapshots catches edits to already-modified files. */
 export type Snapshot = Map<string, { xy: string; hash: string }>;
 
-export function snapshot(cwd: string): Snapshot | undefined {
-  const r = git(cwd, ["status", "--porcelain", "-z", "--untracked-files=all"]);
-  if (r.status !== 0) return undefined;
+export async function snapshot(cwd: string): Promise<Snapshot | undefined> {
+  const r = await git(cwd, ["status", "--porcelain", "-z", "--untracked-files=all"]);
+  if (r?.status !== 0) return undefined;
   const snap: Snapshot = new Map();
-  for (const e of parsePorcelainZ(r.stdout)) snap.set(e.path, { xy: e.xy, hash: fingerprint(join(cwd, e.path)) });
+  const entries = parsePorcelainZ(r.stdout);
+  const fingerprints: string[] = new Array(entries.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(64, entries.length) }, async () => {
+    while (next < entries.length) {
+      const i = next++;
+      fingerprints[i] = await fingerprint(join(cwd, entries[i]!.path));
+    }
+  }));
+  for (const [i, e] of entries.entries()) snap.set(e.path, { xy: e.xy, hash: fingerprints[i]! });
   return snap;
 }
 
@@ -76,12 +93,12 @@ export interface FileStat {
 }
 
 /** Line counts per changed file (tracked: `git diff --numstat HEAD`; untracked: line count of the file). */
-export function diffStat(cwd: string, changes: Change[]): FileStat[] {
+export async function diffStat(cwd: string, changes: Change[]): Promise<FileStat[]> {
   const tracked = changes.filter((c) => c.xy !== "??").map((c) => c.path);
   const nums = new Map<string, { added?: number; removed?: number; binary?: boolean }>();
   if (tracked.length) {
-    const r = git(cwd, ["diff", "--numstat", "-z", "HEAD", "--", ...tracked]);
-    if (r.status === 0) {
+    const r = await git(cwd, ["diff", "--numstat", "-z", "HEAD", "--", ...tracked]);
+    if (r?.status === 0) {
       for (const rec of r.stdout.split("\0")) {
         const m = rec.match(/^(-|\d+)\t(-|\d+)\t(.+)$/s);
         if (!m) continue;
@@ -89,10 +106,18 @@ export function diffStat(cwd: string, changes: Change[]): FileStat[] {
       }
     }
   }
-  return changes.map((c) => {
+  const stats: FileStat[] = [];
+  for (const c of changes) {
+    stats.push(await fileStat(c));
+  }
+  return stats;
+
+  async function fileStat(c: Change): Promise<FileStat> {
     if (c.xy === "??") {
       try {
-        const buf = readFileSync(join(cwd, c.path));
+        const file = join(cwd, c.path);
+        if ((await stat(file)).size > MAX_COUNT_BYTES) return { ...c };
+        const buf = await readFile(file);
         if (buf.includes(0)) return { ...c, binary: true };
         const text = buf.toString("utf8");
         return { ...c, added: text ? text.split("\n").length - (text.endsWith("\n") ? 1 : 0) : 0, removed: 0 };
@@ -101,5 +126,5 @@ export function diffStat(cwd: string, changes: Change[]): FileStat[] {
       }
     }
     return { ...c, ...nums.get(c.path) };
-  });
+  }
 }

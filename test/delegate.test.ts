@@ -81,6 +81,8 @@ const argvOf = () => JSON.parse(readFileSync(join(repo, "argv.json"), "utf8")) a
 const promptOf = () => readFileSync(join(repo, "prompt.txt"), "utf8");
 
 test("Stop, then a new direction: the next call continues the interrupted session", async () => {
+  // Wait for this run's prompt, not the file left by an earlier run: snapshot now yields.
+  rmSync(join(repo, "prompt.txt"), { force: true });
   const ac = new AbortController();
   const first = delegate({ cwd: repo, prompt: "build CSV export delay=60000" }, ac.signal);
   for (let i = 0; i < 100 && !existsSync(join(repo, "prompt.txt")); i++) await new Promise((r) => setTimeout(r, 50));

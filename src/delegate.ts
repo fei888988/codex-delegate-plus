@@ -273,7 +273,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
         };
     if (rec) savePending(rec);
 
-    const before = snapshot(cwd);
+    const before = await snapshot(cwd);
     const tempDir = runDir && sandbox === "workspace-write" ? join(runDir, "tmp") : undefined;
     if (tempDir) mkdirSync(tempDir, { recursive: true });
     const result = await runCodex({
@@ -341,8 +341,8 @@ It streams the output, blocks until the command ends and exits with its exit cod
     Object.assign(meta, { exitKind: result.exitKind, errorKind: result.errorKind, stall: result.stall,
       inflight: undefined, suspicion: undefined, error: result.error });
     progress();
-    const after = before && snapshot(cwd);
-    const changes = before && after ? diffStat(cwd, diffSnapshots(before, after)) : undefined;
+    const after = before && await snapshot(cwd);
+    const changes = before && after ? await diffStat(cwd, diffSnapshots(before, after)) : undefined;
     if (rec) {
       if (signal?.aborted && result.sessionId) {
         // Merge in what the continued run had already touched, so the next preamble lists it all.

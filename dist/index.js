@@ -7255,8 +7255,8 @@ function commandLogs(dir2) {
   return entries(dir2).filter((e) => e.isFile() && /^cmd-.*\.log$/.test(e.name)).flatMap((e) => {
     const file2 = join(dir2, e.name);
     try {
-      const stat = lstatSync(file2);
-      return [{ file: file2, name: e.name, bytes: stat.size, mtime: stat.mtimeMs }];
+      const stat2 = lstatSync(file2);
+      return [{ file: file2, name: e.name, bytes: stat2.size, mtime: stat2.mtimeMs }];
     } catch {
       return [];
     }
@@ -38127,9 +38127,8 @@ ${stderr}
 }
 
 // src/git.ts
-import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readFileSync as readFileSync6, statSync } from "node:fs";
+import { spawn as spawn3 } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
 import { join as join5 } from "node:path";
 function parsePorcelainZ(out) {
   const parts = out.split("\0");
@@ -38144,24 +38143,42 @@ function parsePorcelainZ(out) {
   return entries2;
 }
 function git(cwd, args) {
-  return spawnSync2("git", ["-c", "core.quotepath=off", ...args], { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true });
+  return new Promise((resolve4) => {
+    try {
+      const child = spawn3("git", ["-c", "core.quotepath=off", ...args], { cwd, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+      const chunks = [];
+      child.stdout.on("data", (chunk) => chunks.push(chunk));
+      child.on("error", () => resolve4(void 0));
+      child.on("close", (status) => resolve4({ status, stdout: Buffer.concat(chunks).toString("utf8") }));
+    } catch {
+      resolve4(void 0);
+    }
+  });
 }
-var MAX_HASH_BYTES = 32 * 1024 * 1024;
-function fingerprint(file2) {
+var MAX_COUNT_BYTES = 32 * 1024 * 1024;
+async function fingerprint(file2) {
   try {
-    const st = statSync(file2);
+    const st = await stat(file2);
     if (!st.isFile()) return "dir";
-    if (st.size > MAX_HASH_BYTES) return `big:${st.size}:${st.mtimeMs}`;
-    return createHash("sha1").update(readFileSync6(file2)).digest("hex");
+    return `${st.size}:${st.mtimeMs}`;
   } catch {
     return "deleted";
   }
 }
-function snapshot(cwd) {
-  const r = git(cwd, ["status", "--porcelain", "-z", "--untracked-files=all"]);
-  if (r.status !== 0) return void 0;
+async function snapshot(cwd) {
+  const r = await git(cwd, ["status", "--porcelain", "-z", "--untracked-files=all"]);
+  if (r?.status !== 0) return void 0;
   const snap = /* @__PURE__ */ new Map();
-  for (const e of parsePorcelainZ(r.stdout)) snap.set(e.path, { xy: e.xy, hash: fingerprint(join5(cwd, e.path)) });
+  const entries2 = parsePorcelainZ(r.stdout);
+  const fingerprints = new Array(entries2.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(64, entries2.length) }, async () => {
+    while (next < entries2.length) {
+      const i = next++;
+      fingerprints[i] = await fingerprint(join5(cwd, entries2[i].path));
+    }
+  }));
+  for (const [i, e] of entries2.entries()) snap.set(e.path, { xy: e.xy, hash: fingerprints[i] });
   return snap;
 }
 function diffSnapshots(before, after) {
@@ -38173,12 +38190,12 @@ function diffSnapshots(before, after) {
   for (const path of before.keys()) if (!after.has(path)) changes.push({ path, xy: "  " });
   return changes.sort((x, y) => x.path.localeCompare(y.path));
 }
-function diffStat(cwd, changes) {
+async function diffStat(cwd, changes) {
   const tracked = changes.filter((c) => c.xy !== "??").map((c) => c.path);
   const nums = /* @__PURE__ */ new Map();
   if (tracked.length) {
-    const r = git(cwd, ["diff", "--numstat", "-z", "HEAD", "--", ...tracked]);
-    if (r.status === 0) {
+    const r = await git(cwd, ["diff", "--numstat", "-z", "HEAD", "--", ...tracked]);
+    if (r?.status === 0) {
       for (const rec of r.stdout.split("\0")) {
         const m = rec.match(/^(-|\d+)\t(-|\d+)\t(.+)$/s);
         if (!m) continue;
@@ -38186,10 +38203,17 @@ function diffStat(cwd, changes) {
       }
     }
   }
-  return changes.map((c) => {
+  const stats = [];
+  for (const c of changes) {
+    stats.push(await fileStat(c));
+  }
+  return stats;
+  async function fileStat(c) {
     if (c.xy === "??") {
       try {
-        const buf = readFileSync6(join5(cwd, c.path));
+        const file2 = join5(cwd, c.path);
+        if ((await stat(file2)).size > MAX_COUNT_BYTES) return { ...c };
+        const buf = await readFile(file2);
         if (buf.includes(0)) return { ...c, binary: true };
         const text2 = buf.toString("utf8");
         return { ...c, added: text2 ? text2.split("\n").length - (text2.endsWith("\n") ? 1 : 0) : 0, removed: 0 };
@@ -38198,16 +38222,16 @@ function diffStat(cwd, changes) {
       }
     }
     return { ...c, ...nums.get(c.path) };
-  });
+  }
 }
 
 // src/models.ts
-import { readFileSync as readFileSync7 } from "node:fs";
+import { readFileSync as readFileSync6 } from "node:fs";
 import { join as join6 } from "node:path";
 function listModels(path = join6(config2.codexHome, "models_cache.json")) {
   let data;
   try {
-    data = JSON.parse(readFileSync7(path, "utf8"));
+    data = JSON.parse(readFileSync6(path, "utf8"));
   } catch {
     return [];
   }
@@ -38267,7 +38291,7 @@ function resolveModelOrThrow(query) {
 }
 
 // src/policy.ts
-import { mkdirSync, readFileSync as readFileSync8, renameSync, writeFileSync as writeFileSync4 } from "node:fs";
+import { mkdirSync, readFileSync as readFileSync7, renameSync, writeFileSync as writeFileSync4 } from "node:fs";
 var DEFAULT_POLICY = {
   sandboxWrites: false,
   retention: { cmdLogMaxMB: 5, failedLogDays: 3, runDays: 30, totalMaxMB: 1024 },
@@ -38355,7 +38379,7 @@ function validatePolicy(input2, models = listModels()) {
 function loadPolicy(file2 = config2.policyFile) {
   let text2;
   try {
-    text2 = readFileSync8(file2, "utf8");
+    text2 = readFileSync7(file2, "utf8");
   } catch {
     return { policy: DEFAULT_POLICY };
   }
@@ -38375,7 +38399,7 @@ function tierLabel(t) {
 }
 
 // src/checkpoints.ts
-import { readdirSync as readdirSync3, readFileSync as readFileSync9, statSync as statSync2 } from "node:fs";
+import { readdirSync as readdirSync3, readFileSync as readFileSync8, statSync } from "node:fs";
 import { join as join7 } from "node:path";
 var MAX_CHECKPOINT_CHARS = 2500;
 function checkpointContract(runDir) {
@@ -38407,9 +38431,9 @@ function scanCheckpoints(runDir, seen = /* @__PURE__ */ new Set(), now = Date.no
     if (!Number.isInteger(n) || seen.has(n)) continue;
     const file2 = join7(runDir, name);
     try {
-      const st = statSync2(file2);
+      const st = statSync(file2);
       if (!st.size || now - st.mtimeMs < 1e3) continue;
-      const text2 = readFileSync9(file2, "utf8").trim();
+      const text2 = readFileSync8(file2, "utf8").trim();
       const title = text2.split(/\r?\n/).find((l) => l.trim())?.replace(/^#+\s*/, "").slice(0, 120) ?? `checkpoint ${n}`;
       found.push({ n, file: file2, at: st.mtimeMs, title, text: text2 });
     } catch {
@@ -38425,12 +38449,12 @@ ${body}`;
 }
 
 // src/pending.ts
-import { createHash as createHash2 } from "node:crypto";
-import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync10, rmSync as rmSync2, writeFileSync as writeFileSync5 } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync9, rmSync as rmSync2, writeFileSync as writeFileSync5 } from "node:fs";
 import { join as join8 } from "node:path";
 var MAX_AGE_MS = 24 * 3600 * 1e3;
 var dir = () => join8(config2.runsDir, "pending");
-var fileFor = (cwd) => join8(dir(), `${createHash2("sha1").update(cwd.toLowerCase()).digest("hex").slice(0, 16)}.json`);
+var fileFor = (cwd) => join8(dir(), `${createHash("sha1").update(cwd.toLowerCase()).digest("hex").slice(0, 16)}.json`);
 function alive3(pid) {
   if (pid === process.pid) return true;
   try {
@@ -38452,7 +38476,7 @@ function clearPending(cwd, owner) {
   try {
     if (owner) {
       if (!existsSync4(f)) return;
-      const cur = JSON.parse(readFileSync10(f, "utf8"));
+      const cur = JSON.parse(readFileSync9(f, "utf8"));
       if (cur.pid !== owner.pid || cur.startedAt !== owner.startedAt) return;
     }
     rmSync2(f, { force: true });
@@ -38464,7 +38488,7 @@ function loadPending(cwd) {
   if (!existsSync4(f)) return void 0;
   let rec;
   try {
-    rec = JSON.parse(readFileSync10(f, "utf8"));
+    rec = JSON.parse(readFileSync9(f, "utf8"));
   } catch {
     return void 0;
   }
@@ -38562,7 +38586,7 @@ function renderReport(r) {
 // package.json
 var package_default = {
   name: "claude-codex-delegate",
-  version: "0.10.0",
+  version: "0.10.1",
   description: "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna\u2026) while staying the orchestrator.",
   type: "module",
   license: "MIT",
@@ -38806,7 +38830,7 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
       runDir
     };
     if (rec) savePending(rec);
-    const before = snapshot(cwd);
+    const before = await snapshot(cwd);
     const tempDir = runDir && sandbox2 === "workspace-write" ? join9(runDir, "tmp") : void 0;
     if (tempDir) mkdirSync3(tempDir, { recursive: true });
     const result = await runCodex({
@@ -38886,8 +38910,8 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
       error: result.error
     });
     progress();
-    const after = before && snapshot(cwd);
-    const changes = before && after ? diffStat(cwd, diffSnapshots(before, after)) : void 0;
+    const after = before && await snapshot(cwd);
+    const changes = before && after ? await diffStat(cwd, diffSnapshots(before, after)) : void 0;
     if (rec) {
       if (signal?.aborted && result.sessionId) {
         const changed = [.../* @__PURE__ */ new Set([...continued?.changed ?? [], ...(changes ?? []).map((c) => c.path)])];
@@ -39069,7 +39093,7 @@ ${seen.map((p) => `  ${p}`).join("\n")}`);
 import { watchFile } from "node:fs";
 
 // src/sessions.ts
-import { closeSync as closeSync2, openSync as openSync2, readdirSync as readdirSync4, readSync as readSync2, statSync as statSync3 } from "node:fs";
+import { closeSync as closeSync2, openSync as openSync2, readdirSync as readdirSync4, readSync as readSync2, statSync as statSync2 } from "node:fs";
 import { join as join10, resolve as resolve2 } from "node:path";
 var HEAD_BYTES = 512 * 1024;
 function readHead(file2) {
@@ -39116,7 +39140,7 @@ function* rollouts(dir2) {
   for (const e of entries2) {
     const p = join10(dir2, e);
     if (e.startsWith("rollout-") && e.endsWith(".jsonl")) yield p;
-    else if (statSync3(p).isDirectory()) yield* rollouts(p);
+    else if (statSync2(p).isDirectory()) yield* rollouts(p);
   }
 }
 function listSessions(cwd, limit, root = join10(config2.codexHome, "sessions")) {
@@ -39132,7 +39156,7 @@ function listSessions(cwd, limit, root = join10(config2.codexHome, "sessions")) 
 
 // src/tasks.ts
 import { randomUUID as randomUUID3 } from "node:crypto";
-import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync11, writeFileSync as writeFileSync7 } from "node:fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync10, writeFileSync as writeFileSync7 } from "node:fs";
 import { join as join11 } from "node:path";
 var MAX_FINISHED = 100;
 var tasks = /* @__PURE__ */ new Map();
@@ -39159,7 +39183,7 @@ function storedTask(id) {
   const f = taskFile(id);
   if (!existsSync6(f)) return void 0;
   try {
-    const rec = JSON.parse(readFileSync11(f, "utf8"));
+    const rec = JSON.parse(readFileSync10(f, "utf8"));
     if (rec.status === "running") rec.status = "interrupted";
     return rec;
   } catch {
@@ -39249,7 +39273,7 @@ function formatCheckpoints(task) {
     `elapsed: ${((Date.now() - task.startedAt) / 1e3).toFixed(0)}s`,
     ...fresh.map((c) => {
       try {
-        return renderCheckpoint({ ...c, file: join11(dir2, `checkpoint-${c.n}.md`), text: readFileSync11(join11(dir2, `checkpoint-${c.n}.md`), "utf8").trim() });
+        return renderCheckpoint({ ...c, file: join11(dir2, `checkpoint-${c.n}.md`), text: readFileSync10(join11(dir2, `checkpoint-${c.n}.md`), "utf8").trim() });
       } catch {
         return `--- checkpoint ${c.n}: ${c.title} (file unreadable) ---`;
       }
