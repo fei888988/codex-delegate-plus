@@ -267,8 +267,12 @@
   .dlg-head > div { min-width: 0; flex: 1; }
   .kicker { font: 10.5px var(--mono); color: var(--accent); letter-spacing: .26em; margin-bottom: 8px; }
   .dlg-head h2 { margin: 0; font: 600 24px/1.25 var(--disp); font-stretch: 88%; word-break: break-word; letter-spacing: .005em; }
-  .dlg-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 12px; color: var(--muted); font-size: 12.5px; }
-  .dlg-meta .sep { width: 3px; height: 3px; border-radius: 50%; background: var(--line2); }
+  .dlg-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; color: var(--muted); font-size: 12.5px; }
+  .dlg-meta .facts { display: inline-flex; align-items: center; gap: 10px; padding: 0 4px; font: 12px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dlg-meta .facts span + span::before { content: "·"; margin-right: 10px; color: var(--line2); }
+  .dlg-meta .chip { height: 24px; padding: 0 10px; border-radius: 6px; font: 12px var(--mono); color: var(--text2); background: rgba(255,255,255,.03); border: 1px solid var(--line); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .dlg-meta button.chip { cursor: pointer; } .dlg-meta button.chip:hover { color: var(--run); border-color: rgba(77,227,255,.35); background: var(--run-bg); }
+  .dlg-meta .chip svg { width: 12px; height: 12px; flex: none; }
   .dlg-head button { flex: none; }
   .strip { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; margin: 0 28px 12px; padding: 10px 16px; border-radius: 12px; font-size: 13px; background: var(--run-bg); color: var(--run); border: 1px solid rgba(77,227,255,.2); position: relative; overflow: hidden; }
   .strip::after { content: ""; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 35%, rgba(255,255,255,.07) 50%, transparent 65%) 0 0 / 250% 100%; animation: beam 2.6s linear infinite; pointer-events: none; }
@@ -420,9 +424,25 @@
   .composer textarea::placeholder, #iReason::placeholder { color: var(--muted); }
   .crow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 6px 8px 8px 10px; }
   .crow .seg button { padding: 3px 14px; }
-  .cnotify { font-size: 12.5px; color: var(--text2); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
+  .cnotify { position: relative; font-size: 12.5px; color: var(--text2); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
   .cnotify input { accent-color: var(--ember); }
-  .chint { flex: 1; min-width: 160px; color: var(--muted); font-size: 12px; }
+  .chint { flex: 1; min-width: 120px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cpick { display: inline-flex; flex-wrap: wrap; gap: 6px; flex: 1; min-width: 0; }
+  .cpick[hidden] { display: none; }
+  .cpick label { position: relative; display: inline-flex; align-items: center; height: 28px; border: 1px solid var(--line2); border-radius: 8px; background: rgba(255,255,255,.03); transition: border-color .2s, background .2s; }
+  .cpick label:hover { border-color: rgba(255,255,255,.2); background: rgba(255,255,255,.06); }
+  .cpick label:focus-within { border-color: rgba(198,255,61,.45); }
+  .cpick label > span { padding-left: 9px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+  .cpick select { border: 0; background: none; box-shadow: none !important; height: 26px; padding: 0 22px 0 6px; font: 12px var(--mono); color: var(--text); appearance: none; -webkit-appearance: none; cursor: pointer; max-width: 170px; text-overflow: ellipsis; }
+  .cpick label::after { content: ""; position: absolute; right: 9px; top: 11px; width: 5px; height: 5px; border: solid var(--muted); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg); pointer-events: none; }
+  .cpick label.risky { border-color: rgba(255,106,61,.4); } .cpick label.risky select { color: var(--ember); }
+  .cpick .ctier { align-self: center; font: 11px var(--mono); color: var(--accent-ink); padding: 0 2px; }
+  .cnotify.chipcb { height: 28px; padding: 0 10px; border: 1px solid var(--line2); border-radius: 8px; font-size: 12px; color: var(--muted); }
+  .cnotify.chipcb:has(input:checked) { color: var(--ember); border-color: rgba(255,106,61,.4); background: rgba(255,106,61,.08); }
+  .cnotify.chipcb input { position: absolute; opacity: 0; pointer-events: none; }
+  .cnotify.chipcb:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .cnotify.chipcb svg { width: 13px; height: 13px; }
+  .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .crow .primary { padding: 6px 18px; border-radius: 10px; }
   button.linkbtn { border: 0; background: none; padding: 0 2px; color: var(--run); font-size: 12.5px; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(77,227,255,.4); }
   button.linkbtn:hover { background: none; color: var(--text); }
@@ -718,8 +738,15 @@
         <div class="seg" id="cMode" role="group" aria-label="发送方式">
           <button type="button" data-v="steer" aria-pressed="true">插话</button><button type="button" data-v="queue" aria-pressed="false">排队</button>
         </div>
-        <label class="cnotify"><input type="checkbox" id="cNotify"> 立即通知 Claude</label>
+        <div class="cpick" id="cPick" hidden>
+          <label title="模型"><span>模型</span><select id="cModel" aria-label="模型"></select></label>
+          <label title="推理档位"><span>档位</span><select id="cEffort" aria-label="推理档位"></select></label>
+          <label id="cSbWrap" title="权限"><span>权限</span><select id="cSandbox" aria-label="权限">
+            <option value="read-only">只读</option><option value="workspace-write">工作区可写</option><option value="danger-full-access">完全访问</option></select></label>
+          <span class="ctier" id="cTier"></span>
+        </div>
         <span class="chint" id="cHint"></span>
+        <label class="cnotify chipcb" title="勾上后立刻告诉 Claude，否则等它下次接手时再看到"><input type="checkbox" id="cNotify"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 11V7a4 4 0 0 1 8 0v4l1.5 1.5h-11z"/><path d="M6.5 14a1.6 1.6 0 0 0 3 0"/></svg>通知 Claude</label>
         <button type="button" class="primary" id="cSend" disabled>发送</button>
       </div>
     </div>
@@ -1194,7 +1221,9 @@ function buildConvo(entries) {
       flush();
       // Later user turns are interjections, queued messages or server reminders: attribute them to whoever sent them.
       const inp = briefed ? matchInput(text, used) : null;
-      if (inp) { used.add(inp.mid); items.push({ type: "human", e, inp }); }
+      const said = !briefed && humanBrief(text);
+      if (said != null) items.push({ type: "human", e, inp: { mid: `brief-${e.seq}`, mode: "continue", text: said, at: Date.parse(e.ts) || view.run?.startedAt, from: "user", state: "consumed", notify: false } });
+      else if (inp) { used.add(inp.mid); items.push({ type: "human", e, inp }); }
       else items.push({ type: "task", e, later: briefed });
       briefed = true;
       continue;
@@ -1219,6 +1248,14 @@ function buildConvo(entries) {
   for (const inp of view.inputs) if (!used.has(inp.mid) && !inQueue(inp)) items.push({ type: "human", e: { seq: inp.mid, ts: inp.at }, inp, pending: true });
   return items;
 }
+/** A dashboard continuation's brief is the human's own message wrapped by the server; show just that message. */
+const HUMAN_PREFIX = "This message comes from the human user directly through the dashboard, not from the lead.";
+function humanBrief(text) {
+  const t = String(text || "").trim();
+  if (view.run?.origin !== "dashboard" || !t.startsWith(HUMAN_PREFIX)) return null;
+  const body = t.slice(HUMAN_PREFIX.length), end = body.search(/\r?\n\r?\nReply directly to the human user/);
+  return (end < 0 ? body : body.slice(0, end)).trim();
+}
 /** Waiting in the tray: queued-mode messages not yet claimed. An unacked steer is just waiting for pickup. */
 const inQueue = (i) => i.mode === "queue" && i.state === "queued" && i.from !== "lead";
 const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
@@ -1227,7 +1264,7 @@ function matchInput(text, used) {
   return view.inputs.find((i) => !used.has(i.mid) && !inQueue(i) && i.state !== "withdrawn" && norm(i.text) && t.includes(norm(i.text).slice(0, 400)));
 }
 const IST = { sending: "发送中", queued: "排队中", delivered: "已送达", consumed: "Codex 已读", withdrawn: "已撤回", undelivered: "未送达", failed: "发送失败" };
-const IMODE = { steer: "插话", queue: "排队" };
+const IMODE = { steer: "插话", queue: "排队", continue: "续接" };
 function humanHtml(it) {
   const i = it.inp, lead = i.from === "lead";
   const dim = i.state === "withdrawn" || i.state === "undelivered" || i.state === "failed";
@@ -1387,12 +1424,18 @@ function renderStrip(r) {
 }
 function renderHead(r) {
   $("#dlgTitle").textContent = titleOf(r);
-  const bits = [statusBadge(r), r.tier || r.effort ? `<span class="tag">${esc(r.tier || r.effort)}</span>` : "",
-    esc(base(r.cwd)), r.startedAt ? `<span title="${esc(fmtFull(r.startedAt))}">${esc(fmtRel(r.startedAt))}</span>` : "", r.state !== "running" && dur(r) != null ? `用时 ${esc(fmtDur(dur(r)))}` : ""].filter(Boolean);
+  // One row, three kinds of things: status badge, chips (same height), then plain facts.
   const kids = (data?.runs || []).filter((x) => x.parentRunId === r.id).sort((a, b) => b.startedAt - a.startedAt);
-  if (r.parentRunId) bits.push(`<button type="button" class="linkbtn" data-open="${esc(r.parentRunId)}">← 你在面板续接的，查看上一段</button>`);
-  if (kids.length) bits.push(`<button type="button" class="linkbtn" data-open="${esc(kids[0].id)}">已续接 ${kids.length} 次，看最新一段 →</button>`);
-  $("#dlgMeta").innerHTML = bits.join('<span class="sep" aria-hidden="true"></span>');
+  const chip = (t, title) => `<span class="chip"${title ? ` title="${esc(title)}"` : ""}>${t}</span>`;
+  const facts = [r.cwd ? `<span title="${esc(r.cwd)}">${esc(base(r.cwd))}</span>` : "",
+    r.startedAt ? `<span title="${esc(fmtFull(r.startedAt))}">${esc(fmtRel(r.startedAt))}</span>` : "",
+    r.state !== "running" && dur(r) != null ? `<span title="用时">${esc(fmtDur(dur(r)))}</span>` : ""].join("");
+  $("#dlgMeta").innerHTML = [statusBadge(r),
+    r.tier || r.effort ? chip(esc(r.tier || r.effort), [r.model, r.effort].filter(Boolean).join(" · ")) : "",
+    r.sandbox ? chip(esc(SB[r.sandbox] || r.sandbox), "权限") : "",
+    r.parentRunId ? `<button type="button" class="chip" data-open="${esc(r.parentRunId)}" title="这一段是你在面板里续接的"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 2.5 4 6l3.5 3.5"/></svg>上一段</button>` : "",
+    kids.length ? `<button type="button" class="chip" data-open="${esc(kids[0].id)}" title="打开最新续接的一段">续接 ${kids.length} 次<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 2.5 8 6 4.5 9.5"/></svg></button>` : "",
+    facts ? `<span class="facts">${facts}</span>` : ""].filter(Boolean).join("");
 }
 async function refreshDrawer(full) {
   if (!view.id || view.busy) return;
@@ -1424,7 +1467,8 @@ async function openRun(id) {
   const brief = data.runs.find((r) => r.id === id) || { id };
   popState.n = 0;
   Object.assign(view, { id, run: brief, entries: [], seen: new Set(), lastSeq: undefined, lastTs: null, open: new Set(), source: null, loadError: null,
-    inputs: [], io: null, ioSig: "", sending: [], editing: null });
+    inputs: [], io: null, ioSig: "", sending: [], editing: null, pick: null });
+  loadPickMeta().then(() => { if (view.id === id) renderComposer(); });
   $("#cText").value = view.drafts.get(id) || "";
   $("#cErr").hidden = true;
   growText();
@@ -1529,8 +1573,10 @@ function renderComposer() {
   $("#cNoteText").innerHTML = why;
   if ($("#cmp").hidden) return;
   $("#cMode").hidden = !!cont;
-  if (!cont) inkSeg($("#cMode"));
-  $("#cText").placeholder = cont ? "继续和 Codex 对话…（接着这个会话的最新进度）" : "给 Codex 发消息…";
+  $("#cPick").hidden = !cont;
+  $("#cHint").hidden = !!cont;
+  if (!cont) inkSeg($("#cMode")); else renderPick();
+  $("#cText").placeholder = cont ? "继续对话" : "给 Codex 发消息…";
   $("#cSend").textContent = cont ? "继续对话" : "发送";
   $("#cHint").textContent = cHint();
   $("#cSend").disabled = !$("#cText").value.trim();
@@ -1541,22 +1587,63 @@ const CONT_WHY = {
   unsupported: "控制面板后端还不支持续接对话，重启控制面板服务后再试。",
 };
 function cHint() {
-  const n = $("#cNotify").checked;
-  if (isFinished()) {
-    const r = view.run;
-    return `在同一个 Codex 会话里开新一轮（${r.tier || r.effort || "原档位"}，沿用原来的沙箱），不跑 host checks`
-      + (n ? " · 同时立即告诉 Claude" : " · Claude 下次接手这个会话时会看到");
-  }
-  const q = $("#cMode [aria-pressed=true]").dataset.v === "queue";
-  return (q ? "排队：Codex 做完当前这一轮后再读，每条单独一轮" : "插话：Codex 马上读到，后台长脚本继续运行")
-    + (n ? " · 同时立即告诉 Claude" : " · 任务返回时再告诉 Claude");
+  if (isFinished()) return "";
+  return $("#cMode [aria-pressed=true]").dataset.v === "queue" ? "这一轮结束后单独发送" : "Codex 马上读到，不打断脚本";
 }
+const SB = { "read-only": "只读", "workspace-write": "工作区可写", "danger-full-access": "完全访问" };
+/** Models, efforts and tiers for the continue picker; read once from the policy endpoint. */
+let pickMeta = null;
+async function loadPickMeta() {
+  if (pickMeta) return pickMeta;
+  try {
+    const j = await (await fetch("/api/policy", { cache: "no-store" })).json();
+    pickMeta = { models: j.models || [], allowed: j.policy?.models || [], tiers: j.policy?.tiers || [], efforts: j.efforts || [] };
+  } catch { pickMeta = { models: [], allowed: [], tiers: [], efforts: [] }; }
+  return pickMeta;
+}
+const opts = (list, cur, label = (v) => v) => list.map((v) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(label(v))}</option>`).join("");
+function renderPick() {
+  const r = view.run, m = pickMeta || { models: [], allowed: [], tiers: [], efforts: [] };
+  const p = view.pick ||= { model: r.model || "", effort: r.effort || "", sandbox: r.sandbox || "read-only" };
+  let models = m.models.map((x) => x.slug).filter((x) => !m.allowed.length || m.allowed.includes(x));
+  if (r.model && !models.includes(r.model)) models.unshift(r.model);
+  const info = m.models.find((x) => x.slug === p.model);
+  let efforts = info?.efforts?.length ? m.efforts.filter((e) => info.efforts.includes(e)) : m.efforts.slice();
+  if (!efforts.length) efforts = [p.effort].filter(Boolean);
+  if (p.effort && !efforts.includes(p.effort)) efforts.push(p.effort);
+  // Rebuild only on change: a periodic refresh must not close an open dropdown.
+  const sig = JSON.stringify([models, efforts, p]);
+  if (sig !== $("#cPick").dataset.sig) {
+    $("#cPick").dataset.sig = sig;
+    $("#cModel").innerHTML = models.length ? opts(models, p.model) : `<option value="">默认</option>`;
+    $("#cEffort").innerHTML = efforts.length ? opts(efforts, p.effort) : `<option value="">默认</option>`;
+    $("#cSandbox").value = p.sandbox;
+  }
+  $("#cSbWrap").classList.toggle("risky", p.sandbox === "danger-full-access");
+  const tier = m.tiers.find((t) => t.model === p.model && t.effort === p.effort && (t.provider ?? "system") === (r.provider ?? "system"));
+  $("#cTier").textContent = tier ? tier.id : "";
+  $("#cTier").title = tier ? "和调度策略里的这个档位相同" : "";
+}
+for (const id of ["#cModel", "#cEffort", "#cSandbox"]) $(id).addEventListener("change", () => {
+  const p = view.pick;
+  if (!p) return;
+  p.model = $("#cModel").value; p.effort = $("#cEffort").value; p.sandbox = $("#cSandbox").value;
+  // A new model may not offer the chosen effort; fall back to the nearest one it supports.
+  const info = pickMeta?.models.find((x) => x.slug === p.model);
+  if (id === "#cModel" && info?.efforts?.length && !info.efforts.includes(p.effort)) p.effort = info.efforts.includes("medium") ? "medium" : info.efforts.at(-1);
+  renderPick();
+});
 async function continueRun() {
   const text = $("#cText").value.trim(), id = view.id;
   if (!text || !id) return;
   $("#cSend").disabled = true; cErr("");
   try {
-    const { runId } = await apiJson(runUrl(id, "/continue"), "POST", { text, notify: $("#cNotify").checked });
+    const r = view.run, p = view.pick || {}, body = { text, notify: $("#cNotify").checked };
+    // Send only what changed; the server inherits the rest from this run.
+    if (p.model && p.model !== r.model) body.model = p.model;
+    if (p.effort && p.effort !== r.effort) body.effort = p.effort;
+    if (p.sandbox && p.sandbox !== r.sandbox) body.sandbox = p.sandbox;
+    const { runId } = await apiJson(runUrl(id, "/continue"), "POST", body);
     view.drafts.delete(id);
     $("#cText").value = "";
     await load();
@@ -1882,6 +1969,7 @@ $("#pForm").addEventListener("submit", async (e) => {
     const r = await res.json();
     if (!res.ok) { showMsg(`没有保存：${r.error}`, "err"); return; }
     pol = r;
+    pickMeta = null;
     saved = "";
     fillForm(pol.policy);
     saved = JSON.stringify(collect());

@@ -70,7 +70,7 @@ test("all terminal states continue in-process using only original settings, no c
   for (const state of ["ok", "needs_decision", "partial", "blocked", "error", "cancelled", "user_interrupted", "interrupted"] as const) {
     const id = "terminal-" + state;
     await parent(id, { state });
-    const response = await post(id, { text: "  human says hello  ", cwd: join(root, "bad"), session_id: "wrong", checks: ["bad"], sandbox: "read-only" });
+    const response = await post(id, { text: "  human says hello  ", cwd: join(root, "bad"), session_id: "wrong", checks: ["bad"], tier: "high" });
     assert.equal(response.status, 201, JSON.stringify(response));
     const runId = response.body.runId;
     const meta = await until(async () => { const m = await readJson<RunSummary>(join(runs, runId, "meta.json")); return m?.state !== "running" && m; });
@@ -85,6 +85,21 @@ test("all terminal states continue in-process using only original settings, no c
     assert.equal(detail.origin, "dashboard"); assert.equal(detail.parentRunId, id);
   }
   assert.ok(!(await readdir(runs)).includes("pending")); assert.ok(!(await readdir(runs)).includes("tasks"));
+});
+test("the human can switch model, effort and sandbox; a matching pick is recorded as its tier; bad picks are rejected", async () => {
+  await atomic(join(root, "policy.json"), { ...(await import("../src/policy.ts")).DEFAULT_POLICY });
+  await parent("pick-parent");
+  for (const bad of [{ model: "bad model!" }, { model: "gpt-9-unlisted" }, { effort: "turbo" }, { sandbox: "write" }]) assert.equal((await post("pick-parent", { text: "x", ...bad })).status, 400, JSON.stringify(bad));
+  const response = await post("pick-parent", { text: "switch", model: "gpt-6-luna", effort: "xhigh", sandbox: "read-only" });
+  assert.equal(response.status, 201, JSON.stringify(response));
+  const meta = await until(async () => { const m = await readJson<RunSummary>(join(runs, response.body.runId, "meta.json")); return m?.state !== "running" && m; });
+  for (const [key, value] of Object.entries({ model: "gpt-6-luna", effort: "xhigh", tier: "luna-xhigh", sandbox: "read-only", sessionId: "pick-parent" })) assert.equal(meta[key], value, key);
+  await parent("pick-custom");
+  const custom = await post("pick-custom", { text: "custom", effort: "low" });
+  assert.equal(custom.status, 201, JSON.stringify(custom));
+  const m2 = await until(async () => { const m = await readJson<RunSummary>(join(runs, custom.body.runId, "meta.json")); return m?.state !== "running" && m; });
+  assert.equal(m2.model, "gpt-6-sol"); assert.equal(m2.effort, "low"); assert.equal(m2.tier, undefined); assert.equal(m2.sandbox, "workspace-write");
+  await rm(join(root, "policy.json"), { force: true });
 });
 test("provider and full-access sandbox inherit; pending record stays intact and cannot silently resume a human-driven session", async () => {
   const { savePending } = await import("../src/pending.ts");

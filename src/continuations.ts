@@ -7,6 +7,7 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { RunSummary } from "./run-summary.ts";
+import type { Sandbox } from "./config.ts";
 
 export async function continuationAvailability(run: RunSummary, runsDir: string) {
   if (run.state === "running") return { reason: "running" as const };
@@ -42,6 +43,8 @@ export async function recoverDashboardContinuations(runsDir: string) {
   }
 }
 
+export interface ContinueSettings { model?: string; effort?: string; tier?: string; sandbox?: Sandbox }
+
 export function dashboardContinuations(runsDir: string, providersFile?: string) {
   const active = new Map<string, { controller: AbortController; promise: Promise<unknown>; meta?: RunSummary }>();
   let closing = false;
@@ -61,9 +64,11 @@ export function dashboardContinuations(runsDir: string, providersFile?: string) 
     }
   });
   return {
-    async start(parent: RunSummary, text: string, notify: boolean) {
+    /** `settings` are the human's picks from the composer; anything left out inherits from the parent run. */
+    async start(parent: RunSummary, text: string, notify: boolean, settings: ContinueSettings = {}) {
       if (closing) throw Error("Dashboard is shutting down");
       const session = parent.sessionId!;
+      const run: RunSummary = { ...parent, ...settings };
       if (active.has(session)) return { reason: "session_busy", runId: active.get(session)!.meta?.id };
       // Reserve before any await: simultaneous HTTP requests cannot resume the same session.
       const controller = new AbortController();
@@ -74,13 +79,13 @@ export function dashboardContinuations(runsDir: string, providersFile?: string) 
       item.promise = delegate({
         prompt: "This message comes from the human user directly through the dashboard, not from the lead.\n\n" + text,
         session_id: session, cwd: parent.cwd, provider: parent.provider ?? "system",
-        model: parent.model, effort: parent.effort, fast: parent.fast,
-        sandbox: parent.sandbox === "read-only" ? "read-only" : "write",
+        model: run.model, effort: run.effort, fast: run.fast,
+        sandbox: run.sandbox === "read-only" ? "read-only" : "write",
         structured: false, fresh: true, title: text.replace(/\s+/g, " ").slice(0, 80),
       }, controller.signal, meta => {
         item.meta = meta;
         if (meta.id) ready(meta.id);
-      }, undefined, { origin: "dashboard", parentRunId: parent.id, original: parent, runsDir, text, notify, providersFile })
+      }, undefined, { origin: "dashboard", parentRunId: parent.id, original: run, runsDir, text, notify, providersFile })
         .catch(failed).finally(() => { active.delete(session); });
       return { runId: await started };
     },

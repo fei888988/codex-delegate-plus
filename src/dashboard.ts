@@ -1,4 +1,4 @@
-import { continuationAvailability, dashboardContinuations, recoverDashboardContinuations } from "./continuations.ts";
+import { continuationAvailability, dashboardContinuations, recoverDashboardContinuations, type ContinueSettings } from "./continuations.ts";
 import { installExitCleanup } from "./procs.ts";
 import { randomUUID } from "node:crypto";
 import { atomic, availability, editInput, inboxPath, launcherJobs, messages, readJson, type UserInterrupt } from "./inbox.ts";
@@ -7,7 +7,7 @@ import { readFile, readdir, stat, lstat } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { config, configuredModel, EFFORT_ORDER } from "./config.ts";
+import { config, configuredModel, EFFORT_ORDER, SANDBOXES, type Sandbox } from "./config.ts";
 import { listModels } from "./models.ts";
 import { providersFile as defaultProvidersFile, loadProviders, saveProviders, validateProviders, maskedProviders, readCcswitch, importCcswitch, testProvider, syncTokens, removeProviderAuth, providerHome } from "./providers.ts";
 import { DEFAULT_POLICY, loadPolicy, savePolicy, validatePolicy } from "./policy.ts";
@@ -186,9 +186,11 @@ export function createDashboardServer(options: { runsDir?: string; policyFile?: 
           try { value = JSON.parse(await body(req)); } catch { json(400, { error: "Invalid JSON body" }); return; }
           const text = typeof value?.text === "string" ? value.text.trim() : "";
           if (!text || text.length > 4000 || value.notify !== undefined && typeof value.notify !== "boolean") { json(400, { error: "Invalid continuation" }); return; }
+          const settings = continueSettings(run, value, policyFile);
+          if (typeof settings === "string") { json(400, { error: settings }); return; }
           const unavailable = await continuationAvailability(run, runsDir);
           if (unavailable.reason) { json(409, { error: "Cannot continue run", ...unavailable }); return; }
-          const started = await continuations.start(run, text, value.notify ?? false);
+          const started = await continuations.start(run, text, value.notify ?? false, settings);
           json(started.reason ? 409 : 201, started.reason ? { error: "Cannot continue run", ...started } : started);
           return;
         }
@@ -322,4 +324,24 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
     const address = server.address();
     if (address && typeof address !== "string") console.log(`Dashboard: http://127.0.0.1:${address.port}`);
   });
+}
+
+/**
+ * The human may switch model, effort and sandbox for a continuation; unset fields inherit from the
+ * parent. The policy's model allowlist still applies, and a pick that matches a tier is recorded as it.
+ */
+export function continueSettings(parent: RunSummary, value: any, policyFile?: string): ContinueSettings | string {
+  const { model, effort, sandbox } = value ?? {};
+  if (model !== undefined && (typeof model !== "string" || !/^[\w.:/-]{1,80}$/.test(model))) return "Invalid model";
+  if (effort !== undefined && !(EFFORT_ORDER as readonly string[]).includes(effort)) return "Invalid effort";
+  if (sandbox !== undefined && !(SANDBOXES as readonly string[]).includes(sandbox)) return "Invalid sandbox";
+  const out: ContinueSettings = {};
+  if (sandbox) out.sandbox = sandbox as Sandbox;
+  const m = model ?? parent.model, e = effort ?? parent.effort;
+  if (m === parent.model && e === parent.effort) return out;
+  const { policy } = loadPolicy(policyFile);
+  if (m && m !== parent.model && policy.models.length && !policy.models.includes(m)) return `model '${m}' is not allowed by the delegation policy`;
+  out.model = m; out.effort = e;
+  out.tier = policy.tiers.find(t => t.model === m && t.effort === e && (t.provider ?? "system") === (parent.provider ?? "system"))?.id;
+  return out;
 }
