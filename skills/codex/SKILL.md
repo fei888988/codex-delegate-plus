@@ -89,14 +89,20 @@ Codex cannot see this conversation, but it can read the repo. Write what and why
    `Kill($true)`, a retry or token-refresh path), exact business time windows, "library code has no
    process-wide side effects". Write each one as "must keep X, because Y". Codex simplifies or
    removes whatever it can't see a reason for, and tests usually still pass afterwards.
-6. **One concern per task**: a large multi-file brief tends to time out or end without the commit
-   you asked for. Split it into smaller tasks (parallel if the files don't overlap).
+6. **One concern per task**: a large multi-file brief tends to time out or end with incomplete
+   work. Split it into smaller tasks (parallel if the files don't overlap).
 7. **Ask for a removals list**: have Codex report every existing behaviour it removed, disabled,
    narrowed or "simplified".
 
-If the user already wrote a full spec, pass it through **as written** and add only what's missing.
+If the user already wrote a full spec, pass its implementation requirements through **as written**
+and add only what's missing; retain any commit step with you as described below.
 Always pass `cwd` as the absolute project (or worktree) path. A working agreement and a JSON report
 format are appended automatically.
+
+Commit ownership: Codex leaves changes uncommitted. Never ask it to commit in a brief or follow-up.
+If the user's spec includes a commit request, keep that step with you and delegate the implementation
+requirements. After acceptance and passing host checks, commit only the intended changes yourself
+when the user requested a commit; push only when authorized.
 
 Sandbox: `workspace-write` (default, no network); `read-only` for questions and reviews;
 `danger-full-access` only when the task must install packages or use the network (tell the user).

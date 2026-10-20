@@ -19,6 +19,11 @@ claude ▸ reads the compact report + host test results, spot-checks the diff, r
 It's a sibling of [claude-opencode-delegate](https://github.com/aashahin/claude-opencode-delegate),
 with the same tools and workflow, backed by the Codex CLI instead of OpenCode.
 
+Commit ownership: Codex implements, self-tests and reports, leaving changes uncommitted.
+Claude reviews the changes and passing host checks, then commits when the user requested it;
+pushing also requires authorization. Keep any commit step from the user's original spec with
+Claude, out of delegated briefs and follow-ups.
+
 It works in:
 
 - **Claude Code** (CLI, IDE, and the Claude desktop app's Code tab): you can ask directly, use `/codex`, use the `codex-worker` subagent, or use it from dynamic workflows.

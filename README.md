@@ -16,6 +16,8 @@ Claude ▸ 查看精简报告和主机测试结果，抽查差异并汇报
 
 这是 [claude-opencode-delegate](https://github.com/aashahin/claude-opencode-delegate) 的姊妹项目，使用相同的工具和工作流，底层执行器是 Codex CLI，而不是 OpenCode。
 
+提交分工：Codex 完成修改、自测和报告，保留未提交的改动。Claude 验收改动并确认主机检查通过后，在用户要求提交时执行提交；推送同样需要用户授权。用户原始需求中的提交步骤由 Claude 保留，不写入委派简报或后续指令。
+
 它可用于：
 
 - **Claude Code**（命令行、IDE 和 Claude 桌面版的 Code 标签页）：可以直接提出任务，也可以使用 `/codex`、`codex-worker` 子代理或动态工作流。

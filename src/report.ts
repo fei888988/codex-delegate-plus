@@ -39,7 +39,7 @@ export const WRITE_CONTRACT = `
 ---
 Working agreement (added by the delegating tool):
 - You own this task end to end: read the code you need, decide implementation details, implement, and run the relevant tests/build yourself. The brief gives goals and constraints, not every step.
-- Stay in scope. Do not commit. Do not modify unrelated files or the tests you were told not to touch.
+- Stay in scope. Do not commit, even if the brief includes a commit request: the lead owns that step after reviewing your uncommitted changes and the host check results. Complete the implementation, tests and report without pausing over that request. Do not modify unrelated files or the tests you were told not to touch.
 - If a point the brief leaves open would materially change behavior or interfaces and the code does not settle it, stop and report status "needs_decision" with concrete options in "questions" instead of guessing. Use "blocked" if the environment prevents progress.
 - End with the report only. summary: at most 120 words. changes: "path: what and why". verification: the exact commands you ran and their outcome. risks: real ones only, else empty.`;
 
