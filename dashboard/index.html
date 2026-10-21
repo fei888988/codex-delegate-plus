@@ -1221,7 +1221,7 @@ function buildConvo(entries) {
       flush();
       // Later user turns are interjections, queued messages or server reminders: attribute them to whoever sent them.
       const inp = briefed ? matchInput(text, used) : null;
-      const said = !briefed && humanBrief(text);
+      const said = briefed ? null : humanBrief(text);
       if (said != null) items.push({ type: "human", e, inp: { mid: `brief-${e.seq}`, mode: "continue", text: said, at: Date.parse(e.ts) || view.run?.startedAt, from: "user", state: "consumed", notify: false } });
       else if (inp) { used.add(inp.mid); items.push({ type: "human", e, inp }); }
       else items.push({ type: "task", e, later: briefed });
