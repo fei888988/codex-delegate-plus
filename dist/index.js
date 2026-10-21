@@ -7749,9 +7749,7 @@ function loadProviders(file2 = providersFile) {
 }
 var watchProviders = (changed) => watchFile(providersFile, { interval: 2e3, persistent: false }, changed);
 function selectProvider(doc, call, tier) {
-  let id = call ?? tier ?? doc.defaultProvider;
-  if (!id && doc.providers.length === 1) id = doc.providers[0].id;
-  if (!id && doc.providers.length > 1) throw Error("Multiple providers configured; select a default provider before running Codex");
+  const id = call ?? tier ?? doc.defaultProvider;
   if (!id || id === "system") return void 0;
   const p = doc.providers.find((p2) => p2.id === id);
   if (!p) throw Error(`Unknown provider id '${id}'`);
@@ -39400,16 +39398,38 @@ function renderReport(r) {
 // package.json
 var package_default = {
   name: "claude-codex-delegate",
-  version: "0.14.1",
+  version: "0.14.3",
   description: "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna\u2026) while staying the orchestrator.",
   type: "module",
   license: "MIT",
   author: "aashahin",
-  repository: { type: "git", url: "git+https://github.com/aashahin/claude-codex-delegate.git" },
-  keywords: ["claude", "claude-code", "claude-desktop", "mcp", "codex", "openai", "subagent", "delegate"],
-  bin: { "claude-codex-delegate": "dist/index.js" },
-  files: ["dist", "src", "README.md", "README.en.md", "LICENSE"],
-  engines: { node: ">=22.18" },
+  repository: {
+    type: "git",
+    url: "git+https://github.com/aashahin/claude-codex-delegate.git"
+  },
+  keywords: [
+    "claude",
+    "claude-code",
+    "claude-desktop",
+    "mcp",
+    "codex",
+    "openai",
+    "subagent",
+    "delegate"
+  ],
+  bin: {
+    "claude-codex-delegate": "dist/index.js"
+  },
+  files: [
+    "dist",
+    "src",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  engines: {
+    node: ">=22.18"
+  },
   scripts: {
     start: "node src/index.ts",
     dashboard: "node src/dashboard.ts",

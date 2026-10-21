@@ -37,14 +37,17 @@ test("provider precedence, system escape hatch, unknown id, and model precedence
   assert(policy.ok); assert.equal(policy.policy.tiers[0]!.provider, "relay");
 });
 
-test("saved provider is used without a default; empty settings inherit system", () => {
+test("only an explicitly selected provider overrides system configuration", () => {
   const d = doc();
+  assert.equal(selectProvider(d), undefined);
+  d.defaultProvider = "relay";
   assert.equal(selectProvider(d)?.id, "relay");
   assert.equal(selectProvider(d, "system"), undefined);
   assert.equal(selectProvider(d, undefined, "system"), undefined);
   assert.equal(selectProvider({ defaultProvider: null, providers: [] }), undefined);
   d.providers.push({ ...d.providers[0]!, id: "other" });
-  assert.throws(() => selectProvider(d), /select a default provider/);
+  d.defaultProvider = null;
+  assert.equal(selectProvider(d), undefined);
   assert.equal(selectProvider(d, "other")?.id, "other");
   d.defaultProvider = "relay";
   assert.equal(selectProvider(d)?.id, "relay");

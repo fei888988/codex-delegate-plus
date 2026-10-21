@@ -209,10 +209,7 @@ export function saveProviders(doc: Providers, file = providersFile) {
 // Reads are fresh on every run; watching also invalidates consumers that cache the tool list.
 export const watchProviders = (changed: () => void) => watchFile(providersFile, { interval: 2000, persistent: false }, changed);
 export function selectProvider(doc: Providers, call?: string, tier?: string): Provider | undefined {
-  let id = call ?? tier ?? doc.defaultProvider;
-  // Existing saved providers must not be silently bypassed by an unset default.
-  if (!id && doc.providers.length === 1) id = doc.providers[0]!.id;
-  if (!id && doc.providers.length > 1) throw Error("Multiple providers configured; select a default provider before running Codex");
+  const id = call ?? tier ?? doc.defaultProvider;
   if (!id || id === "system") return undefined;
   const p = doc.providers.find(p => p.id === id);
   if (!p) throw Error(`Unknown provider id '${id}'`);

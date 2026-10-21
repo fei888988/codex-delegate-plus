@@ -1,6 +1,6 @@
 {
   "name": "codex-delegate",
-  "version": "0.14.2",
+  "version": "0.14.3",
   "description": "Delegate tasks from Claude to OpenAI Codex models (GPT-6 Sol, Astra, Luna, GPT-5.6…) through the Codex CLI while Claude stays the orchestrator.",
   "author": {
     "name": "aashahin",
