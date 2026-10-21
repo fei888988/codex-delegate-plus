@@ -26,7 +26,7 @@ export interface Provider {
   source?: { type: "cc-switch"; id: string };
 }
 export interface Providers { defaultProvider: string | null; providers: Provider[] }
-export const providersFile = join(homedir(), ".codex-delegate", "providers.json");
+export const providersFile = process.env.CODEX_DELEGATE_PROVIDERS || join(homedir(), ".codex-delegate", "providers.json");
 export const homesRoot = join(homedir(), ".codex-delegate", "homes");
 export const ccswitchFile = join(homedir(), ".cc-switch", "cc-switch.db");
 export interface ProviderPaths { homesRoot?: string; codexHome?: string; ccswitchFile?: string }
@@ -209,7 +209,10 @@ export function saveProviders(doc: Providers, file = providersFile) {
 // Reads are fresh on every run; watching also invalidates consumers that cache the tool list.
 export const watchProviders = (changed: () => void) => watchFile(providersFile, { interval: 2000, persistent: false }, changed);
 export function selectProvider(doc: Providers, call?: string, tier?: string): Provider | undefined {
-  const id = call ?? tier ?? doc.defaultProvider;
+  let id = call ?? tier ?? doc.defaultProvider;
+  // Existing saved providers must not be silently bypassed by an unset default.
+  if (!id && doc.providers.length === 1) id = doc.providers[0]!.id;
+  if (!id && doc.providers.length > 1) throw Error("Multiple providers configured; select a default provider before running Codex");
   if (!id || id === "system") return undefined;
   const p = doc.providers.find(p => p.id === id);
   if (!p) throw Error(`Unknown provider id '${id}'`);

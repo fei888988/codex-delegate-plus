@@ -843,7 +843,7 @@
         <div class="v-imp-acts"><button type="button" class="ghost" id="vImportCancel">取消</button><button type="button" class="primary" id="vImportGo" disabled>导入所选</button></div>
       </section>
       <section class="p-sec">
-        <h3>默认服务商 <small>档位没绑定、调用也没指定时用它；选「系统配置」就和以前一样读 ~/.codex/config.toml</small></h3>
+        <h3>默认服务商 <small>优先使用指定服务商；自动选择时使用唯一已保存的服务商，没有服务商才使用系统配置。多个服务商需指定默认项。</small></h3>
         <select id="vDefault" class="v-in" aria-label="默认服务商"></select>
       </section>
       <section class="p-sec">
@@ -2025,7 +2025,7 @@ const vWhen = (iso) => { const t = Date.parse(iso || ""); return Number.isFinite
 const vSavedIds = () => new Set(JSON.parse(vSaved || '{"providers":[]}').providers.map((p) => p.id));
 function vRenderDefault() {
   const cur = $("#vDefault").value || prov.defaultProvider || "";
-  $("#vDefault").innerHTML = `<option value="">系统配置（~/.codex/config.toml）</option>` +
+  $("#vDefault").innerHTML = `<option value="">自动选择（未配置服务商时使用系统默认）</option>` +
     prov.providers.map((p) => `<option value="${esc(p.id)}"${p.id === cur ? " selected" : ""}>${esc(p.name)}</option>`).join("");
 }
 function vRenderList() {

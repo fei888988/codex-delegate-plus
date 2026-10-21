@@ -1,15 +1,37 @@
 {
   "name": "claude-codex-delegate",
-  "version": "0.14.1",
+  "version": "0.14.2",
   "description": "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna…) while staying the orchestrator.",
   "type": "module",
   "license": "MIT",
   "author": "aashahin",
-  "repository": { "type": "git", "url": "git+https://github.com/aashahin/claude-codex-delegate.git" },
-  "keywords": ["claude", "claude-code", "claude-desktop", "mcp", "codex", "openai", "subagent", "delegate"],
-  "bin": { "claude-codex-delegate": "dist/index.js" },
-  "files": ["dist", "src", "README.md", "README.en.md", "LICENSE"],
-  "engines": { "node": ">=22.18" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aashahin/claude-codex-delegate.git"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "claude-desktop",
+    "mcp",
+    "codex",
+    "openai",
+    "subagent",
+    "delegate"
+  ],
+  "bin": {
+    "claude-codex-delegate": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
   "scripts": {
     "start": "node src/index.ts",
     "dashboard": "node src/dashboard.ts",

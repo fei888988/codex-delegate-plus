@@ -7535,7 +7535,7 @@ import { dirname, join as join4 } from "node:path";
 import { homedir as homedir2 } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID as randomUUID2 } from "node:crypto";
-var providersFile = join4(homedir2(), ".codex-delegate", "providers.json");
+var providersFile = process.env.CODEX_DELEGATE_PROVIDERS || join4(homedir2(), ".codex-delegate", "providers.json");
 var homesRoot = join4(homedir2(), ".codex-delegate", "homes");
 var ccswitchFile = join4(homedir2(), ".cc-switch", "cc-switch.db");
 function providerHome(p, root = homesRoot) {
@@ -7749,7 +7749,9 @@ function loadProviders(file2 = providersFile) {
 }
 var watchProviders = (changed) => watchFile(providersFile, { interval: 2e3, persistent: false }, changed);
 function selectProvider(doc, call, tier) {
-  const id = call ?? tier ?? doc.defaultProvider;
+  let id = call ?? tier ?? doc.defaultProvider;
+  if (!id && doc.providers.length === 1) id = doc.providers[0].id;
+  if (!id && doc.providers.length > 1) throw Error("Multiple providers configured; select a default provider before running Codex");
   if (!id || id === "system") return void 0;
   const p = doc.providers.find((p2) => p2.id === id);
   if (!p) throw Error(`Unknown provider id '${id}'`);

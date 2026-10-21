@@ -62,7 +62,7 @@ key), `~/.codex/config.toml`, AGENTS.md files, MCP servers and rules. It does no
 
 ## Requirements
 
-- Node.js ≥ 24 on `PATH` (the plugin runs `node dist/index.js`)
+- Node.js ≥ 22.18 on `PATH` (matches `package.json` `engines`; Node.js 24 is recommended; the plugin runs `node dist/index.js`)
 - [Codex CLI](https://github.com/openai/codex), logged in (`codex login`). Run `codex` once so the model list is cached in `~/.codex/models_cache.json`.
 
 ## Install
@@ -352,7 +352,7 @@ To debug interactively, use `npx @modelcontextprotocol/inspector node dist/index
 
 ## v0.7.0: sandbox and run diagnosis
 
-Requires Node 24; `npm run build` produces `dist/index.js`.
+The package supports Node.js ≥22.18 (Node.js 24 recommended); `npm run build` produces `dist/index.js`.
 Choose `sandbox: "read-only"` for investigation/review/questions and `sandbox: "write"`
 for edits, builds and tests. Write defaults to Codex `danger-full-access`.
 The dashboard policy API (`GET/PUT /api/policy`) accepts `sandboxWrites: true` to

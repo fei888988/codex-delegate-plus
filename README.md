@@ -52,7 +52,7 @@ codex exec --json -m <model> -s <sandbox> -c approval_policy="never" -o <last-me
 
 ## 环境要求
 
-- Node.js ≥ 24，且位于 `PATH` 中（插件运行 `node dist/index.js`）。
+- Node.js ≥ 22.18（与 `package.json` 中的 `engines` 一致；推荐 Node.js 24），且位于 `PATH` 中（插件运行 `node dist/index.js`）。
 - [Codex CLI](https://github.com/openai/codex)，并已登录（运行 `codex login`）。先运行一次 `codex`，让模型列表缓存到 `~/.codex/models_cache.json`。
 
 ## 安装
@@ -331,7 +331,7 @@ npm start           # 从源码运行服务器（Node 可直接运行 .ts 文件
 
 ## v0.7.0: sandbox and run diagnosis
 
-Requires Node 24; `npm run build` produces `dist/index.js`.
+The package supports Node.js ≥22.18 (Node.js 24 recommended); `npm run build` produces `dist/index.js`.
 Choose `sandbox: "read-only"` for investigation/review/questions and `sandbox: "write"`
 for edits, builds and tests. Write defaults to Codex `danger-full-access`.
 The dashboard policy API (`GET/PUT /api/policy`) accepts `sandboxWrites: true` to

@@ -11,6 +11,7 @@ process.env.CODEX_BIN = join(import.meta.dirname, "fixtures", "fake-codex.mjs");
 process.env.CODEX_DELEGATE_ENGINE = "exec";
 process.env.CODEX_DELEGATE_RUNS_DIR = runs;
 process.env.CODEX_DELEGATE_POLICY = join(runs, "policy.json");
+process.env.CODEX_DELEGATE_PROVIDERS = join(runs, "providers.json");
 const { delegate, formatOutcome } = await import("../src/delegate.ts");
 const { startTask, storedTask, waitTask } = await import("../src/tasks.ts");
 

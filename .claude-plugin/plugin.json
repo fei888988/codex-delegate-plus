@@ -1,10 +1,21 @@
 {
   "name": "codex-delegate",
-  "version": "0.14.1",
+  "version": "0.14.2",
   "description": "Delegate tasks from Claude to OpenAI Codex models (GPT-6 Sol, Astra, Luna, GPT-5.6…) through the Codex CLI while Claude stays the orchestrator.",
-  "author": { "name": "aashahin", "url": "https://github.com/aashahin" },
+  "author": {
+    "name": "aashahin",
+    "url": "https://github.com/aashahin"
+  },
   "homepage": "https://github.com/aashahin/claude-codex-delegate",
   "repository": "https://github.com/aashahin/claude-codex-delegate",
   "license": "MIT",
-  "keywords": ["codex", "openai", "gpt-6", "sol", "delegate", "subagent", "mcp"]
+  "keywords": [
+    "codex",
+    "openai",
+    "gpt-6",
+    "sol",
+    "delegate",
+    "subagent",
+    "mcp"
+  ]
 }
