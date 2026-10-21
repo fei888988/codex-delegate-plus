@@ -57,33 +57,75 @@ codex exec --json -m <model> -s <sandbox> -c approval_policy="never" -o <last-me
 
 ## 安装
 
-### Claude Code：安装插件（推荐）
+### 先选择安装方式
+
+| 使用位置 / 方式 | MCP 工具 | 技能和子代理 |
+|---|---|---|
+| Claude Code 插件（推荐，包含桌面版 Code 标签页） | 有 | `codex` 技能、`codex-worker` 子代理 |
+| Claude Code 手动注册 MCP | 有 | 需另行复制安装 |
+| Claude Desktop 普通聊天 | 有 | 不会安装 Claude Code 的技能和子代理 |
+
+本仓库已经提交 `dist/index.js`，正常安装不必构建。先确认 `node --version`、`codex --version` 和 `codex login status` 可用。下文的 `claude` 指 Claude Code CLI；若桌面版自带 CLI 未加入 PATH，请使用实际可执行文件的完整路径（PowerShell 用 `& "完整路径\claude.exe"` 调用），不能仅凭终端找不到 `claude` 就认定它未安装。
+
+### Claude Code：安装本分支插件（推荐）
+
+在 Claude Code 中执行：
 
 ```text
-/plugin marketplace add aashahin/claude-codex-delegate
-/plugin install codex-delegate@claude-codex-delegate
+/plugin marketplace add fei888988/codex-delegate-plus
+/plugin install codex-delegate@codex-delegate-plus
 ```
 
-从本地检出目录安装：
+也可从本地检出目录安装：
 
-```bash
+```powershell
 claude plugin marketplace add "D:\path\to\codex-delegate-plus"
 claude plugin install codex-delegate@codex-delegate-plus --scope user
 ```
 
-用户级安装会被所有 Claude Code 会话使用，包括 Claude 桌面版的 Code 标签页（安装后请新开一个会话）。首次调用 `delegate` 时会请求权限；如果希望项目以后不再询问，可选择“始终允许”。修改插件后，请更新 `.claude-plugin/plugin.json` 中的 `version`，再运行 `claude plugin update`。
+这里的 marketplace 名称是 `codex-delegate-plus`，插件名称是 `codex-delegate`。上游 `aashahin/claude-codex-delegate` 是另一个安装来源，不会自动安装本分支的修复。
 
-此安装方式会提供 MCP 服务器、`codex-delegate` 技能、`codex-worker` 子代理和 `/codex` 命令。
+安装后重新加载插件或新开 Code 会话，并按下方步骤验收。插件技能使用 `/codex-delegate:codex`，子代理为 `codex-worker`。首次调用工具时按 Claude 的提示授权。用户级安装适用于同一 Claude Code 配置环境下的会话；仍需确认桌面版实际加载了该环境和插件。
 
-### Claude Code：只安装 MCP 服务器
+### Claude Code：手动安装 MCP 与可选技能
 
-```bash
-claude mcp add codex -s user -- node /path/to/codex-delegate-plus/dist/index.js
+在检出目录运行以下 PowerShell 命令；它直接启动 Node，能保留含空格、中文的路径：
+
+```powershell
+$codexDelegateRoot = (Resolve-Path ".").Path
+$codexDelegateNode = (Get-Command node -ErrorAction Stop).Source
+claude mcp add --transport stdio --scope user codex -- "$codexDelegateNode" "$codexDelegateRoot\dist\index.js"
 ```
 
-### Claude Desktop 聊天（非 Code 标签页）
+这只注册 MCP，不会提供 `/codex` 或 `codex-worker`。需要手动安装时，在同一检出目录执行（已有同名文件时先备份，此操作会覆盖它们）：
 
-优先使用 Code 标签页：它有项目目录、权限管理，并且更适合运行较长的工具调用。普通聊天没有项目目录（需要设置 `CODEX_DELEGATE_CWD`），长工具调用也可能超时；在聊天中请使用 `delegate_async`，然后用 `task_result` 和小于一分钟的 `wait_s` 多次获取结果。将服务器加入 `claude_desktop_config.json`：
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.claude\skills\codex" | Out-Null
+Copy-Item ".\skills\codex\SKILL.md" "$HOME\.claude\skills\codex\SKILL.md"
+# 可选：安装子代理
+New-Item -ItemType Directory -Force "$HOME\.claude\agents" | Out-Null
+Copy-Item ".\agents\codex-worker.md" "$HOME\.claude\agents\codex-worker.md"
+```
+
+手动复制的用户技能叫 `/codex`；插件安装的技能使用 `/codex-delegate:codex`。选择一种安装方式，避免保留多个来源却不清楚实际加载哪一份。
+
+### 在本仓库或 worktree 中使用：注意配置优先级
+
+源码根目录的 `.mcp.json` 是插件声明，使用 `${CLAUDE_PLUGIN_ROOT}`。普通项目配置加载时没有这个插件变量；在本仓库或其 worktree 中启动 Claude Code，项目级的同名 `codex` 可能覆盖有效的用户级服务。单纯重启不会修复路径或作用域错误。
+
+Claude Code 的 MCP 优先级为 **local > project > user**。先在实际使用的项目目录运行 `claude mcp list`、`claude mcp get codex`，检查作用域、命令、参数以及未定义变量警告。需要直接使用本地源码时，在**源码根目录**用上面的绝对路径变量注册 local 配置：
+
+```powershell
+claude mcp add --transport stdio --scope local codex -- "$codexDelegateNode" "$codexDelegateRoot\dist\index.js"
+```
+
+这会写入本机项目配置，而不是修改仓库的 `.mcp.json`。若该作用域已经有同名服务，先检查并备份，再有针对性地修改或通过 `claude mcp remove codex --scope local` 移除该条后重新注册。不要盲目删除其他作用域。桌面版 Code 会话可能使用源码根目录作为配置根目录，即使工作目录位于 worktree；独立启动的 worktree 则需确认自己的配置根目录。不要把机器路径提交到插件声明，也不要全局伪造 `CLAUDE_PLUGIN_ROOT`。
+
+### Claude Desktop 普通聊天（非 Code 标签页）
+
+优先使用 Code 标签页：它有项目目录、权限管理，并且更适合长任务。普通聊天请设置 `CODEX_DELEGATE_CWD`，使用 `delegate_async`，再用 `task_result` 和小于一分钟的 `wait_s` 多次获取结果。
+
+普通聊天的 `claude_desktop_config.json` 与 Claude Code 的 `~/.claude.json` 是不同配置；向后者注册不代表前者已加载。通过当前应用的开发者设置定位实际配置文件，备份后将以下 `codex` 条目合并到已有 `mcpServers`，保留其他字段和服务。不同安装渠道或定制版本的配置、日志位置可能不同，不要只假定 `%APPDATA%\Claude`。
 
 ```json
 {
@@ -97,7 +139,64 @@ claude mcp add codex -s user -- node /path/to/codex-delegate-plus/dist/index.js
 }
 ```
 
-请使用绝对路径，因为 Desktop 不会读取 shell 的 `PATH`。在 Windows 上，服务器会在各个 `PATH` 目录和 `%APPDATA%\npm` 中寻找 npm 安装的 `codex.js`，之后再查找 `codex.exe`。其他平台会检查 `PATH`、`~/.bun/bin`、`~/.local/bin`、`~/.npm-global/bin`、`~/.cargo/bin`、`/usr/local/bin` 和 `/opt/homebrew/bin`。如果 Codex 位于其他位置，请设置 `CODEX_BIN`（如果指向 `.js` 文件，服务器会用 Node 启动它）。
+用 `Get-Command node` 确认实际 Node 路径，替换示例中的路径；桌面进程的 PATH 可能与终端不同。**直接将 Node 可执行文件放在 `command`，脚本路径单独放在 `args`，不要包装成 `cmd /c` 或拼成一个命令字符串。** 否则含空格路径可能报 `'D:\Program' is not recognized`。修改后让对应客户端重新加载 MCP。
+
+Windows 上服务器会在 PATH 目录及 `%APPDATA%\npm` 中寻找 npm 安装的 `codex.js`，之后查找 `codex.exe`；其他平台检查 PATH、`~/.bun/bin`、`~/.local/bin`、`~/.npm-global/bin`、`~/.cargo/bin`、`/usr/local/bin` 和 `/opt/homebrew/bin`。必要时在服务器环境中设置 `CODEX_BIN`；指向 `.js` 时会用 Node 启动。
+
+### 安装验收：在真正使用的会话里检查
+
+1. 在同一项目和配置环境运行 `claude mcp list`、`claude mcp get codex`，确认实际启动路径和作用域；插件工具也可能带插件前缀。
+2. 在实际 Claude Code / Desktop 会话的 MCP 状态或工具列表中确认服务器已连接，且有 `delegate`、`delegate_async`、`list_models`、`task_result`、`task_inspect`、`task_list`、`task_steer`、`task_cancel`、`list_sessions`。
+3. 让该会话实际调用一次只读的 `list_models`，确认返回结果。需要技能时再确认 `/codex-delegate:codex`（插件）或 `/codex`（手动安装）可见。
+
+技能可见、Node 手动启动成功、独立 `initialize` / `tools/list` 成功，都不能单独证明当前 Claude 会话已加载工具。其他目录里的 CLI 显示 Connected，也不能替代桌面版当前会话的检查。
+
+## 更新已安装版本
+
+先结束或妥善停止正在执行的委派，再更新或重启服务。
+
+**通过 marketplace 安装的插件：**
+
+```powershell
+claude plugin marketplace update codex-delegate-plus
+claude plugin update codex-delegate@codex-delegate-plus --scope user
+```
+
+然后按客户端要求重新加载插件/会话，并重新验收。只在源码目录 `git pull` 不代表已安装的插件缓存更新。若刷新后仍加载旧内容，核对安装来源、缓存路径及插件/marketplace 版本；维护者发布内容变更时应同步更新版本元数据，用户不应为了绕过缓存随意修改版本。
+
+**直接注册本地检出目录的 MCP：**
+
+```powershell
+git status --short
+git pull --ff-only
+git log -1 --oneline
+```
+
+先处理自己的本地改动；拉取失败时不要用强制重置覆盖它们。仓库自带构建产物，无源码开发需求时不必重新构建。修复可能沿用同一版本号，因此同时核对提交号、注册路径和实际加载目录。重新加载使用该 MCP 的会话；手动复制的技能/子代理有更新时也要重新复制。
+
+**仪表板：** 只有 `dashboard/index.html` 改动时刷新浏览器即可；后端或其模块变更时需重启现有后台进程，再刷新页面。Windows 计划任务安装使用：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\dashboard-service.ps1 status
+powershell -ExecutionPolicy Bypass -File scripts\dashboard-service.ps1 restart
+```
+
+手动启动的服务需停止原进程后重新运行 `npm run dashboard`。确认原进程已退出，避免误连旧服务。重启可能中断仪表板管理的续跑任务，先处理正在执行的工作。
+
+## 安装与部署排错
+
+| 现象 | 检查与处理 |
+|---|---|
+| 找不到 `/codex` | MCP 安装不含技能；安装完整插件或复制技能，并使用对应命令名称。 |
+| 技能可见，但没有 `delegate` 等工具 | 检查当前会话的 MCP 状态、所选作用域、启动路径和日志；技能不能代替 MCP 连接。 |
+| `'D:\Program' is not recognized` / spawn 失败 | 用实际 Node 绝对路径直接启动，分离 `command` 和 `args`，去掉 `cmd /c`。 |
+| 未定义 `CLAUDE_PLUGIN_ROOT` / project 服务失败 | 检查源码 `.mcp.json` 与用户配置冲突；在正确配置根目录设置 local 绝对路径条目。 |
+| CLI Connected，桌面会话仍没有工具 | 核对同一配置环境、项目根目录、插件缓存和桌面启动日志；修复实际加载的配置后重新加载该会话。 |
+| 服务商读取、保存或导入接口返回 404 | 新页面可能连到旧后台；核对监听端口的进程并在后端更新后重启。其他错误按响应正文及后台日志诊断，不要把所有保存失败都当成 404。 |
+| 更新后功能仍旧 | 分别核对 Git 提交、插件缓存、复制的技能和常驻后台；版本号相同不等于文件相同。 |
+| Claude 应用本身无法打开 | 检查该安装实例的应用/更新日志和 Windows 应用状态；应用更新挂起与 MCP 配置失败是不同问题。不要先清空聊天数据或重置全部配置。 |
+
+先根据日志中的明确错误处理路径、作用域或进程问题。只有日志证实启动超时才调整 `MCP_TIMEOUT`；不能仅凭工具缺失就认定超时或 `tools/list_changed` 通知有问题。
 
 ## 使用方法
 

@@ -67,40 +67,75 @@ key), `~/.codex/config.toml`, AGENTS.md files, MCP servers and rules. It does no
 
 ## Install
 
-### Claude Code: plugin (recommended)
+### Choose an installation method
+
+| Location / method | MCP tools | Skill and subagent |
+|---|---|---|
+| Claude Code plugin (recommended, including the desktop Code tab) | Included | `codex` skill and `codex-worker` subagent |
+| Manual Claude Code MCP registration | Included | Copy separately if needed |
+| Regular Claude Desktop chat | Included | Does not install Claude Code skills or subagents |
+
+`dist/index.js` is committed; a normal installation needs no build. First check `node --version`, `codex --version`, and `codex login status`. Commands below use the Claude Code CLI, `claude`. If the desktop app's bundled CLI is not on PATH, use its actual executable path (PowerShell: `& "full\path\claude.exe"`). A missing terminal command alone does not prove it is absent.
+
+### Claude Code: install this fork's plugin (recommended)
+
+Run inside Claude Code:
 
 ```text
-/plugin marketplace add aashahin/claude-codex-delegate
-/plugin install codex-delegate@claude-codex-delegate
+/plugin marketplace add fei888988/codex-delegate-plus
+/plugin install codex-delegate@codex-delegate-plus
 ```
 
-For this local checkout:
+Or install from a local checkout:
 
-```bash
+```powershell
 claude plugin marketplace add "D:\path\to\codex-delegate-plus"
 claude plugin install codex-delegate@codex-delegate-plus --scope user
 ```
 
-A user-scope install is picked up by every Claude Code session, including new sessions in the Claude
-desktop app's Code tab (start a new session after installing). The first `delegate` call asks for
-permission; choose "always allow" for the project to skip that next time. After changing the
-plugin, bump `version` in `.claude-plugin/plugin.json` and run `claude plugin update`.
+The marketplace name is `codex-delegate-plus`; the plugin name is `codex-delegate`. Upstream `aashahin/claude-codex-delegate` is a different source and does not automatically include this fork's fixes.
 
-This gives you the MCP server, the **codex-delegate** skill, the **codex-worker** subagent, and the
-**/codex** command.
+Reload the plugin or start a new Code session, then follow the acceptance steps below. The plugin skill is `/codex-delegate:codex`; the subagent is `codex-worker`. Approve tool use when Claude prompts. User-scope installation applies to sessions sharing that Claude Code configuration environment; confirm the desktop app actually loads that environment and plugin.
 
-### Claude Code: MCP server only
+### Claude Code: manual MCP and optional skill installation
 
-```bash
-claude mcp add codex -s user -- node /path/to/codex-delegate-plus/dist/index.js
+Run this PowerShell example from the checkout. It starts Node directly and preserves paths containing spaces or non-ASCII characters:
+
+```powershell
+$codexDelegateRoot = (Resolve-Path ".").Path
+$codexDelegateNode = (Get-Command node -ErrorAction Stop).Source
+claude mcp add --transport stdio --scope user codex -- "$codexDelegateNode" "$codexDelegateRoot\dist\index.js"
 ```
 
-### Claude Desktop chat (not the Code tab)
+This registers only MCP, without `/codex` or `codex-worker`. To install those manually, run from the same checkout (back up existing files with these names first; copying overwrites them):
 
-Prefer the Code tab: it has a project directory, permissions and long tool calls. Chat has no
-project directory (set `CODEX_DELEGATE_CWD`) and may time out long tool calls, so there use
-`delegate_async` and then `task_result` with `wait_s` under a minute, repeated. Add the server to
-`claude_desktop_config.json`:
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.claude\skills\codex" | Out-Null
+Copy-Item ".\skills\codex\SKILL.md" "$HOME\.claude\skills\codex\SKILL.md"
+# Optional: install the subagent
+New-Item -ItemType Directory -Force "$HOME\.claude\agents" | Out-Null
+Copy-Item ".\agents\codex-worker.md" "$HOME\.claude\agents\codex-worker.md"
+```
+
+The manually copied user skill is `/codex`; the plugin skill is `/codex-delegate:codex`. Choose an installation method so you can identify the source actually loaded.
+
+### Using this repository or a worktree: configuration precedence
+
+The root `.mcp.json` is a plugin declaration using `${CLAUDE_PLUGIN_ROOT}`. Ordinary project configuration does not define this plugin variable. When Claude Code starts in this repository or a worktree, a project-scoped `codex` entry can override a valid user-scoped server. Restarting alone cannot repair an invalid path or scope.
+
+Claude Code MCP precedence is **local > project > user**. Run `claude mcp list` and `claude mcp get codex` in the actual project and inspect scope, command, arguments, and undefined-variable warnings. To use this checkout directly, register a local entry at the **source repository root**, using the absolute-path variables above:
+
+```powershell
+claude mcp add --transport stdio --scope local codex -- "$codexDelegateNode" "$codexDelegateRoot\dist\index.js"
+```
+
+This writes machine-local project configuration rather than changing the tracked `.mcp.json`. If that scope already contains the name, inspect and back it up, then edit it specifically or remove that entry with `claude mcp remove codex --scope local` before registering it again. Do not blindly delete other scopes. Desktop Code sessions may use the source root as their configuration root even while working in a worktree; independently launched worktrees need their own configuration-root check. Do not commit machine paths into the plugin declaration or globally fabricate `CLAUDE_PLUGIN_ROOT`.
+
+### Regular Claude Desktop chat (not the Code tab)
+
+Prefer the Code tab for its project directory, permissions, and long tasks. In regular chat, set `CODEX_DELEGATE_CWD`, use `delegate_async`, then poll `task_result` with `wait_s` under a minute.
+
+Regular chat's `claude_desktop_config.json` and Claude Code's `~/.claude.json` are separate configurations; registration in the latter does not configure the former. Locate the actual file through the current app's developer settings, back it up, and merge the following `codex` entry into existing `mcpServers`, preserving other fields and servers. Configuration and log locations vary by installation channel or customized build; do not assume only `%APPDATA%\Claude`.
 
 ```json
 {
@@ -114,11 +149,64 @@ project directory (set `CODEX_DELEGATE_CWD`) and may time out long tool calls, s
 }
 ```
 
-Use absolute paths, because Desktop doesn't load your shell `PATH`. On Windows the server looks for
-the npm-installed `codex.js` in each `PATH` dir and `%APPDATA%
-pm`, then for `codex.exe`; elsewhere
-in `PATH`, `~/.bun/bin`, `~/.local/bin`, `~/.npm-global/bin`, `~/.cargo/bin`, `/usr/local/bin` and
-`/opt/homebrew/bin`. If yours is somewhere else, set `CODEX_BIN` (a `.js` path is run with Node).
+Use `Get-Command node` to find the actual Node executable and replace the example paths. The desktop process may have a different PATH from your terminal. **Put the Node executable directly in `command` and the script path separately in `args`; do not wrap them in `cmd /c` or concatenate a shell command.** Otherwise a path with spaces can fail with `'D:\Program' is not recognized`. Reload MCP in the corresponding client after changes.
+
+On Windows the server searches PATH directories and `%APPDATA%\npm` for npm's `codex.js`, then for `codex.exe`. Elsewhere it checks PATH, `~/.bun/bin`, `~/.local/bin`, `~/.npm-global/bin`, `~/.cargo/bin`, `/usr/local/bin`, and `/opt/homebrew/bin`. Set `CODEX_BIN` in the server environment if needed; a `.js` path is launched with Node.
+
+### Acceptance: check the session you will actually use
+
+1. In the same project and configuration environment, run `claude mcp list` and `claude mcp get codex` to confirm launch paths and scope. Plugin tools may also have a plugin prefix.
+2. In the actual Claude Code / Desktop session's MCP status or tool list, confirm a connected server with `delegate`, `delegate_async`, `list_models`, `task_result`, `task_inspect`, `task_list`, `task_steer`, `task_cancel`, and `list_sessions`.
+3. Have that session actually call the read-only `list_models` tool and confirm a result. If you need the skill, also check `/codex-delegate:codex` (plugin) or `/codex` (manual install).
+
+A visible skill, successful manual Node launch, or standalone `initialize` / `tools/list` exchange does not independently prove the current Claude session loaded the tools. CLI Connected status from another directory does not replace checking the current desktop session.
+
+## Update an existing installation
+
+Finish or properly stop active delegations before updating or restarting services.
+
+**Marketplace plugin installation:**
+
+```powershell
+claude plugin marketplace update codex-delegate-plus
+claude plugin update codex-delegate@codex-delegate-plus --scope user
+```
+
+Reload the plugin/session as required by the client, then repeat acceptance. Pulling a source checkout does not guarantee the installed plugin cache updates. If old content remains, check the installation source, cache path, and plugin/marketplace versions. Maintainers should update version metadata when publishing changed content; users should not arbitrarily change versions to bypass caching.
+
+**MCP registered directly against a local checkout:**
+
+```powershell
+git status --short
+git pull --ff-only
+git log -1 --oneline
+```
+
+Handle your local changes first; do not force-reset them away if pulling fails. The repository includes the bundle, so normal users do not need to rebuild. Fixes can share a version number: check the commit, registered path, and actual loaded directory too. Reload sessions using the MCP server, and recopy manually installed skills/subagents when those files change.
+
+**Dashboard:** Refresh the browser for changes limited to `dashboard/index.html`. Restart the existing background process after backend or module changes, then refresh. For the Windows scheduled-task installation:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\dashboard-service.ps1 status
+powershell -ExecutionPolicy Bypass -File scripts\dashboard-service.ps1 restart
+```
+
+For a manual launch, stop the old process and rerun `npm run dashboard`. Confirm the original process exited so you do not reconnect to an old server. Restarting can interrupt dashboard-managed continuation jobs; handle active work first.
+
+## Installation and deployment troubleshooting
+
+| Symptom | Check and remedy |
+|---|---|
+| `/codex` is missing | MCP registration does not install the skill. Install the full plugin or copy the skill, using the corresponding command name. |
+| Skill visible, but no `delegate` tools | Inspect the current session's MCP status, selected scope, paths, and logs. A skill does not establish an MCP connection. |
+| `'D:\Program' is not recognized` / spawn failure | Launch the actual Node absolute path directly with separate `command` and `args`; remove `cmd /c`. |
+| Undefined `CLAUDE_PLUGIN_ROOT` / project server fails | Check source `.mcp.json` conflicts with user configuration; register a local absolute-path entry at the correct configuration root. |
+| CLI Connected, but desktop tools missing | Compare configuration environments, project roots, plugin caches, and desktop startup logs; repair the configuration actually loaded, then reload that session. |
+| Provider read/save/import API returns 404 | A new page may be using an old backend. Identify the process listening on the port and restart after backend updates. Diagnose other failures from their response body and backend logs; not every save failure is a 404. |
+| Features remain old after updating | Check the Git commit, plugin cache, copied skills, and resident backend separately. Equal version numbers do not prove equal files. |
+| Claude itself will not open | Inspect that installation's app/updater logs and Windows application status. A stalled app update and an MCP configuration failure are separate problems. Do not start by erasing chats or resetting all configuration. |
+
+Resolve explicit path, scope, or process errors from logs first. Adjust `MCP_TIMEOUT` only when logs establish a startup timeout; missing tools alone do not prove a timeout or a `tools/list_changed` notification problem.
 
 ## Usage
 
