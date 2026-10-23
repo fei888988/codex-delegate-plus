@@ -188,6 +188,8 @@
     background: linear-gradient(100deg, transparent 30%, rgba(77,227,255,.08) 50%, transparent 70%) 0 0 / 250% 100%; animation: beam 3.2s linear infinite; }
   @keyframes beam { from { background-position: 150% 0; } to { background-position: -100% 0; } }
   .pend { display: flex; gap: 14px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+  .pend[data-id] { cursor: pointer; border-radius: 8px; transition: background .15s; }
+  .pend[data-id]:hover, .pend[data-id]:focus-visible { background: rgba(255,255,255,.03); outline: none; }
   .pend:first-child { border-top: 0; padding-top: 0; } .pend:last-child { padding-bottom: 0; }
   .pend .muted.nowrap { font: 600 18px var(--disp); color: var(--run); font-variant-numeric: tabular-nums; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--run); flex: none; box-shadow: 0 0 0 0 rgba(77,227,255,.6); animation: ping 1.6s var(--out) infinite; }
@@ -884,8 +886,13 @@ function fmtRel(ms) {
   return fmtTime(ms);
 }
 const base = (p) => p ? String(p).split(/[\\/]/).filter(Boolean).pop() : "";
-const dur = (r) => r.durationMs ?? (r.endedAt && r.startedAt ? r.endedAt - r.startedAt : r.state === "running" ? Date.now() - r.startedAt : null);
-const isBad = (r) => r.state === "error" || r.state === "interrupted" || r.state === "user_interrupted" || r.reportStatus === "blocked";
+const toMs = (v) => typeof v === "number" ? v : v ? Date.parse(v) : NaN;
+const lastSeenAt = (r) => [r.heartbeatAt, r.lastEventAt, r.startedAt].map(toMs).filter(Number.isFinite).reduce((a, b) => Math.max(a, b), 0);
+const ORPHANED_RUNNING_MS = 2 * 60 * 60 * 1000;
+const isLongOrphaned = (r, now = Date.now()) => r.state === "running" && r.health === "orphaned" && now - lastSeenAt(r) > ORPHANED_RUNNING_MS;
+const isUiRunning = (r) => r.state === "running" && !isLongOrphaned(r);
+const dur = (r) => r.durationMs ?? (r.endedAt && r.startedAt ? r.endedAt - r.startedAt : r.state === "running" ? Math.max(0, (isLongOrphaned(r) ? lastSeenAt(r) : Date.now()) - r.startedAt) : null);
+const isBad = (r) => isLongOrphaned(r) || r.state === "error" || r.state === "interrupted" || r.state === "user_interrupted" || r.reportStatus === "blocked";
 
 const STATE = { running: ["进行中", "b-run"], ok: ["完成", "b-ok"], error: ["出错", "b-err"], interrupted: ["已中断", "b-warn"], user_interrupted: ["你中断了", "b-warn"] };
 const REPORT = { done: ["完成", "b-ok"], partial: ["部分完成", "b-warn"], blocked: ["受阻", "b-err"], needs_decision: ["待决策", "b-warn"] };
@@ -894,7 +901,6 @@ const HEALTH = { active: ["运行中", "b-run"], quiet: ["无输出", "b-warn"],
 const EXIT = { stalled: "卡住被终止", timeout: "超时", crashed: "异常退出", api_error: "API 错误", cancelled: "已取消" };
 const ERRK = { quota: "额度用尽", rate_limit: "限流", auth: "认证失败", network: "网络", context: "上下文超限" };
 const PHASE = { codex: "Codex 执行中", checks: "主机检查中", done: "收尾" };
-const toMs = (v) => typeof v === "number" ? v : v ? Date.parse(v) : NaN;
 const ago = (v) => { const ms = toMs(v); return ms ? fmtDur(Math.max(0, Date.now() - ms)) : "—"; };
 function statusBadge(r) {
   if (r.state === "running" && HEALTH[r.health]) {
@@ -907,7 +913,7 @@ function statusBadge(r) {
 }
 /** One line of live state for a running run: phase, last codex event, the command in flight. */
 function liveText(r) {
-  if (r.state !== "running") return "";
+  if (!isUiRunning(r)) return "";
   const parts = [PHASE[r.phase] || "运行中"];
   if (r.lastEventAt) parts.push(`最后事件 ${ago(r.lastEventAt)}前`);
   const f = r.inflight;
@@ -934,7 +940,7 @@ const tierOf = (r) => r.tier || r.effort || "默认";
 let data = null;
 let distKey = "tier", stateFilter = "";
 function renderStats(runs) {
-  const done = runs.filter((r) => r.state !== "running");
+  const done = runs.filter((r) => !isUiRunning(r));
   const ok = done.filter((r) => !isBad(r)).length;
   const tok = runs.reduce((a, r) => { const t = r.tokens || {}; a.in += t.input || 0; a.cached += t.cachedInput || 0; a.out += t.output || 0; return a; }, { in: 0, cached: 0, out: 0 });
   const totalMs = done.reduce((a, r) => a + (dur(r) || 0), 0);
@@ -1016,13 +1022,31 @@ function renderDist(runs) {
 const DIST_COLORS = ["#c6ff3d", "#4de3ff", "#ff6a3d", "#ffb547", "#b58cff", "#ff4d9a", "#6b7280"];
 
 function renderPending(pending, tasks) {
+  const linkedRun = (item) => {
+    const runs = data?.runs || [];
+    if (item.sessionId) {
+      const bySession = runs.find((r) => r.sessionId === item.sessionId);
+      if (bySession) return bySession;
+    }
+    return item.title ? runs.find((r) => titleOf(r) === item.title && Math.abs(r.startedAt - item.startedAt) < 2 * 60 * 1000) : undefined;
+  };
+  const staleOrphan = (item) => isLongOrphaned(linkedRun(item) || {});
+  const runningTasks = tasks.filter((t) => t.status === "running" && !staleOrphan(t));
+  const taskOf = (p) => p.sessionId && runningTasks.find((t) => t.sessionId === p.sessionId);
+  // An async delegate writes both a pending record and a task record for the same run: show it once.
   const items = [
-    ...pending.map((p) => ({ kind: p.state === "interrupted" ? "被中断" : "运行中", title: p.title || (p.prompt || "").split("\n")[0], cwd: p.cwd, t: p.startedAt, sid: p.sessionId, live: p.state === "running" })),
-    ...tasks.filter((t) => t.status === "running").map((t) => ({ kind: "后台任务", title: t.title || t.id, t: t.startedAt, live: true })),
-  ];
+    ...pending.filter((p) => p.state !== "running" || !staleOrphan(p)).map((p) => {
+      const run = linkedRun(p);
+      return { kind: p.state === "interrupted" ? "被中断" : "运行中", title: p.title || taskOf(p)?.title || (run && titleOf(run)) || (p.prompt || "").split("\n")[0], cwd: p.cwd, t: p.startedAt, sid: p.sessionId, live: p.state === "running", runId: run?.id };
+    }),
+    ...runningTasks.filter((t) => !t.sessionId || !pending.some((p) => p.state === "running" && p.sessionId === t.sessionId)).map((t) => {
+      const run = linkedRun(t);
+      return { kind: "后台任务", title: t.title || (run && titleOf(run)) || t.id, t: t.startedAt, live: true, runId: run?.id };
+    }),
+  ].filter((p, i, all) => !p.runId || all.findIndex((q) => q.runId === p.runId) === i);
   $("#pendingCard").hidden = !items.length;
   $("#pendingCount").textContent = items.length || "";
-  $("#pendingList").innerHTML = items.map((p) => `<div class="pend">
+  $("#pendingList").innerHTML = items.map((p) => `<div class="pend"${p.runId ? ` data-id="${esc(p.runId)}" tabindex="0" role="button" title="查看任务详情"` : ""}>
       ${p.live ? '<span class="dot" aria-hidden="true"></span>' : badge(["中断", "b-warn"])}
       <div style="min-width:0;flex:1"><div class="t-title">${esc(p.title || "（无标题）")}</div>
       <div class="t-sub">${esc(p.kind)}${p.cwd ? ` · ${esc(base(p.cwd))}` : ""} · ${fmtRel(p.t)}开始${p.sid ? ` · <span class="mono">${esc(p.sid)}</span>` : ""}</div></div>
@@ -1033,14 +1057,14 @@ function filtered() {
   return data.runs.filter((r) => {
     if (st === "ok" && (r.state !== "ok" || isBad(r))) return false;
     if (st === "bad" && !isBad(r)) return false;
-    if (st === "running" && r.state !== "running") return false;
+    if (st === "running" && !isUiRunning(r)) return false;
     if (ef && tierOf(r) !== ef) return false;
     if (q && ![r.title, r.prompt, r.summary, r.cwd, r.sessionId, r.model, r.id].some((v) => v && String(v).toLowerCase().includes(q))) return false;
     return true;
   });
 }
 const seenRows = new Set();
-const lampOf = (r) => r.state === "running" ? "running" : isBad(r) ? "bad" : ["partial", "needs_decision"].includes(r.reportStatus) ? "warn" : r.state === "ok" ? "ok" : "";
+const lampOf = (r) => isUiRunning(r) ? "running" : isBad(r) ? "bad" : ["partial", "needs_decision"].includes(r.reportStatus) ? "warn" : r.state === "ok" ? "ok" : "";
 /** cascade: replay the entrance for every visible row (filter change); otherwise only new rows animate. */
 function renderTable(cascade = false) {
   const runs = filtered();
@@ -1057,7 +1081,7 @@ function renderTable(cascade = false) {
     seenRows.add(r.id);
     return `<div class="row ${lampOf(r)}${fresh ? " fresh" : ""}"${fresh ? ` style="--d:${delay}ms"` : ""} role="button" tabindex="0" data-id="${esc(r.id)}">
       <span class="lamp" aria-hidden="true"></span>
-      <div style="min-width:0"><div class="t-title" title="${esc(titleOf(r))}">${r.resumed ? '<span class="tag" title="续接已有会话">续</span> ' : ""}${esc(titleOf(r))}</div>${sub ? `<div class="t-sub" title="${esc(sub)}">${esc(sub)}</div>` : ""}${r.state === "running" ? `<div class="live ${liveCls(r)}" title="${esc(liveText(r))}">${esc(liveText(r))}</div>` : ""}</div>
+      <div style="min-width:0"><div class="t-title" title="${esc(titleOf(r))}">${r.resumed ? '<span class="tag" title="续接已有会话">续</span> ' : ""}${esc(titleOf(r))}</div>${sub ? `<div class="t-sub" title="${esc(sub)}">${esc(sub)}</div>` : ""}${isUiRunning(r) && liveText(r) ? `<div class="live ${liveCls(r)}" title="${esc(liveText(r))}">${esc(liveText(r))}</div>` : ""}</div>
       <div><span class="tag${high ? " e-high" : ""}" title="${esc(tierTitle)}">${esc(tierOf(r))}</span>${r.sandbox === "read-only" ? ' <span class="tag">只读</span>' : ""}</div>
       <div>${statusBadge(r)}</div>
       <div>${resultCell(r)}</div>
@@ -1178,7 +1202,7 @@ function renderInfo(r) {
   kv.push(["运行 ID", `<span class="mono">${esc(r.id)}</span>`]);
   const hero = summary
     ? `<div class="hero"><div class="who"><span class="ava" style="width:20px;height:20px;font-size:10px">C</span>Codex 的总结</div><div class="txt md">${md(summary)}</div></div>`
-    : r.state === "running" ? `<div class="hero"><div class="who">Codex 还在工作，完成后这里会显示它的总结。可以切到「对话」看实时进展。</div></div>` : "";
+    : isUiRunning(r) ? `<div class="hero"><div class="who">Codex 还在工作，完成后这里会显示它的总结。可以切到「对话」看实时进展。</div></div>` : "";
   return `
     ${hero}
     ${r.error ? `<div class="hero err"><div class="who">错误</div><pre style="background:none;border:0;padding:0;color:var(--err)">${esc(r.error)}</pre></div>` : ""}
@@ -1348,6 +1372,7 @@ function visibleEntries() {
 }
 function tlFoot() {
   const r = view.run || {};
+  if (isLongOrphaned(r)) return `<div class="end-line">已失联</div>`;
   if (r.state === "user_interrupted") {
     const why = view.io?.interrupt?.reason;
     return `<div class="end-line">你在 ${esc(fmtFull(r.endedAt))} 中断了这次运行 · ${why ? `理由：${esc(why.slice(0, 120))}` : "未写理由"}</div>`;
@@ -1372,7 +1397,7 @@ function tlBar() {
 function renderTimeline() {
   const body = $("#dlgBody");
   if (!$("#tl") || $("#tl").dataset.mode !== view.mode) { body.innerHTML = tlBar(); $("#tl").dataset.mode = view.mode; }
-  const empty = (has) => `<div class="empty">${has ? "没有匹配的条目" : view.loadError ? esc(view.loadError) : view.run?.state === "running" ? "等待 Codex 的第一条消息…" : "加载中…"}</div>`;
+  const empty = (has) => `<div class="empty">${has ? "没有匹配的条目" : view.loadError ? esc(view.loadError) : isLongOrphaned(view.run || {}) ? "已失联" : isUiRunning(view.run || {}) ? "等待 Codex 的第一条消息…" : "加载中…"}</div>`;
   if (view.mode === "chat") {
     const items = buildConvo(view.entries);
     const says = items.filter((x) => x.type === "say").length, steps = items.filter((x) => x.type === "steps").reduce((a, g) => a + g.steps.length, 0);
@@ -1414,7 +1439,7 @@ async function pullTimeline() {
 }
 function renderStrip(r) {
   const el = $("#dlgStrip");
-  el.hidden = r.state !== "running";
+  el.hidden = !isUiRunning(r);
   if (el.hidden) return;
   el.className = `strip ${liveCls(r)}`;
   const f = r.inflight;
@@ -1429,7 +1454,7 @@ function renderHead(r) {
   const chip = (t, title) => `<span class="chip"${title ? ` title="${esc(title)}"` : ""}>${t}</span>`;
   const facts = [r.cwd ? `<span title="${esc(r.cwd)}">${esc(base(r.cwd))}</span>` : "",
     r.startedAt ? `<span title="${esc(fmtFull(r.startedAt))}">${esc(fmtRel(r.startedAt))}</span>` : "",
-    r.state !== "running" && dur(r) != null ? `<span title="用时">${esc(fmtDur(dur(r)))}</span>` : ""].join("");
+    !isUiRunning(r) && dur(r) != null ? `<span title="用时">${esc(fmtDur(dur(r)))}</span>` : ""].join("");
   $("#dlgMeta").innerHTML = [statusBadge(r),
     r.tier || r.effort ? chip(esc(r.tier || r.effort), [r.model, r.effort].filter(Boolean).join(" · ")) : "",
     r.sandbox ? chip(esc(SB[r.sandbox] || r.sandbox), "权限") : "",
@@ -1441,7 +1466,7 @@ async function refreshDrawer(full) {
   if (!view.id || view.busy) return;
   view.busy = true;
   try {
-    const wasRunning = view.run?.state === "running";
+    const wasRunning = isUiRunning(view.run || {});
     if (full || wasRunning) {
       const res = await fetch(`/api/runs/${encodeURIComponent(view.id)}`, { cache: "no-store" });
       if (res.ok) view.run = await res.json();
@@ -1454,12 +1479,12 @@ async function refreshDrawer(full) {
     if (ioChanged && view.tab !== "info" && $("#tl")) renderTimeline();
     if (view.tab === "info") {
       // Re-render only when something visible changed, so open <details> stay open.
-      if (full || (r.state !== "running" && wasRunning)) { $("#dlgBody").innerHTML = renderInfo(r); if (full) enter($("#dlgBody")); }
+      if (full || (!isUiRunning(r) && wasRunning)) { $("#dlgBody").innerHTML = renderInfo(r); if (full) enter($("#dlgBody")); }
     } else {
       const body = $("#dlgBody"), atEnd = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
       const added = full || wasRunning || !view.entries.length ? await pullTimeline() : 0;
       if (full || added || !$("#tl")) { renderTimeline(); if (full) enter($("#dlgBody")); } else $("#tlFoot").innerHTML = tlFoot();
-      if (added && atEnd && r.state === "running") body.scrollTop = body.scrollHeight;
+      if (added && atEnd && isUiRunning(r)) body.scrollTop = body.scrollHeight;
     }
   } catch {} finally { view.busy = false; }
 }
@@ -1475,11 +1500,11 @@ async function openRun(id) {
   renderHead(brief);
   $("#dlgBody").innerHTML = LOADING;
   // A live run opens on its conversation; a finished one on the overview.
-  setTab(brief.state === "running" ? "tl" : "info", false);
+  setTab(isUiRunning(brief) ? "tl" : "info", false);
   if (!$("#dlg").open) { $("#dlg").classList.remove("closing"); $("#dlg").showModal(); }
   inkTabs();
   clearInterval(view.timer);
-  view.timer = setInterval(() => { if (!document.hidden && view.run?.state === "running") refreshDrawer(false); }, 3000);
+  view.timer = setInterval(() => { if (!document.hidden && isUiRunning(view.run || {})) refreshDrawer(false); }, 3000);
   await refreshDrawer(true);
 }
 function setTab(tab, refresh = true) {
@@ -1791,6 +1816,8 @@ $("#iKeep").addEventListener("click", () => submitInterrupt(false));
 $("#iKill").addEventListener("click", () => submitInterrupt(true));
 $("#idlg").addEventListener("click", (e) => { if (e.target === $("#idlg")) { const b = $("#idlg").getBoundingClientRect();
   if (e.clientX < b.left || e.clientX > b.right || e.clientY < b.top || e.clientY > b.bottom) $("#idlg").close(); } });
+$("#pendingList").addEventListener("click", (e) => { const el = e.target.closest(".pend[data-id]"); if (el) openRun(el.dataset.id); });
+$("#pendingList").addEventListener("keydown", (e) => { const el = e.target.closest(".pend[data-id]"); if (el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openRun(el.dataset.id); } });
 $("#rows").addEventListener("click", (e) => { const tr = e.target.closest(".row[data-id]"); if (tr) openRun(tr.dataset.id); });
 $("#rows").addEventListener("keydown", (e) => { const tr = e.target.closest(".row[data-id]"); if (tr && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openRun(tr.dataset.id); } });
 $("#dlgClose").addEventListener("click", () => $("#dlg").close());
@@ -2293,7 +2320,7 @@ const reactor = (() => {
       const s = new Date(r.startedAt); s.setHours(0, 0, 0, 0);
       const ago = Math.round((day0 - s.getTime()) / 86400000);
       if (ago < 0 || ago >= RINGS) continue;
-      const st = r.state === "running" ? "run" : isBad(r) ? "bad" : ["partial", "needs_decision"].includes(r.reportStatus) ? "warn" : "ok";
+      const st = isUiRunning(r) ? "run" : isBad(r) ? "bad" : ["partial", "needs_decision"].includes(r.reportStatus) ? "warn" : "ok";
       // First load: dots arrive in a sweep after the reveal. Later: only genuinely new runs pop in.
       const born = known.has(r.id) ? 0 : first ? Math.max(REVEAL, now) + 650 + k++ * 22 : now;
       known.add(r.id);
