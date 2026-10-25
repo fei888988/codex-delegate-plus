@@ -30,7 +30,9 @@ test("provider precedence, system escape hatch, unknown id, and model precedence
   assert.throws(() => selectProvider(d, "missing"), /Unknown provider id/);
   const p = d.providers[0];
   assert.equal(selectModel("explicit", p, "tier", "fallback"), "explicit");
-  assert.equal(selectModel(undefined, p, "tier"), "custom-model");
+  // The policy tier wins; the provider's model only fills a tier that names none.
+  assert.equal(selectModel(undefined, p, "tier"), "tier");
+  assert.equal(selectModel(undefined, p, undefined, "fallback"), "custom-model");
   assert.equal(selectModel(undefined, undefined, "tier"), "tier");
   assert.equal(selectModel(undefined, undefined, undefined, "fallback"), "fallback");
   const policy = validatePolicy({ ...DEFAULT_POLICY, tiers: DEFAULT_POLICY.tiers.map(t => ({ ...t, provider: "relay" })) }, []);

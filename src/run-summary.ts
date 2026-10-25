@@ -12,6 +12,8 @@ export const version = pkg.version;
 
 export interface RunSummary {
   origin?: "dashboard";
+  patrol?: false | import("./patrol.ts").PatrolConfig;
+  patrols?: import("./patrol.ts").PatrolRecord[];
   parentRunId?: string;
   inputs?: import("./inbox.ts").InputMessage[];
   provider?: string;

@@ -22,6 +22,8 @@ export interface Task {
   /** How many of progress.checkpoints the lead has been shown. */
   shownCheckpoints?: number;
   shownUserInputs?: number;
+  shownPatrols?: Set<number>;
+  shownStop?: boolean;
   input: DelegateInput;
   status: TaskStatus;
   startedAt: number;
@@ -111,12 +113,43 @@ export function getTask(id: string): Task | undefined {
 }
 
 export function runningProgress(task: Task): string {
-  if (task.progress?.suspicion) return formatSuspicion(task);
+  if (wakeSuspicion(task)) return formatSuspicion(task);
   const p = task.progress;
   const minutes = ((Date.now() - (p?.lastEventAt ?? task.startedAt)) / 60000).toFixed(1);
   const command = p?.inflight?.command ?? p?.checks?.find((c) => c.state === "running")?.command;
   const kept = p?.kept?.filter((k) => k.outcome === "running").map((k) => `\nkept running: cmd-${k.n} ${k.command.replace(/\s+/g, " ").slice(0, 120)}`).join("") ?? "";
   return `phase: ${p?.phase ?? "codex"}; last codex event: ${minutes}m ago${command ? `\ninflight: ${command.replace(/\s+/g, " ").slice(0, 200)}` : ""}${kept}`;
+}
+
+export function wakeSuspicion(task: Task): boolean {
+  const p = task.progress;
+  return !!p?.suspicion && (!p.patrol || p.suspicion.wakes >= 3);
+}
+
+export function newPatrolAlerts(task: Task) {
+  // A completed worker's quota/auth STOP must retain priority over auxiliary alerts.
+  if (!task.shownStop && (task.outcome?.result.errorKind === "quota" || task.outcome?.result.errorKind === "auth")) return [];
+  return (task.progress?.patrols ?? []).flatMap((p, i) =>
+    (p.error || p.verdict !== "healthy") && !task.shownPatrols?.has(i) ? [{ record: p, index: i }] : []);
+}
+
+export function formatPatrolAlerts(task: Task): string {
+  const alerts = newPatrolAlerts(task);
+  const running = task.status === "running";
+  task.shownPatrols ??= new Set();
+  return alerts.map(({ record: p, index }) => {
+    task.shownPatrols!.add(index);
+    const suspicion = p.suspicionAt && task.progress?.suspicion?.suspectedAt === p.suspicionAt;
+    if (suspicion) task.seenWake = p.suspicionAt;
+    return [
+      `status: ${p.error ? "patrol_failed" : "patrol_alert"} (${running ? "codex is still running; nothing stopped" : "raised during the run; codex has finished, final result below"})`,
+      `task_id: ${task.id}`,
+      p.error ? `error: ${p.error.kind}: ${p.error.message}` : `verdict: ${p.verdict}\nreason: ${p.reason}\nevidence: ${JSON.stringify(p.evidence)}${p.suggestion ? `\nsuggestion: ${p.suggestion}` : ""}`,
+      suspicion ? formatSuspicion(task) : "",
+      running ? "next: task_result(task_id, wait_s=86400) to keep waiting; task_steer to redirect; task_cancel to stop."
+        : "",
+    ].filter(Boolean).join("\n");
+  }).join("\n\n");
 }
 
 export function listTasks(): Task[] {
@@ -171,20 +204,21 @@ export async function waitTask(task: Task, waitSec: number, stallAfterSec?: numb
   task.control.lastObservedAt = Date.now();
   if (task.status !== "running") return;
   // A stage report the lead hasn't seen comes back before any waiting.
-  if (newCheckpoints(task).length || newUserInputs(task).length || await hasNotifyHandoffs()) return;
+  if (newCheckpoints(task).length || newUserInputs(task).length || newPatrolAlerts(task).length || await hasNotifyHandoffs()) return;
   const suspicion = task.controller.signal.aborted ? undefined : task.progress?.suspicion;
   // Deliver an unseen wake once before allowing a later wait to re-arm it.
-  if (suspicion && task.seenWake !== suspicion.suspectedAt && stallAfterSec === undefined) {
+  if (suspicion && wakeSuspicion(task) && task.seenWake !== suspicion.suspectedAt && stallAfterSec === undefined) {
     task.seenWake = suspicion.suspectedAt;
     return;
   }
-  if (stallAfterSec !== undefined || (suspicion && waitSec > 0)) task.control.rearm?.(stallAfterSec);
+  if (stallAfterSec !== undefined || (suspicion && waitSec > 0 && (!task.progress?.patrol || task.seenWake === suspicion.suspectedAt))) task.control.rearm?.(stallAfterSec);
   if (waitSec <= 0) return;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let notify!: () => void;
   const wake = new Promise<void>(resolve => {
-    notify = () => { if (!task.controller.signal.aborted && (task.progress?.suspicion || newCheckpoints(task).length || newUserInputs(task).length)) resolve(); };
+    notify = () => { if (!task.controller.signal.aborted && (wakeSuspicion(task) || newPatrolAlerts(task).length || newCheckpoints(task).length || newUserInputs(task).length)) resolve(); };
     task.listeners.add(notify);
+    notify();
   });
   let polling = false;
   const handoffTimer = setInterval(async () => {
@@ -197,7 +231,7 @@ export async function waitTask(task: Task, waitSec: number, stallAfterSec?: numb
   task.control.waiting = (task.control.waiting ?? 0) + 1;
   try {
     await Promise.race([task.promise, wake, handoffWake, new Promise<void>(r => { timer = setTimeout(r, waitSec * 1000); })]);
-    if (task.progress?.suspicion) task.seenWake = task.progress.suspicion.suspectedAt;
+    if (task.progress?.suspicion && wakeSuspicion(task)) task.seenWake = task.progress.suspicion.suspectedAt;
   } finally {
     task.control.waiting--;
     task.control.lastObservedAt = Date.now();

@@ -32,7 +32,7 @@ before(async () => {
   spawnSync("git", ["init", "-q"], { cwd: dir });
   server = spawn(process.execPath, [join(import.meta.dirname, "..", "src", "index.ts")], {
     cwd: dir,
-    env: { ...process.env, CODEX_BIN: join(import.meta.dirname, "fixtures", "fake-codex.mjs"), CODEX_DELEGATE_ENGINE: "exec", CODEX_DELEGATE_RUNS_DIR: join(dir, "runs"), CODEX_DELEGATE_POLICY: join(dir, "policy.json") },
+    env: { ...process.env, CODEX_DELEGATE_TEST_HEARTBEAT_MS: "25", CODEX_BIN: join(import.meta.dirname, "fixtures", "fake-codex.mjs"), CODEX_DELEGATE_ENGINE: "exec", CODEX_DELEGATE_RUNS_DIR: join(dir, "runs"), CODEX_DELEGATE_POLICY: join(dir, "policy.json") },
   });
   let buf = "";
   server.stdout.setEncoding("utf8").on("data", (d: string) => {
@@ -60,11 +60,11 @@ test("tools are listed and delegate defaults cwd to the server's cwd", async () 
   const list = await call("tools/list");
   const names = list.result.tools.map((t: any) => t.name);
   for (const n of ["delegate", "delegate_async", "task_result", "task_cancel", "task_inspect", "list_models"]) assert(names.includes(n), n);
-  // The lead must pick a cost tier from the policy (defaults: luna-xhigh, low, medium, high).
+  // The lead must pick a cost tier from the policy (defaults: light, low, medium, high).
   const schema = list.result.tools.find((t: any) => t.name === "delegate").inputSchema;
   assert(schema.required.includes("effort"));
   assert.deepEqual(schema.properties.sandbox.enum, ["read-only", "write"]);
-  assert.deepEqual(schema.properties.effort.enum, ["luna-xhigh", "low", "medium", "high"]);
+  assert.deepEqual(schema.properties.effort.enum, ["light", "low", "medium", "high"]);
   assert.match(list.result.tools.find((t: any) => t.name === "delegate").description, /Cost policy:/);
   const bad = await call("tools/call", { name: "delegate", arguments: { prompt: "x", effort: "xhigh" } });
   assert.equal(bad.result?.isError ?? !!bad.error, true, "xhigh rejected by the schema");
@@ -72,6 +72,19 @@ test("tools are listed and delegate defaults cwd to the server's cwd", async () 
   assert.equal(r.result.isError, false, r.result.content[0].text);
   assert.match(r.result.content[0].text, /codex status: done/);
   assert(existsSync(join(dir, "work.txt")), "ran in the server's cwd");
+});
+
+test("task_result accepts 86400 and sends progress heartbeats while waiting", async () => {
+  const started = await call("tools/call", { name: "delegate_async", arguments: { prompt: "heartbeat delay=400", effort: "low", patrol: false } });
+  const id = /started (task_\w+)/.exec(started.result.content[0].text)![1];
+  const seen = notifications.length;
+  const response = await call("tools/call", { name: "task_result", arguments: { task_id: id, wait_s: 86400 }, _meta: { progressToken: 0 } });
+  assert.equal(response.result.isError, false, JSON.stringify(response));
+  assert.match(response.result.content[0].text, /codex status: done/);
+  assert(notifications.slice(seen).includes("notifications/progress"));
+  const done = notifications.filter(n => n === "notifications/progress").length;
+  await new Promise(r => setTimeout(r, 75));
+  assert.equal(notifications.filter(n => n === "notifications/progress").length, done, "heartbeat cleaned up after result");
 });
 
 test("saving the policy file updates the tool definitions and notifies the client", async () => {
@@ -96,7 +109,7 @@ test("saving the policy file updates the tool definitions and notifies the clien
   } finally {
     // Later tests use the default tiers.
     rmSync(join(dir, "policy.json"), { force: true });
-    await waitFor(["luna-xhigh", "low", "medium", "high"]);
+    await waitFor(["light", "low", "medium", "high"]);
   }
 });
 

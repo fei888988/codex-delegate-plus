@@ -93,7 +93,7 @@ test("the human can switch model, effort and sandbox; a matching pick is recorde
   const response = await post("pick-parent", { text: "switch", model: "gpt-6-luna", effort: "xhigh", sandbox: "read-only" });
   assert.equal(response.status, 201, JSON.stringify(response));
   const meta = await until(async () => { const m = await readJson<RunSummary>(join(runs, response.body.runId, "meta.json")); return m?.state !== "running" && m; });
-  for (const [key, value] of Object.entries({ model: "gpt-6-luna", effort: "xhigh", tier: "luna-xhigh", sandbox: "read-only", sessionId: "pick-parent" })) assert.equal(meta[key], value, key);
+  for (const [key, value] of Object.entries({ model: "gpt-6-luna", effort: "xhigh", tier: "light", sandbox: "read-only", sessionId: "pick-parent" })) assert.equal(meta[key], value, key);
   await parent("pick-custom");
   const custom = await post("pick-custom", { text: "custom", effort: "low" });
   assert.equal(custom.status, 201, JSON.stringify(custom));

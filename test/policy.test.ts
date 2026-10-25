@@ -20,8 +20,8 @@ const err = (p: unknown) => {
 
 test("the default policy matches the saved policy template", () => {
   assert.equal(err(DEFAULT_POLICY), "ok");
-  assert.deepEqual(DEFAULT_POLICY.tiers.map((t) => t.id), ["luna-xhigh", "low", "medium", "high"]);
-  assert.deepEqual(findTier(DEFAULT_POLICY, "LUNA-XHIGH"), { id: "luna-xhigh", model: "gpt-6-luna", effort: "xhigh", use: DEFAULT_POLICY.tiers[0]!.use });
+  assert.deepEqual(DEFAULT_POLICY.tiers.map((t) => t.id), ["light", "low", "medium", "high"]);
+  assert.deepEqual(findTier(DEFAULT_POLICY, "LIGHT"), { id: "light", model: "gpt-6-luna", effort: "xhigh", use: DEFAULT_POLICY.tiers[0]!.use });
   assert.equal(findTier(DEFAULT_POLICY, "xhigh"), undefined);
 });
 
@@ -36,7 +36,7 @@ test("validation: missing keys fall back to defaults, bad tiers are rejected wit
   assert.match(err(tiers({ id: "a b", effort: "low", use: "u" })), /tier id/);
   assert.match(err(tiers({ id: "a", effort: "low", use: "" })), /'use'/);
   assert.match(err(tiers()), /1 to 12 tiers/);
-  assert.match(err({ ...DEFAULT_POLICY, models: ["gpt-6.1-sol"] }), /tier 'luna-xhigh': model 'gpt-6-luna' is not in the allowed models/);
+  assert.match(err({ ...DEFAULT_POLICY, models: ["gpt-6.1-sol"] }), /tier 'light': model 'gpt-6-luna' is not in the allowed models/);
   assert.equal(err({ ...DEFAULT_POLICY, models: ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-luna"] }), "ok");
   assert.equal(err({ ...tiers({ id: "new", model: "gpt-7-nova", effort: "high", use: "u" }), models: [] }), "ok", "models newer than the cache pass");
   assert.match(err([]), /JSON object/);
@@ -53,4 +53,16 @@ test("save/load round trip; a broken file falls back to the defaults with a reas
   const broken = loadPolicy(file);
   assert.equal(broken.policy, DEFAULT_POLICY);
   assert.match(broken.error!, /not valid JSON/);
+});
+
+test("patrol policy defaults, validation, custom tiers and unknown user fields survive", () => {
+  const file = join(dir, "patrol-policy.json");
+  const r = validatePolicy({ patrol: { tier: "low", every_s: 1200 }, customUserKey: { keep: true } }, models);
+  assert(r.ok); assert.equal(r.policy.patrol!.timeout_s, 300);
+  savePolicy(r.policy, file);
+  assert.deepEqual((loadPolicy(file).policy as any).customUserKey, { keep: true });
+  assert.equal(loadPolicy(file).policy.patrol!.tier, "low");
+  assert.match(err({ patrol: { every_s: 599 } }), /invalid patrol/);
+  assert.match(err({ patrol: { timeout_s: 0 } }), /invalid patrol/);
+  assert.match(err({ patrol: { tier: "missing" } }), /unknown patrol tier/);
 });

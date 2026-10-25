@@ -14,6 +14,9 @@ import { watchFile } from "node:fs";
 import { listSessions } from "./sessions.ts";
 import { delegateSync, formatUserInputs, newUserInputs, inspectTask, formatCheckpoints, formatSuspicion, getTask, newCheckpoints, runningProgress, listTasks, startTask, steerTask, storedTask, waitTask, type Task } from "./tasks.ts";
 import { installExitCleanup } from "./procs.ts";
+import { progressHeartbeat } from "./heartbeat.ts";
+import { patrolMinimum } from "./patrol.ts";
+import { formatPatrolAlerts, newPatrolAlerts, wakeSuspicion } from "./tasks.ts";
 import pkg from "../package.json" with { type: "json" };
 
 installExitCleanup();
@@ -44,7 +47,7 @@ function effortParam(policy: Policy) {
 }
 
 const CHECKPOINT_DESCRIPTION = "\n\nCheckpoints: for long tasks (roughly 10+ minutes, multi-phase work, or an investigation whose findings could change the plan) set checkpoints: true. Codex then writes a short stage report at points where direction may change (findings before implementing, scope surprises, before slow or hard-to-undo steps) and keeps working; the call returns early with `status: checkpoint` and the report. Read it and either keep waiting (task_result with wait_s) or redirect (task_steer). Skip checkpoints for short, well-specified tasks: each one costs you a turn.";
-const STALL_DESCRIPTION = " When the brief includes long-running commands (full test suites, training, backtests, big builds), set stall.long_commands for them. A status: suspected_stall result means Codex is still running: inspect cheaply, then task_result to keep waiting or task_cancel.";
+const STALL_DESCRIPTION = " Patrol is on by default: use task_result(wait_s: 86400) once for long waits. Healthy patrols do not wake you; patrol_alert or patrol_failed means the worker is still running. Watchdog suspicions are triaged first; the third consecutive suspicion always wakes you. Set patrol: false for direct suspicion wakes. When the brief includes long-running commands (full test suites, training, backtests, big builds), set stall.long_commands for them. A status: suspected_stall result means Codex is still running: inspect cheaply, then task_result to keep waiting or task_cancel.";
 const DELEGATE_DESCRIPTION =
   "Run a task with an OpenAI model through the Codex CLI and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass its implementation requirements as written and keep any commit step with you. Put test/build commands in `checks`. Codex leaves changes uncommitted: never ask it to commit in a brief or follow-up. If the user requests a commit, keep that step with you after acceptance and passing host checks; push only when authorized. When passing through a user spec, delegate its implementation requirements and retain its commit step yourself. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id. A result whose first line is `status: needs_decision` (or partial/blocked) is not finished: make the decisions yourself and resume the same session_id with them in this turn; ask the user only for choices that are really theirs.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.";
 const ASYNC_DESCRIPTION =
@@ -58,7 +61,7 @@ const delegateShape = {
     .describe(
       "Complete, self-contained task for the Codex model. It cannot see this conversation: include goal, relevant files/paths, constraints, and acceptance criteria.",
     ),
-  provider: z.string().optional().describe("Provider id from ~/.codex-delegate/providers.json, or system to force the system Codex configuration. Precedence: call > tier provider > defaultProvider > system. Explicit model wins; otherwise provider.model overrides the tier model."),
+  provider: z.string().optional().describe("Provider id from ~/.codex-delegate/providers.json, or system to force the system Codex configuration. Precedence: call > tier provider > defaultProvider > system. Explicit model wins, then the tier's model/effort; provider.model/effort only fill what the tier leaves unset."),
   model: z
     .string()
     .optional()
@@ -83,6 +86,7 @@ const delegateShape = {
     .optional()
     .describe(`Shorthand: false = read-only sandbox, for reading files, reviews and questions. Default: ${config.auto}. An explicit sandbox wins.`),
   title: z.string().optional().describe("Short label shown in task_list."),
+  patrol: z.union([z.literal(false), z.object({ every_s: z.number().min(patrolMinimum()).optional(), watch: z.string().optional() })]).optional().describe("Default ON: cheap read-only Codex patrol. every_s >= 600 (policy default 1800); watch describes expected duration, off-course signs and known silent commands. false disables."),
   stall: z.object({
     silent_s: z.number().int().min(0).optional(),
     command_s: z.number().int().min(0).optional(),
@@ -138,33 +142,26 @@ const delegateTool = server.registerTool(
     inputSchema: delegateShape,
   },
   async (input, extra) => {
-    const progressToken = extra._meta?.progressToken;
-    let tick = 0;
-    // Keep-alive progress so clients that reset timeouts on progress don't give up on long runs.
-    const heartbeat = progressToken
-      ? setInterval(() => {
-          tick++;
-          extra
-            .sendNotification({
-              method: "notifications/progress",
-              params: { progressToken, progress: tick, message: `codex running (${tick * 15}s)` },
-            })
-            .catch(() => {});
-        }, 15000)
-      : undefined;
+    const stopHeartbeat = progressHeartbeat(extra);
     try {
       const task = await delegateSync(input, extra.signal);
       const sessionText = (value: string, error = false) => text(value, error, task.progress?.sessionId ?? task.outcome?.result.sessionId);
       if (task.status === "running" && newUserInputs(task).length) return sessionText(formatUserInputs(task));
       if (task.status === "running" && newCheckpoints(task).length) return sessionText(formatCheckpoints(task));
-      if (task.status === "running" && task.progress?.suspicion) return sessionText(formatSuspicion(task));
+      if (task.status === "running" && newPatrolAlerts(task).length) return sessionText(formatPatrolAlerts(task));
+      if (task.status === "running" && wakeSuspicion(task)) return sessionText(formatSuspicion(task));
       if (task.status === "running") return sessionText(`${taskSummary(task)}\n${runningProgress(task)}\nstill running; call task_result to keep waiting.`);
-      if (task.outcome) return sessionText(formatOutcome(task.outcome), !task.outcome.result.ok);
+      if (task.outcome) {
+        // Alerts raised before the worker finished ride along with its result instead of costing an extra wake.
+        const alerts = newPatrolAlerts(task).length ? `${formatPatrolAlerts(task)}\n\n` : "";
+        task.shownStop = true;
+        return sessionText(alerts + formatOutcome(task.outcome), !task.outcome.result.ok);
+      }
       return sessionText(task.error ?? "delegate failed", true);
     } catch (e) {
       return text(String(e instanceof Error ? e.message : e), true, input.session_id);
     } finally {
-      if (heartbeat) clearInterval(heartbeat);
+      stopHeartbeat();
     }
   },
 );
@@ -174,7 +171,7 @@ function taskSummary(t: Task): string {
   const model = t.outcome?.model ?? t.input.model ?? "(default)";
   // A finished task whose report isn't "done" (needs_decision, partial, blocked) is waiting on the lead.
   const report = t.outcome?.report?.status;
-  const status = t.status === "done" && report && report !== "done" ? `${report} ← needs you` : t.status === "running" && t.progress?.suspicion ? "suspected_stall" : t.status;
+  const status = t.status === "done" && report && report !== "done" ? `${report} ← needs you` : t.status === "running" && wakeSuspicion(t) ? "suspected_stall" : t.status;
   return `${t.id}  ${status.padEnd(9)} ${secs}s  ${model}  ${t.input.title ?? t.input.prompt.slice(0, 60).replace(/\s+/g, " ")}`;
 }
 
@@ -195,32 +192,40 @@ server.registerTool(
   "task_result",
   {
     title: "Get a background Codex task's result",
-    description: "Return a background task result; wait_s waits for completion or returns early on suspected stall. stall_after_s sets the next window for the current item; otherwise each acknowledged wake doubles it.",
+    description: "Return a background task result; wait_s waits for completion or an alert. With patrol on (default), pass a large wait_s (e.g. 86400) once instead of repeating short waits. Progress heartbeats keep the wait alive; patrol_alert/patrol_failed leave the worker running. stall_after_s sets the next window for the current item; otherwise each acknowledged wake doubles it.",
     inputSchema: {
       task_id: z.string(),
       stall_after_s: z.number().int().min(0).optional().describe("Next suspicion window for the current item in seconds; 0 disables until new output."),
-      wait_s: z.number().int().min(0).max(3600).optional().describe("Seconds to wait for completion before returning (default 0)."),
+      wait_s: z.number().int().min(0).max(86400).optional().describe("Seconds to wait for completion before returning (default 0)."),
     },
     annotations: { readOnlyHint: true },
   },
-  async ({ task_id, wait_s, stall_after_s }) => {
-    const t = getTask(task_id);
-    const sessionText = (value: string, error = false) => text(value, error, t?.progress?.sessionId ?? t?.outcome?.result.sessionId ?? storedTask(task_id)?.sessionId);
-    if (!t) {
-      const s = storedTask(task_id);
-      if (!s) return sessionText(`unknown task_id '${task_id}'`, true);
-      if (s.status === "interrupted") return sessionText(`task: ${s.id} (interrupted)\nthe server that ran it exited before it finished; ${s.sessionId ? `continue it with delegate(session_id="${s.sessionId}")` : "re-run it"} (check git status first).`, true);
-      if (s.status === "user_interrupted") return sessionText(s.text ?? "status: user_interrupted");
-      return sessionText(`task: ${s.id} (${s.status})\n${s.text ?? ""}`, s.status !== "done");
-    }
-    await waitTask(t, wait_s ?? 0, stall_after_s);
-    if (t.status === "running" && newUserInputs(t).length) return sessionText(formatUserInputs(t));
-    if (t.status === "running" && newCheckpoints(t).length) return sessionText(formatCheckpoints(t));
-    if (t.status === "running" && t.progress?.suspicion) return sessionText(formatSuspicion(t));
-    if (t.status === "running") return sessionText(`${taskSummary(t)}\n${runningProgress(t)}\nstill running — call again later or with a larger wait_s.`);
-    if (t.outcome?.result.userInterrupt) return sessionText(formatOutcome(t.outcome));
-    if (t.outcome) return sessionText(`task: ${t.id} (${t.status})\n${formatOutcome(t.outcome)}`, t.status !== "done");
-    return sessionText(`task: ${t.id} (${t.status})\nerror: ${t.error}`, true);
+  async ({ task_id, wait_s, stall_after_s }, extra) => {
+    const stopHeartbeat = progressHeartbeat(extra);
+    try {
+      const t = getTask(task_id);
+      const sessionText = (value: string, error = false) => text(value, error, t?.progress?.sessionId ?? t?.outcome?.result.sessionId ?? storedTask(task_id)?.sessionId);
+      if (!t) {
+        const s = storedTask(task_id);
+        if (!s) return sessionText(`unknown task_id '${task_id}'`, true);
+        if (s.status === "interrupted") return sessionText(`task: ${s.id} (interrupted)\nthe server that ran it exited before it finished; ${s.sessionId ? `continue it with delegate(session_id="${s.sessionId}")` : "re-run it"} (check git status first).`, true);
+        if (s.status === "user_interrupted") return sessionText(s.text ?? "status: user_interrupted");
+        return sessionText(`task: ${s.id} (${s.status})\n${s.text ?? ""}`, s.status !== "done");
+      }
+      await waitTask(t, wait_s ?? 0, stall_after_s);
+      if (t.status === "running" && newUserInputs(t).length) return sessionText(formatUserInputs(t));
+      if (t.status === "running" && newCheckpoints(t).length) return sessionText(formatCheckpoints(t));
+      if (t.status === "running" && newPatrolAlerts(t).length) return sessionText(formatPatrolAlerts(t));
+      if (t.status === "running" && wakeSuspicion(t)) return sessionText(formatSuspicion(t));
+      if (t.status === "running") return sessionText(`${taskSummary(t)}\n${runningProgress(t)}\nstill running — call again later or with a larger wait_s.`);
+      if (t.outcome?.result.userInterrupt) return sessionText(formatOutcome(t.outcome));
+      if (t.outcome) {
+        const alerts = newPatrolAlerts(t).length ? `${formatPatrolAlerts(t)}\n\n` : "";
+        t.shownStop = true;
+        return sessionText(`${alerts}task: ${t.id} (${t.status})\n${formatOutcome(t.outcome)}`, t.status !== "done");
+      }
+      return sessionText(`task: ${t.id} (${t.status})\nerror: ${t.error}`, true);
+    } finally { stopHeartbeat(); }
   },
 );
 

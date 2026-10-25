@@ -38,6 +38,15 @@ points where direction may change and keeps working; `delegate` / `task_result` 
 or `task_steer` (change direction). Don't re-investigate what the report states. Skip checkpoints for
 short, well-specified work: each one costs you a turn.
 
+Long waits and patrol: patrol is on by default. A cheap read-only Codex checks the running worker
+every 30 min (first check at 30 min, so short runs cost nothing) and wakes you only on
+`patrol_alert` (stalled / off_course / uncertain, with evidence) or `patrol_failed` (the patrol
+itself broke). So wait once with `task_result(task_id, wait_s: 86400)`, never in short repeated
+waits. For long runs, pass `patrol.watch` with what only you know: expected duration, what counts
+as off-course for this task (files or interfaces not to touch, steps not to skip), and commands
+that are normally silent for long. On an alert the worker is still running: judge the evidence,
+then keep waiting, `task_steer`, or `task_cancel`.
+
 If a result says codex is out of quota (or not logged in): stop. Don't finish the work yourself and
 don't sleep or poll for the reset; report what Codex finished, what is left, the reset time, and ask
 the user how to proceed.
@@ -59,7 +68,7 @@ opinion or recommendation as the answer.
 `effort` names a tier of the user's delegation policy. Each tier fixes a model and a reasoning
 effort. The tool description lists the tiers cheapest first, says when to use each, and carries
 the user's cost guidance. Those come from the dashboard and override this section where they
-differ. Defaults: `luna-xhigh` (gpt-6-luna#xhigh) → `low` (gpt-6.1-sol#low) →
+differ. Defaults: `light` (gpt-6-luna#xhigh) → `low` (gpt-6.1-sol#low) →
 `medium` (gpt-6.1-sol#medium) → `high` (gpt-6.1-sol#high).
 
 - Cost matters, and quality isn't up for trade. Take the cheapest tier that will get it right. When
@@ -67,7 +76,7 @@ differ. Defaults: `luna-xhigh` (gpt-6-luna#xhigh) → `low` (gpt-6.1-sol#low) �
   (security, money, concurrency, data migration, unclear root cause). There a failed attempt costs
   more than the difference.
 - Escalate on evidence: after a check FAIL or a wrong result, continue the **same `session_id`** one
-  tier up. Tiers pin their model, so escalating from `luna-xhigh` moves the session to gpt-6.1-sol.
+  tier up. Tiers pin their model, so escalating from `light` moves the session to gpt-6.1-sol.
 - Each call picks its own tier. A small follow-up fix to a `high` run can drop back down.
 - In your final report, give the tier you used and the reason in one phrase.
 

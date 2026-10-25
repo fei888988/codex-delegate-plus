@@ -1,6 +1,9 @@
 # Run watchdog and dashboard contract
 
-Version 0.7.0 uses soft Codex stall suspicions: they wake the lead and **never kill**.
+Version 0.15.0 adds default-on [Codex patrol](patrol.md) to triage soft stall
+suspicions before waking the lead. Healthy patrols keep the lead asleep; alerts,
+patrol failures and the third consecutive suspicion wake it. Soft suspicion and
+patrol never kill the worker. `patrol: false` restores direct suspicion wakes.
 
 | Variable | Default | Applies to |
 | --- | ---: | --- |
@@ -18,14 +21,19 @@ Call rules precede policy.json rules. The built-in policy matches
 `idle_timeout_s` remains compatible and sets both base windows; explicit stall fields win.
 Policy base windows fall back to the environment defaults. Host checks are unaffected.
 
-A sync `delegate` returns `status: suspected_stall (still running, not killed)` and a
+With patrol disabled (or at the third consecutive suspicion), a sync `delegate`
+returns `status: suspected_stall (still running, not killed)` and a
 `task_id`, session/run IDs, elapsed/idle time, command (up to 300 characters), threshold,
 matched rule and evidence. The same run continues in the background, including host
 checks, report parsing and diff counts. `task_result` returns that full normal outcome
 when it finishes. `task_cancel` on a converted editing run retains Stop-to-redirect pending
 session behavior in its cwd.
 
-`task_result(task_id, wait_s?, stall_after_s?)` returns early on suspicion. An unseen
+`task_result(task_id, wait_s?, stall_after_s?)` accepts waits up to 86400 seconds.
+With patrol enabled, pass `wait_s: 86400` once; 15-second MCP progress heartbeats
+(when a progress token is present) prevent Claude Code's inactivity abort.
+It returns early for `patrol_alert` / `patrol_failed`, existing notify inputs,
+handoffs and checkpoints, or a direct/backstop suspicion. An unseen
 wake is delivered once; a subsequent positive wait acknowledges it and doubles that
 item's next window from the time waiting resumes. `stall_after_s` instead sets the
 current item's next window (0 disables until new output). Polling without waiting does
@@ -37,7 +45,8 @@ task is killed with `exitKind: "stalled"`, retaining the existing resume hint.
 CPU no longer automatically extends Codex windows. At suspicion, best-effort evidence
 includes process-tree CPU delta over a short sample, descendant count, and the busiest
 descendant's PID, name, CPU delta in milliseconds, and RSS/working set in bytes.
-Sampling failure still wakes the lead. Windows uses Toolhelp plus .NET (no WMI/wmic);
+Sampling failure still produces suspicion (triaged by patrol when enabled).
+Windows uses Toolhelp plus .NET (no WMI/wmic);
 POSIX uses `ps`. Host-check CPU extension behavior remains unchanged.
 
 Live meta adds `suspicion` (suspectedAt, wakes, thresholdSec, matchedRule, evidence,

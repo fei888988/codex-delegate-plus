@@ -23,6 +23,7 @@ export interface Retention {
 }
 
 export interface Policy {
+  patrol?: { tier?: string; every_s: number; timeout_s: number };
   sandboxWrites: boolean;
   retention: Retention;
   stall?: StallPolicy;
@@ -37,6 +38,7 @@ export interface Policy {
 }
 
 export const DEFAULT_POLICY: Policy = {
+  patrol: { every_s: 1800, timeout_s: 300 },
   sandboxWrites: false,
   retention: { cmdLogMaxMB: 5, failedLogDays: 3, runDays: 30, totalMaxMB: 1024 },
   stall: { long_commands: [{ match: "unittest discover|pytest|npm (run )?test|node --test", idle_s: 1800 }] },
@@ -44,7 +46,7 @@ export const DEFAULT_POLICY: Policy = {
   "codexGuidance": "Cost (added by the delegating tool): work economically. Search before opening whole files and read only what you need, prefer a targeted test over re-running the full suite on every step, and stop once the acceptance criteria are met. Never skip the verification needed to be sure the change is correct. Keep the diff minimal and targeted: change only what the task needs and never rewrite a whole file or module when a local edit works. In your final report, list every existing behaviour you removed, disabled, narrowed or simplified (deleted branches, narrowed conditions or time windows, dropped arguments, flags or recovery paths), or state that there were none.",
   "tiers": [
     {
-      "id": "luna-xhigh",
+      "id": "light",
       "model": "gpt-6-luna",
       "effort": "xhigh",
       "use": "Mechanical, fully specified tasks with no meaningful ambiguity or design decisions: renaming, version bumps, applying a provided patch, straightforward lint fixes, or simple factual lookups. The solution should be directly executable without investigating alternatives."
@@ -87,6 +89,11 @@ const str = (v: unknown) => (typeof v === "string" ? v.trim() : undefined);
 export function validatePolicy(input: unknown, models: ModelInfo[] = listModels()): { ok: true; policy: Policy } | { ok: false; error: string } {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, error: "policy must be a JSON object" };
   const raw = { ...DEFAULT_POLICY, ...(input as Record<string, unknown>) };
+  const patrol = { ...DEFAULT_POLICY.patrol!, ...(raw.patrol as Policy["patrol"]) };
+  if (!raw.patrol || typeof raw.patrol !== "object" || Array.isArray(raw.patrol)
+    || !Number.isInteger(patrol.every_s) || patrol.every_s < 600
+    || !Number.isInteger(patrol.timeout_s) || patrol.timeout_s <= 0
+    || (patrol.tier !== undefined && typeof patrol.tier !== "string")) return { ok: false, error: "invalid patrol policy" };
   if (typeof raw.sandboxWrites !== "boolean") return { ok: false, error: "sandboxWrites must be boolean" };
   if (!raw.retention || typeof raw.retention !== "object" || Array.isArray(raw.retention)) return { ok: false, error: "invalid retention policy" };
   const retention = { ...DEFAULT_POLICY.retention, ...raw.retention };
@@ -131,7 +138,8 @@ export function validatePolicy(input: unknown, models: ModelInfo[] = listModels(
     }
     tiers.push({ id, ...(provider ? { provider } : {}), ...(model ? { model } : {}), effort, use });
   }
-  return { ok: true, policy: { sandboxWrites: raw.sandboxWrites, retention, guidance, codexGuidance, tiers, models: allowed, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
+  if (patrol.tier !== undefined && !tiers.some(t => t.id === patrol.tier)) return { ok: false, error: "unknown patrol tier" };
+  return { ok: true, policy: { ...raw, sandboxWrites: raw.sandboxWrites, retention, guidance, codexGuidance, tiers, models: allowed, patrol, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
 }
 
 /** Missing file → defaults. A broken file also falls back to the defaults, and says why. */
@@ -154,10 +162,20 @@ export function loadPolicy(file = config.policyFile): { policy: Policy; error?: 
   return r.ok ? { policy: r.policy } : { policy: DEFAULT_POLICY, error: `${file}: ${r.error}; using the default policy` };
 }
 
+/** Partial dashboard edits retain every other user setting, including extension fields. */
+export function mergePolicy(previous: unknown, patch: unknown): unknown {
+  const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+  if (!object(previous) || !object(patch)) return patch;
+  return Object.fromEntries(Object.entries({ ...previous, ...patch }).map(([key, value]) =>
+    [key, Object.hasOwn(patch, key) ? mergePolicy(previous[key], patch[key]) : value]));
+}
+
 export function savePolicy(policy: Policy, file = config.policyFile): void {
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(policy, null, 2)}\n`);
+  let previous: Record<string, unknown> = {};
+  try { previous = JSON.parse(readFileSync(file, "utf8")); } catch {}
+  writeFileSync(tmp, `${JSON.stringify(mergePolicy(previous, policy), null, 2)}\n`);
   renameSync(tmp, file);
 }
 

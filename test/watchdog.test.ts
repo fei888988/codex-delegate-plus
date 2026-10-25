@@ -75,7 +75,7 @@ test("fresh stdout resets suspicion and the backoff", async () => {
 test("sync hands off the same task and returns its full outcome after completion", async () => {
   mode("delayed");
   const command = `"${process.execPath}" -e "console.log('checked')"`;
-  const task = await delegateSync({ cwd: root, prompt: "x", sandbox: "read-only", stall: { command_s: 0.1 }, checks: [command] }, undefined, async () => ({ cpuDeltaMs: 100 }));
+  const task = await delegateSync({ cwd: root, prompt: "x", sandbox: "read-only", patrol: false, stall: { command_s: 0.1 }, checks: [command] }, undefined, async () => ({ cpuDeltaMs: 100 }));
   assert.equal(task.status, "running");
   assert.equal(getTask(task.id), task);
   assert(listTasks().includes(task));
@@ -90,7 +90,7 @@ test("sync hands off the same task and returns its full outcome after completion
 
 test("task_result wakes early, backoffs only on waiting, and accepts explicit next window", async () => {
   mode("command");
-  const task = startTask({ cwd: root, prompt: "x", sandbox: "read-only", stall: { command_s: 0.1 } }, true, async () => ({}));
+  const task = startTask({ cwd: root, prompt: "x", sandbox: "read-only", patrol: false, stall: { command_s: 0.1 } }, true, async () => ({}));
   try {
     const started = Date.now();
     await waitTask(task, 5);
@@ -117,7 +117,7 @@ test("hard idle kills only unobserved suspected background tasks", async () => {
   mode("command");
   const old = config.hardIdleTimeoutSec;
   config.hardIdleTimeoutSec = 0.25;
-  const task = startTask({ cwd: root, prompt: "x", sandbox: "read-only", stall: { command_s: 0.05 } }, true, async () => ({}));
+  const task = startTask({ cwd: root, prompt: "x", sandbox: "read-only", patrol: false, stall: { command_s: 0.05 } }, true, async () => ({}));
   try {
     await waitTask(task, 5);
     await new Promise(r => setTimeout(r, 150));
@@ -155,7 +155,7 @@ test("cancelling a converted editing run keeps Stop redirect pending semantics",
   mode("command");
   const cwd = join(root, "pending-work");
   mkdirSync(cwd);
-  const task = await delegateSync({ cwd, prompt: "x", stall: { silent_s: 3, command_s: 0.1 } }, undefined, async () => ({}));
+  const task = await delegateSync({ cwd, prompt: "x", patrol: false, stall: { silent_s: 3, command_s: 0.1 } }, undefined, async () => ({}));
   task.controller.abort();
   await task.promise;
   assert.equal(loadPending(cwd)?.sessionId, "watchdog-session");

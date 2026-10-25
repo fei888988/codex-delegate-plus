@@ -22,10 +22,10 @@ export function parsePorcelainZ(out: string): StatusEntry[] {
   return entries;
 }
 
-function git(cwd: string, args: string[]): Promise<{ status: number | null; stdout: string } | undefined> {
+function git(cwd: string, args: string[], signal?: AbortSignal): Promise<{ status: number | null; stdout: string } | undefined> {
   return new Promise((resolve) => {
     try {
-      const child = spawn("git", ["-c", "core.quotepath=off", ...args], { cwd, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+      const child = spawn("git", ["-c", "core.quotepath=off", ...args], { cwd, signal, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
       const chunks: Buffer[] = [];
       child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
       child.on("error", () => resolve(undefined));
@@ -34,6 +34,11 @@ function git(cwd: string, args: string[]): Promise<{ status: number | null; stdo
       resolve(undefined);
     }
   });
+}
+
+export async function workingDiffStat(cwd: string, signal?: AbortSignal): Promise<string> {
+  const result = await git(cwd, ["diff", "--stat", "HEAD"], signal);
+  return result?.status === 0 ? result.stdout.slice(-12000) : "(git diff unavailable)";
 }
 
 const MAX_COUNT_BYTES = 32 * 1024 * 1024;

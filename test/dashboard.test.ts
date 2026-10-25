@@ -223,6 +223,17 @@ test("policy API: GET returns the policy with defaults; PUT validates, saves, an
     assert.equal(toggled.body.policy.sandboxWrites, true);
     assert.deepEqual(toggled.body.policy.retention, { ...DEFAULT_POLICY.retention, cmdLogMaxMB: 2 });
     assert.equal((await send("GET")).body.policy.sandboxWrites, true);
+    const patrol = await send("PUT", JSON.stringify({ patrol: { every_s: 900 }, userExtension: { preserved: true } }), json);
+    assert.equal(patrol.status, 200);
+    assert.deepEqual(patrol.body.policy.patrol, { every_s: 900, timeout_s: 300 });
+    assert.equal(patrol.body.policy.sandboxWrites, true);
+    assert.equal(patrol.body.policy.retention.cmdLogMaxMB, 2);
+    const patrolUpdated = await send("PUT", JSON.stringify({ patrol: { timeout_s: 60 } }), json);
+    assert.equal(patrolUpdated.body.policy.patrol.every_s, 900);
+    assert.equal(patrolUpdated.body.policy.patrol.timeout_s, 60);
+    assert.deepEqual(patrolUpdated.body.policy.userExtension, { preserved: true });
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).userExtension, { preserved: true });
+    assert.equal((await send("PUT", JSON.stringify({ patrol: null }), json)).status, 400);
     assert.equal((await send("PUT", JSON.stringify({ sandboxWrites: 1 }), json)).status, 400);
     assert(first.body.efforts.includes("max"));
 

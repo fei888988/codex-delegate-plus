@@ -42,7 +42,7 @@ This fork (`codex-delegate-plus`) adds, on top of upstream:
   the new direction. `fresh: true` opts out. Records live in `<runs dir>/pending/`.
 - Live run observability: the dashboard shows a 14-day activity view, per-run Codex timelines,
   progress and health states (`active`, `quiet`, `stalled`, `orphaned`).
-- Codex idle thresholds wake the lead with `status: suspected_stall` and evidence; the run stays alive.
+- Default-on [Codex patrol](docs/patrol.md) triages idle suspicions; healthy checks do not wake the lead. Alerts and patrol failures wake it while the worker keeps running; the third consecutive suspicion always wakes. `patrol: false` restores direct `suspected_stall` wakes.
   Use `task_result` to continue waiting or `task_cancel` to stop. Host-check idle deadlines still kill.
 
 ## How it works
@@ -133,7 +133,7 @@ This writes machine-local project configuration rather than changing the tracked
 
 ### Regular Claude Desktop chat (not the Code tab)
 
-Prefer the Code tab for its project directory, permissions, and long tasks. In regular chat, set `CODEX_DELEGATE_CWD`, use `delegate_async`, then poll `task_result` with `wait_s` under a minute.
+Prefer the Code tab for its project directory, permissions, and long tasks. In regular chat, set `CODEX_DELEGATE_CWD`, use `delegate_async`, then call `task_result` once with a large `wait_s` (e.g. `86400`) while patrol is on. Both wait tools send 15-second progress heartbeats when the client supplies a progress token.
 
 Regular chat's `claude_desktop_config.json` and Claude Code's `~/.claude.json` are separate configurations; registration in the latter does not configure the former. Locate the actual file through the current app's developer settings, back it up, and merge the following `codex` entry into existing `mcpServers`, preserving other fields and servers. Configuration and log locations vary by installation channel or customized build; do not assume only `%APPDATA%\Claude`.
 
@@ -227,7 +227,7 @@ You can use exact slugs (`gpt-6-sol`) or loose names (`sol 6`, `sol6`, `gpt 6 lu
 - `gpt 6` matches Astra, Sol and Luna, so you get the candidates instead of a guess.
 - A slug the cache doesn't know yet (e.g. `gpt-7-nova`) is passed through as-is.
 - `effort` is a required `delegate` argument that names a **cost tier** of the delegation policy.
-  Each tier fixes a model and reasoning effort. The defaults, cheapest first, are `luna-xhigh`
+  Each tier fixes a model and reasoning effort. The defaults, cheapest first, are `light`
   (gpt-6-luna#xhigh), `low` (gpt-6.1-sol#low), `medium` (gpt-6.1-sol#medium) and
   `high` (gpt-6.1-sol#high). Claude picks the cheapest
   tier that will get the task right and goes up a tier on the same session after a failure. An
@@ -255,7 +255,7 @@ The dashboard accepts `PUT /api/policy` only from its own page on a loopback hos
 | `list_models` | Lists your account's Codex models and their reasoning efforts. Takes an optional `filter`. |
 | `delegate` | Runs a task and waits for it. Returns the report, `session_id`, token usage, per-file git changes and host check results. |
 | `delegate_async` | Same as `delegate`, but returns a `task_id` right away. Use it for long jobs and parallel fan-out. |
-| `task_result` / `task_list` / `task_cancel` | Collect results (with `wait_s`), list tasks, or stop a background task. |
+| `task_result` / `task_list` / `task_cancel` | Collect results (`wait_s` 0–86400; use one large wait with patrol), list tasks, or stop a background task. |
 | `list_sessions` | Lists recent Codex sessions for a directory, so you can find one to continue. |
 
 `delegate` and `delegate_async` take these arguments:

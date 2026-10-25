@@ -215,7 +215,7 @@ export function selectProvider(doc: Providers, call?: string, tier?: string): Pr
   if (!p) throw Error(`Unknown provider id '${id}'`);
   return p;
 }
-export const selectModel = (call: string | undefined, provider: Provider | undefined, tier: string | undefined, fallback?: string) => call ?? provider?.model ?? tier ?? fallback;
+export const selectModel = (call: string | undefined, provider: Provider | undefined, tier: string | undefined, fallback?: string) => call ?? tier ?? provider?.model ?? fallback;
 export const providerName = (p: Provider) => p.auth === "chatgpt" ? "openai" : `cdp_${p.id}`;
 export function providerArgs(p?: Provider): string[] {
   if (!p) return [];

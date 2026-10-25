@@ -1,5 +1,7 @@
 # claude-codex-delegate
 
+v0.15.0：默认开启低成本 Codex 巡检，健康时不唤醒 lead；`task_result` 支持最长 86400 秒等待及每 15 秒进度心跳。详见 [巡检与长等待](docs/patrol.md)。
+
 v0.11.0 支持每次委派选择模型供应商：`delegate` / `delegate_async` 新增 `provider` 参数，也支持从 cc-switch 导入官方 ChatGPT 登录账户。登录账户使用独立 Codex 主目录，可选 token 同步（导入时默认开启）；关闭同步后，refresh token 轮换可能使其他副本失效并退出登录。详见[配置与后端 API](docs/providers.md)。本次未修改仪表盘界面。
 
 [简体中文](README.md) | [English](README.en.md)
@@ -33,7 +35,7 @@ Claude ▸ 查看精简报告和主机测试结果，抽查差异并汇报
 - 取消、超时或进程退出时终止整个子进程树；同一目录一次只允许一个写入任务；异步结果会持久化到磁盘。
 - 停止后可重定向任务：停止委派并修改要求后，同一目录里的下一次 `delegate` 会在原 Codex 会话上继续，保留上下文和已有的部分改动。使用 `fresh: true` 可改为全新会话。记录保存在 `<runs dir>/pending/`。
 - 实时运行观测：仪表板显示近 14 天活动、Codex 运行时间线、进度和健康状态（`active`、`quiet`、`stalled`、`orphaned`）。
-- Codex 空闲期限只唤醒 Claude，返回 `status: suspected_stall` 和进程证据，任务继续运行；用 `task_result` 继续等或 `task_cancel` 停止。主机检查的空闲终止机制不变。
+- 默认开启 [Codex 巡检](docs/patrol.md)：健康巡检不唤醒 Claude；偏离、卡住、不确定或巡检失败会唤醒，worker 继续运行；同一执行项第三次连续疑似卡住必定唤醒。`patrol: false` 恢复直接 `suspected_stall` 唤醒，主机检查机制不变。
 
 ## 工作原理
 
@@ -123,7 +125,7 @@ claude mcp add --transport stdio --scope local codex -- "$codexDelegateNode" "$c
 
 ### Claude Desktop 普通聊天（非 Code 标签页）
 
-优先使用 Code 标签页：它有项目目录、权限管理，并且更适合长任务。普通聊天请设置 `CODEX_DELEGATE_CWD`，使用 `delegate_async`，再用 `task_result` 和小于一分钟的 `wait_s` 多次获取结果。
+优先使用 Code 标签页：它有项目目录、权限管理，并且更适合长任务。普通聊天请设置 `CODEX_DELEGATE_CWD`，使用 `delegate_async`，巡检开启时用 `task_result(wait_s: 86400)` 一次长等；两种等待工具在客户端提供 progress token 时每 15 秒发送心跳，避免 30 分钟静默中止。
 
 普通聊天的 `claude_desktop_config.json` 与 Claude Code 的 `~/.claude.json` 是不同配置；向后者注册不代表前者已加载。通过当前应用的开发者设置定位实际配置文件，备份后将以下 `codex` 条目合并到已有 `mcpServers`，保留其他字段和服务。不同安装渠道或定制版本的配置、日志位置可能不同，不要只假定 `%APPDATA%\Claude`。
 
@@ -216,7 +218,7 @@ powershell -ExecutionPolicy Bypass -File scripts\dashboard-service.ps1 restart
 - 不指定版本时会选择最新的模型系列：`sol` 会解析为 `gpt-6.1-sol`，而 `sol 6` 仍然指向 `gpt-6-sol`。
 - `gpt 6` 同时匹配 Astra、Sol 和 Luna，会返回候选项而不是擅自猜一个。
 - 模型缓存中还没有的标识（例如 `gpt-7-nova`）会原样传递给 Codex。
-- `delegate` 必须传入 `effort`，它指的是委派策略中的成本档位。每个档位都固定对应模型和推理强度。默认档位从低到高为 `luna-xhigh`（gpt-6-luna#xhigh）、`low`（gpt-6.1-sol#low）、`medium`（gpt-6.1-sol#medium）和 `high`（gpt-6.1-sol#high）。Claude 会优先选能完成任务的最低成本档位；失败后会在同一会话中提高档位。显式指定 `model` 会覆盖档位中的模型。普通推理强度（例如模型后缀 `#xhigh`）会被限制在 `CODEX_DELEGATE_EFFORTS` 允许的范围内。
+- `delegate` 必须传入 `effort`，它指的是委派策略中的成本档位。每个档位都固定对应模型和推理强度。默认档位从低到高为 `light`（gpt-6-luna#xhigh）、`low`（gpt-6.1-sol#low）、`medium`（gpt-6.1-sol#medium）和 `high`（gpt-6.1-sol#high）。Claude 会优先选能完成任务的最低成本档位；失败后会在同一会话中提高档位。显式指定 `model` 会覆盖档位中的模型。普通推理强度（例如模型后缀 `#xhigh`）会被限制在 `CODEX_DELEGATE_EFFORTS` 允许的范围内。
 
 ### 委派策略（仪表板 → 调度策略）
 
@@ -235,7 +237,7 @@ powershell -ExecutionPolicy Bypass -File scripts\dashboard-service.ps1 restart
 | `list_models` | 列出账号可用的 Codex 模型和推理强度；可选传入 `filter`。 |
 | `delegate` | 执行任务并等待完成。返回报告、`session_id`、token 用量、各文件 Git 改动和主机检查结果。 |
 | `delegate_async` | 与 `delegate` 相同，但会立即返回 `task_id`。适合长任务和并行委派。 |
-| `task_result` / `task_list` / `task_cancel` | 获取任务结果（可传 `wait_s`）、列出任务或停止后台任务（先发 `turn/interrupt`，会话可继续）。 |
+| `task_result` / `task_list` / `task_cancel` | 获取任务结果（`wait_s` 0–86400 秒；巡检开启时一次长等）、列出任务或停止后台任务（先发 `turn/interrupt`，会话可继续）。 |
 | `task_steer` | 给运行中的任务追加指令（App Server 的 `turn/steer`）。默认 Codex 在下一步读取，保留上下文和已做的改动。`now: true` 立刻打断 Codex 的思考让它读指令，但它通过启动器跑的长命令**继续运行**；插话里说明要不要停、先查什么。Codex 必须对这条命令负责（等它跑完或停掉），结束时还在跑的会被提醒两次，仍不处理则由服务器停掉并在结果里标为"被遗忘"。`kill: true` 连长命令一起停。要整个停掉用 `task_cancel`。 |
 
 长命令启动器：服务器给每次运行放一个 `longrun.mjs`，并要求 Codex 用它跑超过约 1 分钟的命令（`node longrun.mjs <runDir> run <n> -- 程序 参数…`）。它和直接运行一样阻塞并输出，另外把输出写到 `cmd-<n>.log`、末尾写 `EXIT=<退出码>`，并让命令脱离 Codex 的进程树，所以打断 Codex 不会连带杀掉它。`status` / `wait` / `stop <n>` 用于查看、重新等待、停止。运行结束时没人处理的长命令一律由服务器停止并报告。

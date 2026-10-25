@@ -146,19 +146,34 @@ test("an effort above the allowed range (e.g. a '#xhigh' suffix) is clamped to h
 });
 
 test("a policy tier sets model and effort, beats a plain effort clamp, and adds the codex guidance", async () => {
-  const o = await delegate({ cwd: repo, prompt: "add a flag", effort: "luna-xhigh", fresh: true });
-  assert.equal(o.tier, "luna-xhigh");
+  const o = await delegate({ cwd: repo, prompt: "add a flag", effort: "light", fresh: true });
+  assert.equal(o.tier, "light");
   assert.equal(o.model, "gpt-6-luna");
   assert.equal(o.effort, "xhigh", "tier efforts are not clamped to low..high");
   assert.deepEqual(argvOf().slice(argvOf().indexOf("-m"), argvOf().indexOf("-m") + 2), ["-m", "gpt-6-luna"]);
   assert(argvOf().includes('model_reasoning_effort="xhigh"'));
-  assert.match(formatOutcome(o), /^model: gpt-6-luna#xhigh \(tier luna-xhigh\)/m);
+  assert.match(formatOutcome(o), /^model: gpt-6-luna#xhigh \(tier light\)/m);
   assert.match(promptOf(), /Working agreement[\s\S]*Cost \(added by the delegating tool\): work economically/);
   // Escalating a follow-up to the next tier moves the session from luna to sol.
   const up = await delegate({ cwd: repo, prompt: "still failing", effort: "high", session_id: o.result.sessionId });
   assert.equal(up.tier, "high");
   assert.equal(up.effort, "high");
   assert.equal(up.model, "gpt-6.1-sol");
+});
+
+test("a tier's model and effort beat the default provider's; the provider only fills what the tier leaves unset", async () => {
+  const file = process.env.CODEX_DELEGATE_PROVIDERS!;
+  try {
+    writeFileSync(file, JSON.stringify({ defaultProvider: "relay", providers: [{ id: "relay", name: "relay", baseUrl: "https://relay.example.test/v1", model: "gpt-6.1-sol", effort: "high" }] }));
+    const cheap = await delegate({ cwd: repo, prompt: "x", effort: "light", fresh: true });
+    assert.equal(cheap.model, "gpt-6-luna");
+    assert.equal(cheap.effort, "xhigh");
+    // The default "high" tier names no model, so the provider's model fills it.
+    const unset = await delegate({ cwd: repo, prompt: "x", effort: "high", fresh: true });
+    assert.equal(unset.model, "gpt-6.1-sol");
+  } finally {
+    rmSync(file, { force: true });
+  }
 });
 
 test("the policy file is read per call: custom tiers, guidance and the model allowlist", async () => {
@@ -172,8 +187,8 @@ test("the policy file is read per call: custom tiers, guidance and the model all
     assert.match(promptOf(), /SPEND LITTLE\n\nLong commands \(added by the server\)/);
     await assert.rejects(delegate({ cwd: repo, prompt: "x", effort: "cheap", model: "gpt-6.1-sol", fresh: true }), /not allowed by the delegation policy/);
     writeFileSync(file, "{ broken");
-    const fallback = await delegate({ cwd: repo, prompt: "x", effort: "luna-xhigh", fresh: true });
-    assert.equal(fallback.tier, "luna-xhigh");
+    const fallback = await delegate({ cwd: repo, prompt: "x", effort: "light", fresh: true });
+    assert.equal(fallback.tier, "light");
     assert.match(formatOutcome(fallback), /note: .*not valid JSON.*using the default policy/);
   } finally {
     rmSync(file, { force: true });

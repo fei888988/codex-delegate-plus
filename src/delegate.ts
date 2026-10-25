@@ -20,6 +20,7 @@ import { installLauncher, reapLongruns, untrackRunDir, refresh, trackRunDir, typ
 import { clearPending, continuationPreamble, loadPending, savePending, type PendingRun } from "./pending.ts";
 import { parseReport, READ_CONTRACT, renderReport, REPORT_SCHEMA, WRITE_CONTRACT, type Report } from "./report.ts";
 import { version, type RunSummary } from "./run-summary.ts";
+import { PatrolMonitor, patrolConfig, type PatrolInput } from "./patrol.ts";
 
 export interface DelegateContext {
   origin: "dashboard"; parentRunId: string; runsDir: string;
@@ -27,6 +28,7 @@ export interface DelegateContext {
 }
 
 export interface DelegateInput {
+  patrol?: false | PatrolInput;
   prompt: string;
   provider?: string;
   model?: string;
@@ -54,6 +56,7 @@ export interface DelegateInput {
 }
 
 export interface DelegateOutcome {
+  patrols?: RunSummary["patrols"];
   model?: string;
   effort?: string;
   /** Policy tier the effort came from. */
@@ -132,11 +135,12 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
   const provider = resumedProvider ?? ((input.provider ?? tier?.provider) === "system" ? undefined : selectProvider(doc, input.provider, tier?.provider));
   const query = selectModel(input.model, provider, tier?.model, input.session_id ? undefined : auto ? config.defaultModel : config.readModel);
   let model: string | undefined;
-  let effort = (tier ? undefined : input.effort) ?? provider?.effort ?? tier?.effort ?? (readOnly ? config.readEffort : config.writeEffort);
+  // Policy first: a tier's own effort wins; the provider's value is only a default for what the tier leaves unset.
+  let effort = (tier ? undefined : input.effort) ?? tier?.effort ?? provider?.effort ?? (readOnly ? config.readEffort : config.writeEffort);
   if (query) {
     const r = resolveModelOrThrow(query);
     model = r.model;
-    if (r.effort && !input.effort && !provider?.effort) effort = r.effort;
+    if (r.effort && !input.effort && !tier?.effort && !provider?.effort) effort = r.effort;
     if (!r.known) notes.push(`'${r.model}' is not in codex's model cache; passed through as-is`);
   }
   if (!context && model && policy.models.length && !policy.models.includes(model)) {
@@ -209,6 +213,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
     commandIdleTimeoutSec: input.stall?.command_s ?? config.commandIdleTimeoutSec,
     checkIdleTimeoutSec: config.checkIdleTimeoutSec,
     stallPolicy: input.stall,
+    patrol: patrolConfig(input.patrol),
   };
   let lastWrite = 0;
   let lastSnapshot = "";
@@ -230,6 +235,10 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
     if (Date.now() - lastWrite >= 2000) writeMeta();
     else pendingWrite ??= setTimeout(writeMeta, 2000 - (Date.now() - lastWrite));
   };
+  const patrol = new PatrolMonitor(meta, runDir, () => { progress(); writeMeta(); }, () => stallControl?.rearm?.());
+  const stopPatrol = () => { void patrol.stop(); };
+  signal?.addEventListener("abort", stopPatrol, { once: true });
+  if (signal?.aborted) stopPatrol();
   writeMeta();
   if (r.context && input.session_id) {
     try {
@@ -340,6 +349,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
       addDirs: [...(runDir ? [runDir] : []), ...(input.add_dirs ?? []).map(dir => resolve(cwd, dir))],
       env: tempDir ? { TEMP: tempDir, TMP: tempDir } : undefined,
       onSpawn: (pid) => {
+        patrol.start();
         meta.codexPid = pid;
         progress();
         if (rec) savePending({ ...rec, codexPid: (rec.codexPid = pid) });
@@ -362,6 +372,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
           inflight: it && { type: it.type, command: it.command, startedAt: it.startedAt } });
         progress();
         if (info.suspicion || wasSuspected) writeMeta();
+        patrol.observe(info.suspicion);
       },
       stall: input.stall,
       stallControl,
@@ -383,6 +394,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
       logFile: runDir && join(runDir, "events.jsonl"),
       runDir,
     });
+    await patrol.stop();
     if (runDir && engine === "app-server") {
       // A final scan covers inputs submitted between the last timer tick and run failure/end.
       await stallControl?.live?.flushInbox?.();
@@ -462,7 +474,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
       notes: [...notes, ...result.warnings],
       error: result.error, toolCalls: result.toolCalls.length,
     });
-    return { model, effort, tier, fast, sandbox, resumed: !!input.session_id, cwd, notes, result, report, runDir, changes, checks, continued, checkpoints: meta.checkpoints };
+    return { model, effort, tier, fast, sandbox, resumed: !!input.session_id, cwd, notes, result, report, runDir, changes, checks, continued, checkpoints: meta.checkpoints, patrols: meta.patrols };
   } catch (error) {
     meta.state = signal?.aborted ? "interrupted" : "error";
     meta.error = error instanceof Error ? error.message : String(error);
@@ -470,6 +482,8 @@ It streams the output, blocks until the command ends and exits with its exit cod
     meta.errorKind = classifyError(meta.error);
     throw error;
   } finally {
+    await patrol.stop();
+    signal?.removeEventListener("abort", stopPatrol);
     clearInterval(heartbeat);
     clearInterval(checkpointTimer);
     clearInterval(sampler);
@@ -564,7 +578,8 @@ function quotaReset(r: RunResult): string | undefined {
 
 export function formatOutcome(o: DelegateOutcome): string {
   const r = o.result;
-  if (r.userInterrupt) return interruptText(r.userInterrupt, r.sessionId, r.inputs ?? [], r.interruptedJobs ?? [], o.runDir ?? "") + "\n" + renderInputs(r.inputs ?? []);
+  const patrolLine = o.patrols?.length ? `patrol: ${o.patrols.length} checks, ${o.patrols.filter(p => p.error || p.verdict !== "healthy").length} alerts` : "";
+  if (r.userInterrupt) return interruptText(r.userInterrupt, r.sessionId, r.inputs ?? [], r.interruptedJobs ?? [], o.runDir ?? "") + "\n" + renderInputs(r.inputs ?? []) + (patrolLine ? `\n${patrolLine}` : "");
   const model = o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`);
   const lines = [
     r.exitKind === "completed" ? "status: ok" : `status: error (${r.exitKind}${r.errorKind ? `/${r.errorKind}` : ""})`,
@@ -572,6 +587,7 @@ export function formatOutcome(o: DelegateOutcome): string {
     `session_id: ${r.sessionId ?? "(none)"}`,
     `duration: ${(r.durationMs / 1000).toFixed(0)}s, codex tokens in/cached/out: ${r.tokens.input}/${r.tokens.cachedInput}/${r.tokens.output}`,
   ];
+  if (patrolLine) lines.push(patrolLine);
   if (r.exitKind !== "completed") {
     const hint = r.errorKind === "quota"
       ? `codex is out of quota${quotaReset(r) ? ` until ${quotaReset(r)}` : ""}. STOP now: do not continue the delegated work yourself, do not sleep or poll for the reset. End your turn with what codex finished (git changes below), what is left, and ask the user whether to wait for the reset, have you take over the rest, or something else. Resume later with session_id.`

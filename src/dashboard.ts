@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { config, configuredModel, EFFORT_ORDER, SANDBOXES, type Sandbox } from "./config.ts";
 import { listModels } from "./models.ts";
 import { providersFile as defaultProvidersFile, loadProviders, saveProviders, validateProviders, maskedProviders, readCcswitch, importCcswitch, testProvider, syncTokens, removeProviderAuth, providerHome } from "./providers.ts";
-import { DEFAULT_POLICY, loadPolicy, savePolicy, validatePolicy } from "./policy.ts";
+import { DEFAULT_POLICY, loadPolicy, mergePolicy, savePolicy, validatePolicy } from "./policy.ts";
 import type { PendingRun } from "./pending.ts";
 import type { StoredTask } from "./tasks.ts";
 import { parseReport, READ_CONTRACT, WRITE_CONTRACT } from "./report.ts";
@@ -258,7 +258,8 @@ export function createDashboardServer(options: { runsDir?: string; policyFile?: 
           if (!sameOrigin(req)) { json(403, { error: "Forbidden" }); return; }
           let parsed: unknown;
           try { parsed = JSON.parse(await body(req)); } catch { json(400, { error: "Body must be a JSON policy of at most 64 KB" }); return; }
-          const r = validatePolicy(parsed);
+          const current = loadPolicy(policyFile).policy;
+          const r = validatePolicy(mergePolicy(current, parsed));
           if (!r.ok) { json(400, { error: r.error }); return; }
           savePolicy(r.policy, policyFile);
         }
