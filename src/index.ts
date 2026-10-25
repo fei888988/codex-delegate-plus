@@ -12,7 +12,7 @@ import { listModels } from "./models.ts";
 import { loadPolicy, tierLabel, type Policy } from "./policy.ts";
 import { watchFile } from "node:fs";
 import { listSessions } from "./sessions.ts";
-import { delegateSync, formatUserInputs, newUserInputs, inspectTask, formatCheckpoints, formatSuspicion, getTask, newCheckpoints, runningProgress, listTasks, startTask, steerTask, storedTask, waitTask, type Task } from "./tasks.ts";
+import { appendDeferredCheckpoints, delegateSync, formatUserInputs, newUserInputs, inspectTask, formatCheckpoints, formatSuspicion, getTask, newCheckpoints, runningProgress, listTasks, startTask, steerTask, storedTask, waitTask, type Task } from "./tasks.ts";
 import { installExitCleanup } from "./procs.ts";
 import { progressHeartbeat } from "./heartbeat.ts";
 import { patrolMinimum } from "./patrol.ts";
@@ -46,7 +46,7 @@ function effortParam(policy: Policy) {
   );
 }
 
-const CHECKPOINT_DESCRIPTION = "\n\nCheckpoints: for long tasks (roughly 10+ minutes, multi-phase work, or an investigation whose findings could change the plan) set checkpoints: true. Codex then writes a short stage report at points where direction may change (findings before implementing, scope surprises, before slow or hard-to-undo steps) and keeps working; the call returns early with `status: checkpoint` and the report. Read it and either keep waiting (task_result with wait_s) or redirect (task_steer). Skip checkpoints for short, well-specified tasks: each one costs you a turn.";
+const CHECKPOINT_DESCRIPTION = "\n\nCheckpoints: for long tasks (roughly 10+ minutes, multi-phase work, or an investigation whose findings could change the plan) set checkpoints: true. Codex then writes a short stage report at points where direction may change (findings before implementing, scope surprises, before slow or hard-to-undo steps) and keeps working; only reports marked Needs lead: yes return early with `status: checkpoint`; progress reports accompany the next result. Read it and either keep waiting (task_result with wait_s) or redirect (task_steer). Skip checkpoints for short, well-specified tasks: decision reports cost a turn.";
 const STALL_DESCRIPTION = " Patrol is on by default: use task_result(wait_s: 86400) once for long waits. Healthy patrols do not wake you; patrol_alert or patrol_failed means the worker is still running. Watchdog suspicions are triaged first; the third consecutive suspicion always wakes you. Set patrol: false for direct suspicion wakes. When the brief includes long-running commands (full test suites, training, backtests, big builds), set stall.long_commands for them. A status: suspected_stall result means Codex is still running: inspect cheaply, then task_result to keep waiting or task_cancel.";
 const DELEGATE_DESCRIPTION =
   "Run a task with an OpenAI model through the Codex CLI and wait for it to finish. The model works in `cwd` with Codex's own tools (shell, apply_patch), so it investigates, implements and tests on its own. Returns a compact report (status, summary, verification, questions), session_id (for follow-ups), per-file git line counts and, if `checks` were given, host-run PASS/FAIL. The full event log stays on disk. For long tasks or running several in parallel, use delegate_async.\n\nYou are the lead; your tokens are the expensive ones. Delegate early: don't read the codebase first to plan steps, Codex does that. Brief = goal, constraints, acceptance (what, not how); if the user already wrote a spec, pass its implementation requirements as written and keep any commit step with you. Put test/build commands in `checks`. Codex leaves changes uncommitted: never ask it to commit in a brief or follow-up. If the user requests a commit, keep that step with you after acceptance and passing host checks; push only when authorized. When passing through a user spec, delegate its implementation requirements and retain its commit step yourself. Afterwards, treat PASS checks as evidence and spot-check only the diffs where design or risk matters; send problems back with session_id. A result whose first line is `status: needs_decision` (or partial/blocked) is not finished: make the decisions yourself and resume the same session_id with them in this turn; ask the user only for choices that are really theirs.\n\nIf the user stopped a delegate call (no result came back) and then changed or added requirements, just call delegate again in the same cwd with the new direction: the server continues the interrupted Codex session automatically, with its context and partial edits, and tells Codex the new message wins. Don't inspect the working tree first or restate the old brief; state what changed plus anything Codex needs to know. Pass fresh: true only to abandon the interrupted work.";
@@ -111,7 +111,7 @@ const delegateShape = {
   checkpoints: z
     .boolean()
     .optional()
-    .describe("Ask Codex for stage reports at direction-changing points; each new report returns this call early (status: checkpoint) while Codex keeps working. For long or open-ended tasks."),
+    .describe("Ask Codex for stage reports at direction-changing points; only reports marked Needs lead: yes return this call early (status: checkpoint) while Codex keeps working. For long or open-ended tasks."),
 };
 
 server.registerTool(
@@ -145,7 +145,7 @@ const delegateTool = server.registerTool(
     const stopHeartbeat = progressHeartbeat(extra);
     try {
       const task = await delegateSync(input, extra.signal);
-      const sessionText = (value: string, error = false) => text(value, error, task.progress?.sessionId ?? task.outcome?.result.sessionId);
+      const sessionText = (value: string, error = false) => text(appendDeferredCheckpoints(task, value), error, task.progress?.sessionId ?? task.outcome?.result.sessionId);
       if (task.status === "running" && newUserInputs(task).length) return sessionText(formatUserInputs(task));
       if (task.status === "running" && newCheckpoints(task).length) return sessionText(formatCheckpoints(task));
       if (task.status === "running" && newPatrolAlerts(task).length) return sessionText(formatPatrolAlerts(task));
@@ -204,7 +204,7 @@ server.registerTool(
     const stopHeartbeat = progressHeartbeat(extra);
     try {
       const t = getTask(task_id);
-      const sessionText = (value: string, error = false) => text(value, error, t?.progress?.sessionId ?? t?.outcome?.result.sessionId ?? storedTask(task_id)?.sessionId);
+      const sessionText = (value: string, error = false) => text(t ? appendDeferredCheckpoints(t, value) : value, error, t?.progress?.sessionId ?? t?.outcome?.result.sessionId ?? storedTask(task_id)?.sessionId);
       if (!t) {
         const s = storedTask(task_id);
         if (!s) return sessionText(`unknown task_id '${task_id}'`, true);

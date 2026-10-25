@@ -13,7 +13,7 @@ process.env.CODEX_DELEGATE_RUNS_DIR = runs;
 process.env.CODEX_DELEGATE_POLICY = join(runs, "policy.json");
 process.env.CODEX_DELEGATE_CHECKPOINT_POLL_MS = "200";
 const { delegate, formatOutcome } = await import("../src/delegate.ts");
-const { delegateSync, formatCheckpoints, newCheckpoints, startTask, steerTask, waitTask } = await import("../src/tasks.ts");
+const { appendDeferredCheckpoints, delegateSync, formatCheckpoints, newCheckpoints, startTask, steerTask, waitTask } = await import("../src/tasks.ts");
 const { execItem, kindFromInfo, threadConfig } = await import("../src/appserver.ts");
 
 let repo: string;
@@ -223,4 +223,50 @@ test("translation helpers", () => {
   assert.deepEqual(threadConfig({ prompt: "", sandbox: "workspace-write", addDirs: ["D:/r"], effort: "low" }),
     { model_reasoning_effort: "low", "sandbox_workspace_write.writable_roots": ["D:/r"] });
   assert.deepEqual(threadConfig({ prompt: "", sandbox: "danger-full-access", addDirs: ["D:/r"] }), {});
+});
+
+test("no checkpoints stay asleep, accompany the next result once, and remain in final outcome", async () => {
+  const task = startTask({ prompt: "steer-wait checkpoint-no", cwd: repo, fresh: true, structured: false, checkpoints: true, patrol: false });
+  try {
+    await commandRunning(task);
+    let woke = false;
+    const waiting = waitTask(task, 10).then(() => { woke = true; });
+    for (let i = 0; i < 100 && !task.progress?.checkpoints?.length; i++) await new Promise(r => setTimeout(r, 25));
+    assert.equal(task.progress?.checkpoints?.[0]?.needsLead, false);
+    assert.equal(woke, false);
+    assert.equal(newCheckpoints(task).length, 0);
+    task.progress!.patrols = [{ at: Date.now(), verdict: "uncertain", reason: "warning", evidence: ["warning"] }];
+    for (const notify of task.listeners) notify();
+    await waiting;
+    const text = appendDeferredCheckpoints(task, "status: patrol_alert");
+    assert.match(text, /1\. Found the real cause in parser\.ts .*checkpoint-1\.md/);
+    assert.doesNotMatch(text, /Found: x/);
+    assert.equal(appendDeferredCheckpoints(task, "next result"), "next result");
+    await steerTask(task, "finish"); await task.promise;
+    assert.match(formatOutcome(task.outcome!), /checkpoint-1\.md/);
+  } finally { task.controller.abort(); await task.promise; }
+});
+
+test("missing checkpoint declaration wakes sync delegate", async () => {
+  const task = await delegateSync({ prompt: "steer-wait checkpoint-missing", cwd: repo, fresh: true, structured: false, checkpoints: true, patrol: false });
+  try { assert.equal(task.status, "running"); assert.equal(newCheckpoints(task)[0]?.needsLead, true); }
+  finally { task.controller.abort(); await task.promise; }
+});
+
+test("deferred checkpoints attach on the final result path", async () => {
+  const task = await delegateSync({ prompt: "checkpoint-no", cwd: repo, fresh: true, structured: false, checkpoints: true, patrol: false });
+  assert.equal(task.status, "done");
+  const text = appendDeferredCheckpoints(task, formatOutcome(task.outcome!));
+  assert.match(text, /progress checkpoints:/);
+  assert.doesNotMatch(appendDeferredCheckpoints(task, "again"), /progress checkpoints:/);
+});
+
+test("checkpoint declaration parsing is case insensitive, bilingual and fails loud", async () => {
+  const { parseNeedsLead } = await import("../src/checkpoints.ts");
+  assert.equal(parseNeedsLead("Needs lead:yes"), true);
+  assert.equal(parseNeedsLead("NEEDS LEAD: NO"), false);
+  assert.equal(parseNeedsLead("需要调用方决定：是"), true);
+  assert.equal(parseNeedsLead("需要调用方决定：否"), false);
+  assert.equal(parseNeedsLead("progress only"), true);
+  assert.equal(parseNeedsLead("Needs lead: maybe"), true);
 });

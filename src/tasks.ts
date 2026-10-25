@@ -19,8 +19,8 @@ export interface Task {
   control: StallControl;
   listeners: Set<() => void>;
   seenWake?: number;
-  /** How many of progress.checkpoints the lead has been shown. */
-  shownCheckpoints?: number;
+  /** Checkpoint numbers the lead has been shown. */
+  shownCheckpoints?: Set<number>;
   shownUserInputs?: number;
   shownPatrols?: Set<number>;
   shownStop?: boolean;
@@ -175,15 +175,16 @@ export function formatSuspicion(task: Task): string {
   ].filter(Boolean).join("\n");
 }
 
-/** Checkpoints codex wrote that the lead has not been shown yet. */
+/** Unseen checkpoints requiring a lead decision (legacy missing flags fail loud). */
 export function newCheckpoints(task: Task) {
-  return (task.progress?.checkpoints ?? []).slice(task.shownCheckpoints ?? 0);
+  return (task.progress?.checkpoints ?? []).filter(c => c.needsLead !== false && !task.shownCheckpoints?.has(c.n));
 }
 
 /** The checkpoint wake: what codex reported, and what the lead can do while it keeps working. Marks them shown. */
 export function formatCheckpoints(task: Task): string {
   const fresh = newCheckpoints(task);
-  task.shownCheckpoints = task.progress?.checkpoints?.length ?? 0;
+  task.shownCheckpoints ??= new Set();
+  for (const c of fresh) task.shownCheckpoints.add(c.n);
   const p = task.progress!;
   const dir = join(config.runsDir, p.id);
   const steer = task.control.live
@@ -315,4 +316,13 @@ export function formatUserInputs(task: Task) {
   const fresh = newUserInputs(task);
   task.shownUserInputs = (task.progress?.inputs ?? []).filter(m => m.from === "user" && m.notify).length;
   return ["status: user_input (codex is still working; nothing was stopped)", `task_id: ${task.id}`, renderInputs(fresh), "next: tell the user what they changed, then task_result(task_id, wait_s) to keep waiting, or task_steer/task_cancel if your plan must change."].join("\n");
+}
+
+/** Attach deferred reports once to any result without waking a waiter. */
+export function appendDeferredCheckpoints(task: Task, text: string): string {
+  const fresh = (task.progress?.checkpoints ?? []).filter(c => c.needsLead === false && !task.shownCheckpoints?.has(c.n));
+  if (!fresh.length) return text;
+  task.shownCheckpoints ??= new Set();
+  for (const c of fresh) task.shownCheckpoints.add(c.n);
+  return text + "\n\nprogress checkpoints:\n" + fresh.map(c => `${c.n}. ${c.title} (${join(config.runsDir, task.progress!.id, `checkpoint-${c.n}.md`)})`).join("\n");
 }

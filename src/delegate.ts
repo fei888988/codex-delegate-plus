@@ -279,7 +279,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
     const found = scanCheckpoints(runDir, seenCheckpoints);
     if (!found.length) return;
     for (const c of found) seenCheckpoints.add(c.n);
-    meta.checkpoints = [...(meta.checkpoints ?? []), ...found.map(({ n, at, title }) => ({ n, at, title }))];
+    meta.checkpoints = [...(meta.checkpoints ?? []), ...found.map(({ n, at, title, needsLead }) => ({ n, at, title, needsLead }))];
     progress();
     writeMeta();
   };
@@ -362,7 +362,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
       onProgress: (info) => {
         const wasSuspected = !!meta.suspicion;
         const it = info.inflight;
-        if (info.suspicion) meta.lastEvidence = info.suspicion.evidence;
+        if (info.suspicion) meta.lastEvidence = { ...info.suspicion.evidence, at: info.suspicion.suspectedAt, command: info.suspicion.command, commandStartedAt: info.suspicion.commandStartedAt };
         if (it?.type === "command_execution") meta.lastInflight = { command: it.command, startedAt: it.startedAt };
         if (info.turnId) meta.turnId = info.turnId;
         if (info.steers) meta.steers = info.steers.map(({ at, text, consumedAt, redirect }) => ({ at, text, consumedAt, redirect }));
@@ -416,7 +416,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
       // A checkpoint written just before the end is still listed; the mtime guard no longer applies.
       for (const c of scanCheckpoints(runDir, seenCheckpoints, Infinity)) {
         seenCheckpoints.add(c.n);
-        meta.checkpoints = [...(meta.checkpoints ?? []), { n: c.n, at: c.at, title: c.title }];
+        meta.checkpoints = [...(meta.checkpoints ?? []), { n: c.n, at: c.at, title: c.title, needsLead: c.needsLead }];
       }
     }
     Object.assign(meta, { exitKind: result.exitKind, errorKind: result.errorKind, stall: result.stall,
@@ -610,7 +610,7 @@ export function formatOutcome(o: DelegateOutcome): string {
   if (r.inputs?.length) lines.push(renderInputs(r.inputs));
   if (r.kept?.length) lines.push(renderKept(r.kept));
   if (o.checkpoints?.length) {
-    lines.push(`checkpoints (stage reports in the run log): ${o.checkpoints.map((c) => `${c.n}. ${c.title}`).join("; ")}`);
+    lines.push(`checkpoints (stage reports in the run log): ${o.checkpoints.map((c) => `${c.n}. ${c.title} (${join(o.runDir ?? "", `checkpoint-${c.n}.md`)})`).join("; ")}`);
   }
   if (r.steers?.length) {
     const unread = r.steers.filter((s) => !s.consumedAt).length;

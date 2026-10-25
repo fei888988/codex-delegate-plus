@@ -21,7 +21,7 @@ export interface RunSummary {
   denials?: Denials;
   trend?: TrendPoint[];
   cmdLogTails?: Record<string, string>;
-  lastEvidence?: import("./watchdog.ts").CpuEvidence;
+  lastEvidence?: import("./watchdog.ts").CpuEvidence & { at?: number; command?: string; commandStartedAt?: number };
   lastInflight?: { command?: string; startedAt: number };
   id: string;
   startedAt: number;
@@ -35,7 +35,7 @@ export interface RunSummary {
   /** Long commands kept running across a redirect and their outcome. */
   kept?: import("./longruns.ts").KeptCommand[];
   /** Stage reports codex wrote (checkpoint-<n>.md in the run directory). */
-  checkpoints?: { n: number; at: number; title: string }[];
+  checkpoints?: { n: number; at: number; title: string; needsLead: boolean }[];
   pid?: number;
   codexPid?: number;
   lastEventAt?: number;

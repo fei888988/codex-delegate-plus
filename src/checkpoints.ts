@@ -3,11 +3,11 @@ import { join } from "node:path";
 
 /**
  * Stage reports for long runs. Codex writes `checkpoint-<n>.md` into the run directory at points
- * where the lead might change direction and keeps working; the server notices the file and wakes the
+ * where the lead might change direction and keeps working; decision reports wake the
  * lead (sync delegate returns early, task_result wait_s returns), who either lets it go on or steers.
  */
 
-export interface Checkpoint { n: number; file: string; at: number; title: string; text: string }
+export interface Checkpoint { n: number; file: string; at: number; title: string; text: string; needsLead: boolean }
 
 export const MAX_CHECKPOINT_CHARS = 2500;
 
@@ -18,13 +18,15 @@ Checkpoints (requested by the lead): this is a longer task, and the lead wants t
 Write one when:
 - investigation is done and you are about to implement: what you found, the approach you chose, the alternatives you rejected;
 - you find something that contradicts the brief or changes its scope (an assumption is wrong, the fix belongs elsewhere, much more work than expected);
-- before a large, slow or hard-to-undo step (a long run, a migration, a wide refactor, deleting data);
-- a major phase finishes and the next one depends on its result.
+- before a large, slow or hard-to-undo step, only if it matters for review;
+- a major phase finishes and the next one depends on its result, only if it matters for review.
 Usually 1–3 per task; never for routine progress. Format, under ~25 lines:
 # <one-line stage title>
+Needs lead: yes OR Needs lead: no
 Found: …
 Plan next: …
 Open choice / risk: … (or "none")
+Every checkpoint must contain a line Needs lead: yes or Needs lead: no. Use yes only when continuing without the lead's answer risks wasting work or choosing a product, scope or risk option that belongs to the lead (approve a feature-contract change or mark U3/U4 unfillable; release memory or defer U7). Pure progress (sample passed, starting full run; phase done, next phase) is no. Only yes wakes the lead; no reports accompany the next result compactly.
 If a choice is genuinely the lead's (product, scope, risk) and continuing would waste the work, write the checkpoint, then end the turn with status needs_decision instead of guessing.`;
 }
 
@@ -43,7 +45,7 @@ export function scanCheckpoints(runDir: string, seen: ReadonlySet<number> = new 
       if (!st.size || now - st.mtimeMs < 1000) continue;
       const text = readFileSync(file, "utf8").trim();
       const title = text.split(/\r?\n/).find((l) => l.trim())?.replace(/^#+\s*/, "").slice(0, 120) ?? `checkpoint ${n}`;
-      found.push({ n, file, at: st.mtimeMs, title, text });
+      found.push({ n, file, at: st.mtimeMs, title, text, needsLead: parseNeedsLead(text) });
     } catch {}
   }
   return found.sort((a, b) => a.n - b.n);
@@ -52,4 +54,10 @@ export function scanCheckpoints(runDir: string, seen: ReadonlySet<number> = new 
 export function renderCheckpoint(c: Checkpoint): string {
   const body = c.text.length > MAX_CHECKPOINT_CHARS ? `${c.text.slice(0, MAX_CHECKPOINT_CHARS)}\n…[truncated; full text in ${c.file}]` : c.text;
   return `--- checkpoint ${c.n} (${c.file}) ---\n${body}`;
+}
+
+/** Missing, malformed or conflicting declarations fail loud. */
+export function parseNeedsLead(text: string): boolean {
+  const fields = text.split(/\r?\n/).filter(l => /^\s*(?:Needs lead|需要调用方决定)\s*[:：]/i.test(l));
+  return fields.length !== 1 || !/^\s*(?:Needs lead|需要调用方决定)\s*[:：]\s*(?:no|否)\s*$/i.test(fields[0]!);
 }

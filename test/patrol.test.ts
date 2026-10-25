@@ -230,14 +230,19 @@ test("digest contains bounded brief, focus, evidence, events, command log, check
   const meta: RunSummary = { id: "digest", startedAt: Date.now() - 4000, state: "running", phase: "codex", cwd: dir,
     prompt: "x".repeat(10000), patrol: { every_s: 600, timeout_s: 300, tier: "light", watch: "silent command expected" },
     inflight: { type: "command_execution", command: "node longrun.mjs /run run 7 -- test", startedAt: Date.now() - 3000 },
-    lastEventAt: Date.now() - 2000, lastEvidence: { cpuDeltaMs: 10, ioWriteBytes: 20 },
-    checkpoints: [{ n: 1, at: 1, title: "findings" }], patrols: [{ at: 1, verdict: "healthy", reason: "previous", evidence: [] }] };
+    lastEventAt: Date.now() - 2000, lastEvidence: { cpuDeltaMs: 10, ioWriteBytes: 20, at: Date.now() - 700000, command: "old command" },
+    checkpoints: [{ n: 1, at: 1, title: "findings", needsLead: true }], patrols: [{ at: 1, verdict: "healthy", reason: "previous", evidence: [] }] };
   const digest = JSON.parse(await evidenceDigest(meta, evidenceDir, new AbortController().signal));
   assert.equal(digest.prompt.length, 8000); assert.equal(digest.watch, "silent command expected");
   assert.equal(digest.events.length, 20); assert.equal(digest.commandLog.tail, "command output tail");
+  assert.equal(digest.watchdog.stale, true); assert(digest.watchdog.age_s >= 700); assert.equal(digest.watchdog.command, "old command");
   assert.equal(digest.watchdog.cpuDeltaMs, 10); assert.equal(digest.checkpoints.length, 1);
   assert.equal(digest.priorPatrols[0].reason, "previous"); assert.match(digest.gitDiffStat, /unavailable/);
   assert(digest.elapsed_s >= 4); assert(digest.idle_s >= 2);
+  meta.lastEvidence = { at: Date.now() - 4000, command: "previous command" };
+  assert.equal(JSON.parse(await evidenceDigest(meta, evidenceDir, new AbortController().signal)).watchdog.stale, true);
+  meta.lastEvidence = { at: Date.now(), command: meta.inflight!.command };
+  assert.equal(JSON.parse(await evidenceDigest(meta, evidenceDir, new AbortController().signal)).watchdog.stale, false);
   delete process.env.CODEX_DELEGATE_TEST_FAST_PATROL;
   try { assert.equal((patrolConfig({ every_s: .01 }) as { every_s: number }).every_s, 600); }
   finally { process.env.CODEX_DELEGATE_TEST_FAST_PATROL = "1"; }
@@ -253,4 +258,12 @@ test("worker completion stops periodic patrol and default config is ON", async (
   await defaults.promise;
   assert(defaults.progress!.patrol); assert.equal(defaults.progress!.patrol.every_s, 1800);
   assert.doesNotMatch(formatOutcome(defaults.outcome!), /patrol:/);
+});
+
+test("patrol requires positive warning signs for uncertain", async () => {
+  const { PATROL_CHECKLIST } = await import("../src/patrol.ts");
+  assert.match(PATROL_CHECKLIST, /Uncertain means there are signs the worker may be stuck or off-course/);
+  assert.match(PATROL_CHECKLIST, /positive warning sign/);
+  assert.match(PATROL_CHECKLIST, /stale: true are not evidence/);
+  assert.doesNotMatch(PATROL_CHECKLIST, /In doubt use uncertain|missing evidence is itself/);
 });
