@@ -93,7 +93,7 @@ const delegateShape = {
     long_commands: z.array(z.object({ match: z.string(), idle_s: z.number().int().min(0) })).optional(),
   }).optional().describe("Soft suspicion windows in seconds (0 disables); first case-insensitive command regex wins, call rules before policy rules; invalid regex is ignored."),
   idle_timeout_s: z.number().int().min(0).optional().describe("Compatibility: set both soft suspicion windows; explicit stall fields win; 0 disables."),
-  timeout_s: z.number().int().positive().optional().describe(`Kill the run after this many seconds. Default: ${config.timeoutSec}.`),
+  timeout_s: z.number().int().positive().optional().describe(`Kill the run after this many seconds. Default with patrol: policy patrol.timeout_default_s (14400); without patrol: ${config.timeoutSec}. Explicit CODEX_DELEGATE_TIMEOUT overrides the patrol default; timeout_s always wins.`),
   checks: z
     .array(z.string())
     .optional()

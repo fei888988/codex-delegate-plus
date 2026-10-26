@@ -130,7 +130,7 @@ export function newPatrolAlerts(task: Task) {
   // A completed worker's quota/auth STOP must retain priority over auxiliary alerts.
   if (!task.shownStop && (task.outcome?.result.errorKind === "quota" || task.outcome?.result.errorKind === "auth")) return [];
   return (task.progress?.patrols ?? []).flatMap((p, i) =>
-    (p.error || p.verdict !== "healthy") && !task.shownPatrols?.has(i) ? [{ record: p, index: i }] : []);
+    (p.error || (p.verdict !== "healthy" && p.new !== false && !p.repeat)) && !task.shownPatrols?.has(i) ? [{ record: p, index: i }] : []);
 }
 
 export function formatPatrolAlerts(task: Task): string {
@@ -139,6 +139,7 @@ export function formatPatrolAlerts(task: Task): string {
   task.shownPatrols ??= new Set();
   return alerts.map(({ record: p, index }) => {
     task.shownPatrols!.add(index);
+    p.reported_to_lead = true;
     const suspicion = p.suspicionAt && task.progress?.suspicion?.suspectedAt === p.suspicionAt;
     if (suspicion) task.seenWake = p.suspicionAt;
     return [
@@ -321,6 +322,13 @@ export function formatUserInputs(task: Task) {
 /** Attach deferred reports once to any result without waking a waiter. */
 export function appendDeferredCheckpoints(task: Task, text: string): string {
   const fresh = (task.progress?.checkpoints ?? []).filter(c => c.needsLead === false && !task.shownCheckpoints?.has(c.n));
+  const repeats = (task.progress?.patrols ?? []).filter((p, i) => !p.error && p.repeat && !task.shownPatrols?.has(i));
+  task.shownPatrols ??= new Set();
+  for (const p of repeats) {
+    task.shownPatrols.add(task.progress!.patrols!.indexOf(p));
+    p.reported_to_lead = true;
+  }
+  if (repeats.length) text += "\n\n" + repeats.map(p => `patrol repeat: ${p.verdict} — ${p.reason.replace(/\s+/g, " ")}, ${new Date(p.at).toISOString()}`).join("\n");
   if (!fresh.length) return text;
   task.shownCheckpoints ??= new Set();
   for (const c of fresh) task.shownCheckpoints.add(c.n);

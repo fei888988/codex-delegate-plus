@@ -202,6 +202,10 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
   const runDir = newRunDir(r.context?.runsDir);
   if (r.context && !runDir) throw new Error("Cannot create dashboard run directory");
   const engine = r.context ? "app-server" : config.engine;
+  const patrolSettings = patrolConfig(input.patrol);
+  const timeoutSource = input.timeout_s !== undefined ? "timeout_s" : process.env.CODEX_DELEGATE_TIMEOUT !== undefined
+    ? "CODEX_DELEGATE_TIMEOUT" : patrolSettings ? "patrol.timeout_default_s" : "config.timeoutSec";
+  const timeoutSec = input.timeout_s ?? (timeoutSource === "patrol.timeout_default_s" ? loadPolicy().policy.patrol?.timeout_default_s ?? 14400 : config.timeoutSec);
   const meta: RunSummary = {
     id: runDir ? basename(runDir) : "", startedAt: Date.now(), state: "running",
     origin: r.context?.origin, parentRunId: r.context?.parentRunId,
@@ -213,7 +217,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
     commandIdleTimeoutSec: input.stall?.command_s ?? config.commandIdleTimeoutSec,
     checkIdleTimeoutSec: config.checkIdleTimeoutSec,
     stallPolicy: input.stall,
-    patrol: patrolConfig(input.patrol),
+    patrol: patrolSettings, timeoutSec, timeoutSource,
   };
   let lastWrite = 0;
   let lastSnapshot = "";
@@ -386,7 +390,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
       sessionId: input.session_id,
       fork: input.fork,
       sandbox,
-      timeoutMs: (input.timeout_s ?? config.timeoutSec) * 1000,
+      timeoutMs: timeoutSec * 1000,
       idleTimeoutMs: input.idle_timeout_s === undefined ? undefined : input.idle_timeout_s * 1000,
       signal,
       lastMessageFile: runDir && join(runDir, "last-message.txt"),
@@ -578,7 +582,7 @@ function quotaReset(r: RunResult): string | undefined {
 
 export function formatOutcome(o: DelegateOutcome): string {
   const r = o.result;
-  const patrolLine = o.patrols?.length ? `patrol: ${o.patrols.length} checks, ${o.patrols.filter(p => p.error || p.verdict !== "healthy").length} alerts` : "";
+  const patrolLine = o.patrols?.length ? `patrol: ${o.patrols.length} checks, ${o.patrols.filter(p => p.error || (p.verdict !== "healthy" && !p.repeat)).length} alerts${o.patrols.some(p => p.repeat) ? `, ${o.patrols.filter(p => p.repeat).length} repeats` : ""}` : "";
   if (r.userInterrupt) return interruptText(r.userInterrupt, r.sessionId, r.inputs ?? [], r.interruptedJobs ?? [], o.runDir ?? "") + "\n" + renderInputs(r.inputs ?? []) + (patrolLine ? `\n${patrolLine}` : "");
   const model = o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`);
   const lines = [

@@ -90,3 +90,12 @@ are unchanged.
 Tests can accelerate intervals only under Node's test runner with
 `CODEX_DELEGATE_TEST_FAST_PATROL=1` (minimum 0.01s), and heartbeats with
 `CODEX_DELEGATE_TEST_HEARTBEAT_MS`. These overrides do not apply to normal servers.
+
+
+### Repeat alerts and worker timeout (0.17.0)
+
+Non-healthy verdicts require a boolean `new`. Set it to true for a previously unreported problem, new worker evidence of recurrence, or clear worsening (for example crossing a longer stall threshold). Set it to false for a restatement. Missing or invalid values fail loud as true. `priorAlerts` contains verdict/reason/evidence and `reported_to_lead` delivery flags as context; prior patrol records are NOT worker evidence. Use worker events, logs, commands, diff or fresh watchdog samples instead.
+
+A non-healthy `new: false` is recorded with `repeat: true`, does not wake the lead, and is attached once to the next task result as `patrol repeat: <verdict> - <reason>, <time>`. Final summaries show `patrol: N checks, M alerts, R repeats` (repeats omitted when zero). Healthy checks never wake; patrol failures always wake. New evidence (`new: true`) still wakes, including for the same kind of problem. Watchdog triage and the third-suspicion backstop remain in effect.
+
+With patrol enabled, the worker default timeout is policy `patrol.timeout_default_s` (positive integer, default 14400 seconds). With `patrol: false`, the existing configured default remains 1800 seconds unless configured otherwise. Explicit `CODEX_DELEGATE_TIMEOUT` overrides the patrol default; explicit tool `timeout_s` overrides both. Meta records `timeoutSec` and `timeoutSource`. `patrol.timeout_s` remains the separate per-patrol-run limit (300 seconds by default). GET/PUT `/api/policy` exposes and merges the new field without replacing other policy settings.

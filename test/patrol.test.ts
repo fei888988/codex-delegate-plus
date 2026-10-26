@@ -237,7 +237,7 @@ test("digest contains bounded brief, focus, evidence, events, command log, check
   assert.equal(digest.events.length, 20); assert.equal(digest.commandLog.tail, "command output tail");
   assert.equal(digest.watchdog.stale, true); assert(digest.watchdog.age_s >= 700); assert.equal(digest.watchdog.command, "old command");
   assert.equal(digest.watchdog.cpuDeltaMs, 10); assert.equal(digest.checkpoints.length, 1);
-  assert.equal(digest.priorPatrols[0].reason, "previous"); assert.match(digest.gitDiffStat, /unavailable/);
+  assert.equal(digest.priorAlerts[0].reason, "previous"); assert.match(digest.gitDiffStat, /unavailable/);
   assert(digest.elapsed_s >= 4); assert(digest.idle_s >= 2);
   meta.lastEvidence = { at: Date.now() - 4000, command: "previous command" };
   assert.equal(JSON.parse(await evidenceDigest(meta, evidenceDir, new AbortController().signal)).watchdog.stale, true);
@@ -266,4 +266,89 @@ test("patrol requires positive warning signs for uncertain", async () => {
   assert.match(PATROL_CHECKLIST, /positive warning sign/);
   assert.match(PATROL_CHECKLIST, /stale: true are not evidence/);
   assert.doesNotMatch(PATROL_CHECKLIST, /In doubt use uncertain|missing evidence is itself/);
+});
+
+for (const freshness of [false, true, undefined, "invalid"]) {
+  test(`non-healthy freshness ${freshness}: wake or defer once`, async () => {
+    const s = setup(async () => result(JSON.stringify({ verdict: "off_course", reason: "same problem", evidence: ["worker command"], new: freshness })));
+    let woke = false;
+    const wait = waitTask(s.task, .08).then(() => { woke = true; });
+    await s.monitor.check();
+    assert.equal(newPatrolAlerts(s.task).length, freshness === false ? 0 : 1);
+    if (freshness === false) {
+      assert.equal(woke, false);
+      assert.equal(s.meta.patrols![0]!.repeat, true);
+      const { appendDeferredCheckpoints } = await import("../src/tasks.ts");
+      assert.match(appendDeferredCheckpoints(s.task, "result"), /patrol repeat: off_course.*same problem/);
+      assert.equal(appendDeferredCheckpoints(s.task, "result"), "result");
+      const outcome = { result: result("", { warnings: [], tokens: { input: 0, cachedInput: 0, output: 0, reasoning: 0 } }), notes: [], changes: [], checks: [], patrols: s.meta.patrols } as unknown as import("../src/delegate.ts").DelegateOutcome;
+      assert.match(formatOutcome(outcome), /patrol: 1 checks, 0 alerts, 1 repeats/);
+    } else {
+      await wait;
+      formatPatrolAlerts(s.task);
+    }
+    assert.equal(s.meta.patrols![0]!.reported_to_lead, true);
+    const digest = JSON.parse(await evidenceDigest(s.meta, undefined, new AbortController().signal));
+    assert.equal(digest.priorAlerts[0].reported_to_lead, true);
+    assert.equal(digest.priorPatrols, undefined);
+    await wait; await s.monitor.stop();
+  });
+}
+
+test("checklist treats prior alerts as context, never worker evidence", async () => {
+  const { PATROL_CHECKLIST } = await import("../src/patrol.ts");
+  assert.match(PATROL_CHECKLIST, /Prior patrol records.*context, NOT evidence/);
+  assert.match(PATROL_CHECKLIST, /NEW worker evidence/);
+});
+
+test("effective worker timeout defaults and precedence are recorded", async () => {
+  const { config } = await import("../src/config.ts");
+  const previousEnv = process.env.CODEX_DELEGATE_TIMEOUT;
+  const previousTimeout = config.timeoutSec;
+  delete process.env.CODEX_DELEGATE_TIMEOUT;
+  config.timeoutSec = 1800;
+  try {
+    for (const [input, seconds, source] of [
+      [{}, 14400, "patrol.timeout_default_s"],
+      [{ patrol: false }, 1800, "config.timeoutSec"],
+      [{ timeout_s: 123 }, 123, "timeout_s"],
+    ] as const) {
+      const task = startTask({ cwd: dir, prompt: "worker delay=1", sandbox: "read-only", ...input });
+      await task.promise;
+      assert.equal(task.progress!.timeoutSec, seconds);
+      assert.equal(task.progress!.timeoutSource, source);
+    }
+    process.env.CODEX_DELEGATE_TIMEOUT = "246"; config.timeoutSec = 246;
+    for (const explicit of [undefined, 123]) {
+      const task = startTask({ cwd: dir, prompt: "worker delay=1", sandbox: "read-only", timeout_s: explicit });
+      await task.promise;
+      assert.equal(task.progress!.timeoutSec, explicit ?? 246);
+      assert.equal(task.progress!.timeoutSource, explicit ? "timeout_s" : "CODEX_DELEGATE_TIMEOUT");
+    }
+  } finally {
+    config.timeoutSec = previousTimeout;
+    if (previousEnv === undefined) delete process.env.CODEX_DELEGATE_TIMEOUT;
+    else process.env.CODEX_DELEGATE_TIMEOUT = previousEnv;
+  }
+});
+
+test("patrol default timeout policy validates and merges independently of patrol-run timeout", async () => {
+  const { validatePolicy, mergePolicy, DEFAULT_POLICY } = await import("../src/policy.ts");
+  for (const timeout_default_s of [0, -1, 1.5, "14400", null]) {
+    assert.equal(validatePolicy({ patrol: { timeout_default_s } }, []).ok, false);
+  }
+  const validated = validatePolicy(mergePolicy(DEFAULT_POLICY, { patrol: { timeout_default_s: 7200 } }), []);
+  assert(validated.ok);
+  assert.equal(validated.policy.patrol!.timeout_default_s, 7200);
+  assert.equal(validated.policy.patrol!.timeout_s, 300);
+});
+
+test("repeat triage rearms watchdog without waking, preserving escalation", async () => {
+  const s = setup(async () => result(JSON.stringify({ verdict: "stalled", reason: "already reported", evidence: ["same worker command"], new: false })));
+  s.meta.suspicion = suspicion(1);
+  s.monitor.observe(s.meta.suspicion); await s.monitor.check();
+  assert.equal(newPatrolAlerts(s.task).length, 0);
+  assert.equal(s.rearmed(), 1);
+  s.meta.suspicion = suspicion(3); assert(wakeSuspicion(s.task));
+  await s.monitor.stop();
 });

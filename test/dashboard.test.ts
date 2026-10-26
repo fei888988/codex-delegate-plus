@@ -225,12 +225,14 @@ test("policy API: GET returns the policy with defaults; PUT validates, saves, an
     assert.equal((await send("GET")).body.policy.sandboxWrites, true);
     const patrol = await send("PUT", JSON.stringify({ patrol: { every_s: 900 }, userExtension: { preserved: true } }), json);
     assert.equal(patrol.status, 200);
-    assert.deepEqual(patrol.body.policy.patrol, { every_s: 900, timeout_s: 300 });
+    assert.deepEqual(patrol.body.policy.patrol, { every_s: 900, timeout_s: 300, timeout_default_s: 14400 });
     assert.equal(patrol.body.policy.sandboxWrites, true);
     assert.equal(patrol.body.policy.retention.cmdLogMaxMB, 2);
-    const patrolUpdated = await send("PUT", JSON.stringify({ patrol: { timeout_s: 60 } }), json);
+    const patrolUpdated = await send("PUT", JSON.stringify({ patrol: { timeout_s: 60, timeout_default_s: 7200 } }), json);
     assert.equal(patrolUpdated.body.policy.patrol.every_s, 900);
     assert.equal(patrolUpdated.body.policy.patrol.timeout_s, 60);
+    assert.equal(patrolUpdated.body.policy.patrol.timeout_default_s, 7200);
+    assert.equal((await send("GET")).body.policy.patrol.timeout_default_s, 7200);
     assert.deepEqual(patrolUpdated.body.policy.userExtension, { preserved: true });
     assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).userExtension, { preserved: true });
     assert.equal((await send("PUT", JSON.stringify({ patrol: null }), json)).status, 400);

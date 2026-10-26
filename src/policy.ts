@@ -23,7 +23,7 @@ export interface Retention {
 }
 
 export interface Policy {
-  patrol?: { tier?: string; every_s: number; timeout_s: number };
+  patrol?: { tier?: string; every_s: number; timeout_s: number; timeout_default_s?: number };
   sandboxWrites: boolean;
   retention: Retention;
   stall?: StallPolicy;
@@ -38,7 +38,7 @@ export interface Policy {
 }
 
 export const DEFAULT_POLICY: Policy = {
-  patrol: { every_s: 1800, timeout_s: 300 },
+  patrol: { every_s: 1800, timeout_s: 300, timeout_default_s: 14400 },
   sandboxWrites: false,
   retention: { cmdLogMaxMB: 5, failedLogDays: 3, runDays: 30, totalMaxMB: 1024 },
   stall: { long_commands: [{ match: "unittest discover|pytest|npm (run )?test|node --test", idle_s: 1800 }] },
@@ -92,6 +92,7 @@ export function validatePolicy(input: unknown, models: ModelInfo[] = listModels(
   const patrol = { ...DEFAULT_POLICY.patrol!, ...(raw.patrol as Policy["patrol"]) };
   if (!raw.patrol || typeof raw.patrol !== "object" || Array.isArray(raw.patrol)
     || !Number.isInteger(patrol.every_s) || patrol.every_s < 600
+    || !Number.isInteger(patrol.timeout_default_s) || patrol.timeout_default_s! <= 0
     || !Number.isInteger(patrol.timeout_s) || patrol.timeout_s <= 0
     || (patrol.tier !== undefined && typeof patrol.tier !== "string")) return { ok: false, error: "invalid patrol policy" };
   if (typeof raw.sandboxWrites !== "boolean") return { ok: false, error: "sandboxWrites must be boolean" };

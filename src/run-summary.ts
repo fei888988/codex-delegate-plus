@@ -50,6 +50,8 @@ export interface RunSummary {
   effectiveThresholdSec?: number;
   matchedRule?: string;
   stallPolicy?: StallPolicy;
+  timeoutSec?: number;
+  timeoutSource?: "timeout_s" | "CODEX_DELEGATE_TIMEOUT" | "patrol.timeout_default_s" | "config.timeoutSec";
   idleTimeoutSec?: number;
   commandIdleTimeoutSec?: number;
   checkIdleTimeoutSec?: number;
