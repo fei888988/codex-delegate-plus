@@ -26,6 +26,7 @@ export interface RunSummary {
   id: string;
   startedAt: number;
   endedAt?: number;
+  interruptedReason?: string;
   state: "running" | "ok" | "error" | "interrupted" | "user_interrupted" | "needs_decision" | "partial" | "blocked" | "cancelled";
   phase?: "codex" | "checks" | "done";
   engine?: import("./config.ts").Engine;

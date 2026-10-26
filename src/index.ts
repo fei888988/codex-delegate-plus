@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { sweepOrphanedRuns } from "./run-lifecycle.ts";
 import { consumeHandoffs } from "./handoffs.ts";
 import { watchProviders } from "./providers.ts";
 import { cleanupRuns } from "./observability.ts";
@@ -20,6 +21,7 @@ import { formatPatrolAlerts, newPatrolAlerts, wakeSuspicion } from "./tasks.ts";
 import pkg from "../package.json" with { type: "json" };
 
 installExitCleanup();
+void sweepOrphanedRuns(config.runsDir);
 const cleanup = () => {
   try { cleanupRuns(config.runsDir, loadPolicy().policy.retention); } catch (e) { console.error(`codex-delegate cleanup: ${e}`); }
 };

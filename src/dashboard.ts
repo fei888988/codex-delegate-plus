@@ -1,3 +1,4 @@
+import { sweepOrphanedRuns } from "./run-lifecycle.ts";
 import { continuationAvailability, dashboardContinuations, recoverDashboardContinuations, type ContinueSettings } from "./continuations.ts";
 import { installExitCleanup } from "./procs.ts";
 import { randomUUID } from "node:crypto";
@@ -316,6 +317,7 @@ export function createDashboardServer(options: { runsDir?: string; policyFile?: 
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   installExitCleanup(false);
+  await sweepOrphanedRuns(config.runsDir);
   const value = process.env.CODEX_DELEGATE_DASHBOARD_PORT ?? "4318";
   const port = Number(value);
   if (!/^\d+$/.test(value) || !Number.isInteger(port) || port < 0 || port > 65535) throw new Error("Invalid CODEX_DELEGATE_DASHBOARD_PORT");

@@ -263,3 +263,21 @@ with a live server/child PID or recent heartbeat are protected across server ins
 Ambiguous legacy running records without liveness fields are conservatively protected.
 Protected runs and non-run records may keep the directory above the cap. Pending
 resume and stored task records are not removed by run-directory cleanup.
+
+## Server exit recovery (v0.17.1)
+
+MCP and dashboard startup asynchronously sweep only run metadata. A running run is
+interrupted when its owner PID is dead (ESRCH; EPERM remains alive), or its heartbeat
+is over 10 minutes old, covering PID reuse. A fresh heartbeat always protects a run;
+the current process's runs and all terminal states are skipped. Missing ownership
+and heartbeat evidence is left alone. A snapshot is re-read immediately before an
+atomic temporary-file rename; concurrent metadata changes skip recovery.
+
+Graceful exit writes only this process's tracked, still-running metadata, without a
+directory walk. Recovery sets `state: "interrupted"`, `phase: "done"`, the existing
+`exitKind: "cancelled"`, and `interruptedReason: "owning server exited"`. `endedAt`
+is the last heartbeat, falling back to lastEventAt/startedAt for legacy records;
+duration is recomputed and inflight cleared. Dashboard health then uses the normal
+terminal-run `ok` label rather than orphaned. Stored-task interruption and its resume
+message are unchanged. Pending redirects, handoffs, inbox and kept jobs are untouched;
+recovery does not kill processes. Abrupt exits are repaired at the next startup.

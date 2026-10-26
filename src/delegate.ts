@@ -1,3 +1,4 @@
+import { HEARTBEAT_INTERVAL_MS, trackOwnedRun } from "./run-lifecycle.ts";
 import { appendHandoff } from "./handoffs.ts";
 import { readFile } from "node:fs/promises";
 import { finishInputs, interruptText, launcherJobs, messages, renderInputs } from "./inbox.ts";
@@ -244,6 +245,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
   signal?.addEventListener("abort", stopPatrol, { once: true });
   if (signal?.aborted) stopPatrol();
   writeMeta();
+  const untrackOwned = runDir ? trackOwnedRun(runDir, meta) : () => {};
   if (r.context && input.session_id) {
     try {
       await appendHandoff(r.context.runsDir, input.session_id, {
@@ -252,7 +254,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
         at: meta.startedAt, state: "started",
       });
     } catch (error) {
-      meta.state = "error"; meta.endedAt = Date.now(); writeMeta();
+      meta.state = "error"; meta.endedAt = Date.now(); writeMeta(); untrackOwned();
       throw error;
     }
   }
@@ -274,7 +276,7 @@ async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, 
     } catch {} finally { sampling = false; }
   }, 60000);
   sampler.unref();
-  const heartbeat = setInterval(() => { meta.heartbeatAt = Date.now(); progress(); }, 15000);
+  const heartbeat = setInterval(() => { meta.heartbeatAt = Date.now(); progress(); }, HEARTBEAT_INTERVAL_MS);
   heartbeat.unref();
   // New checkpoint files go into meta at once (progress() notifies waiting task_result calls).
   const seenCheckpoints = new Set<number>();
@@ -514,6 +516,7 @@ It streams the output, blocks until the command ends and exits with its exit cod
     } finally {
       try { onProgress?.({ ...meta }); } catch {}
       writeMeta();
+      untrackOwned();
     }
   }
 }
