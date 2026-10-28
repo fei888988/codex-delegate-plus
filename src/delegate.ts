@@ -165,7 +165,7 @@ export async function delegate(input: DelegateInput, signal?: AbortSignal, onPro
     activeWriters.set(lockKey, { signal, done });
   }
   try {
-    const run = { provider, cwd, sandbox, readOnly, model: context?.original.model ?? model, effort: context?.original.effort ?? effort, tier: context ? context.original.tier : tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, fast: context ? context.original.fast : fast, images, structured, notes, continued, context };
+    const run = { provider, cwd, sandbox, readOnly, model: context?.original.model ?? model, effort: context?.original.effort ?? effort, tier: context ? context.original.tier : tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, overload: policy.overload, fast: context ? context.original.fast : fast, images, structured, notes, continued, context };
     const stall: StallPolicy = {
       silent_s: input.stall?.silent_s ?? input.idle_timeout_s ?? policy.stall?.silent_s ?? config.idleTimeoutSec,
       command_s: input.stall?.command_s ?? input.idle_timeout_s ?? policy.stall?.command_s ?? config.commandIdleTimeoutSec,
@@ -191,6 +191,7 @@ interface Resolved {
   tier?: string;
   codexGuidance: string;
   retention: Retention;
+  overload: { backoff_s: number[]; max_total_retries: number };
   fast?: boolean;
   images?: string[];
   structured: boolean;
@@ -199,7 +200,7 @@ interface Resolved {
 }
 
 async function execute(input: DelegateInput, r: Resolved, signal?: AbortSignal, onProgress?: (info: RunSummary) => void, stallControl?: StallControl): Promise<DelegateOutcome> {
-  const { cwd, sandbox, readOnly, model, effort, tier, codexGuidance, fast, images, structured, notes, continued } = r;
+  const { cwd, sandbox, readOnly, model, effort, tier, codexGuidance, fast, images, structured, notes, continued, overload } = r;
   const runDir = newRunDir(r.context?.runsDir);
   if (r.context && !runDir) throw new Error("Cannot create dashboard run directory");
   const engine = r.context ? "app-server" : config.engine;
@@ -382,6 +383,14 @@ It streams the output, blocks until the command ends and exits with its exit cod
       },
       stall: input.stall,
       stallControl,
+      overload: { ...overload, onUpdate: ({ phase, ...state }) => {
+        const phaseChanged = meta.phase !== phase;
+        meta.overload = state;
+        meta.suspicion = undefined;
+        meta.phase = phase;
+        progress();
+        if (phaseChanged) writeMeta();
+      } },
       evidenceSampler: stallControl?.evidenceSampler,
       prompt,
       model,
@@ -443,8 +452,8 @@ It streams the output, blocks until the command ends and exits with its exit cod
     if (structured && !report && result.ok) notes.push("codex did not return the JSON report; showing its raw final message");
 
     let checks: CheckResult[] | undefined;
-    // Out of quota or logged out: report at once instead of spending minutes on checks first.
-    const envStop = !!result.userInterrupt || !result.ok && (result.errorKind === "quota" || result.errorKind === "auth");
+    // Environment stops return promptly, including exhausted model overload retries.
+    const envStop = !!result.userInterrupt || !result.ok && (result.errorKind === "quota" || result.errorKind === "auth" || result.errorKind === "overloaded");
     if (envStop && input.checks?.length) notes.push(`host checks skipped: ${result.userInterrupt ? "user interrupted" : `codex stopped on ${result.errorKind}`}`);
     if (input.checks?.length && !signal?.aborted && !envStop) {
       meta.phase = "checks";
@@ -600,6 +609,8 @@ export function formatOutcome(o: DelegateOutcome): string {
       ? `codex is out of quota${quotaReset(r) ? ` until ${quotaReset(r)}` : ""}. STOP now: do not continue the delegated work yourself, do not sleep or poll for the reset. End your turn with what codex finished (git changes below), what is left, and ask the user whether to wait for the reset, have you take over the rest, or something else. Resume later with session_id.`
       : r.errorKind === "auth"
         ? "codex is not logged in or its credentials were rejected. STOP: tell the user (they run `codex login`), don't take over the work."
+      : r.errorKind === "overloaded"
+        ? `model overloaded, server auto-resumed ${r.overloadRetries ?? 0} times over ${((r.overloadDurationMs ?? 0) / 60000).toFixed(1)} min, no progress since ${r.overloadLastProgressAt ? new Date(r.overloadLastProgressAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) : new Date(Date.now() - r.durationMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}; continue the same session_id (same tier, or a cheaper tier per policy); do not take over the work yourself`
       : r.exitKind === "stalled"
         ? `codex hung on ${r.stall?.command?.replace(/\s+/g, " ").slice(0, 200) ?? "a silent model turn"}; the session keeps context: resume with session_id and tell it the command hung (run it with a timeout / fix the hang)`
         : (r.exitKind === "crashed" || r.exitKind === "api_error") && (r.errorKind === "network" || r.errorKind === "rate_limit")
@@ -611,6 +622,7 @@ export function formatOutcome(o: DelegateOutcome): string {
     lines[0] = `status: ${o.report.status} (codex finished but the work is not done)`;
     lines.splice(1, 0, `next: ${REPORT_NEXT[o.report.status]}${o.report.status === "needs_decision" && n ? ` (${n} question${n > 1 ? "s" : ""} below)` : ""}`);
   }
+  if (r.exitKind === "completed" && r.overloadRetries) lines.push(`model overload: auto-resumed ${r.overloadRetries} times`);
   if (o.continued) {
     lines.push(`continued: the interrupted run in this cwd (session ${o.continued.sessionId}); codex kept its context and partial edits and was told your new message wins. Pass fresh: true to start over instead.`);
   }

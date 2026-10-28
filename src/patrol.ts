@@ -158,13 +158,13 @@ export class PatrolMonitor {
     const cancelled = new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => reject(Object.assign(new Error("patrol cancelled"), { kind: "timeout" })), { once: true }));
     const execution = run();
     this.active = Promise.race([execution, timeout, cancelled]).then(v => {
-      if (this.stopped) return;
+      if (this.stopped || this.meta.phase === "overload_wait") return;
       this.meta.patrols ??= [];
       this.meta.patrols.push({ at: Date.now(), ...v, repeat: v.verdict !== "healthy" && v.new === false, suspicionAt: suspicion?.suspectedAt });
       if (suspicion && (v.verdict === "healthy" || v.new === false) && this.meta.suspicion?.suspectedAt === suspicion.suspectedAt) this.rearm();
       this.publish();
     }, error => {
-      if (this.stopped) return;
+      if (this.stopped || this.meta.phase === "overload_wait") return;
       this.meta.patrols ??= [];
       this.meta.patrols.push({ at: Date.now(), verdict: "uncertain", reason: "patrol failed", evidence: [], suspicionAt: suspicion?.suspectedAt,
         error: { kind: error.kind ?? classifyError(String(error)), message: error instanceof Error ? error.message : String(error) } });

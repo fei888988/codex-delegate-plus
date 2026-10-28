@@ -23,6 +23,7 @@ export interface Retention {
 }
 
 export interface Policy {
+  overload: { backoff_s: number[]; max_total_retries: number };
   patrol?: { tier?: string; every_s: number; timeout_s: number; timeout_default_s?: number };
   sandboxWrites: boolean;
   retention: Retention;
@@ -38,24 +39,43 @@ export interface Policy {
 }
 
 export const DEFAULT_POLICY: Policy = {
+  overload: { backoff_s: [30, 60, 60, 120, 120], max_total_retries: 30 },
   patrol: { every_s: 1800, timeout_s: 300, timeout_default_s: 14400 },
   sandboxWrites: false,
   retention: { cmdLogMaxMB: 5, failedLogDays: 3, runDays: 30, totalMaxMB: 1024 },
   stall: { long_commands: [{ match: "unittest discover|pytest|npm (run )?test|node --test", idle_s: 1800 }] },
-  "guidance": "Cost policy: Codex usage is billed per token, and the higher tiers cost several times more. Pick the cheapest tier that will get this task right; quality is not negotiable, so cheap means fewer wasted tokens, not a sloppier result. Unsure between two tiers: take the cheaper one, unless the task is in the risky class named by the top tier, where a failed attempt costs more than the difference. Escalate on evidence: after a check FAIL or a wrong result, continue the same session_id one tier up. Keep briefs tight and pass only the checks that prove the change. Read-only reviews and questions: use high when the reviewed code touches live trading, money, concurrency or security; low for other reviews and for questions; medium when a non-risky review must judge cross-module design. Frontend design stays with you: page layout, visual style, CSS, component look and feel, and UI copy are yours to do, not Codex's (its design taste is weak); backend, data plumbing and tests behind a UI can still be delegated. Opinion and direction calls stay with you: when a question asks for judgement (which approach, architecture or direction to take, whether a plan, design or trade-off is right, what to prioritise or recommend), use Codex only to gather objective facts and data (what the code actually does, measurements, test or benchmark results, documented behaviour, counts and comparisons), and ask it for findings, not conclusions. Form the judgement and make the final decision yourself; never adopt Codex's opinion or recommendation as the answer. When Codex can't work: if a delegate call fails for an environment reason (quota or rate limit, auth, network, codex crash, a timeout or abort with no usable result; not the user pressing Stop), retry once only if the error looks transient. If it still fails, don't quietly take the delegated work over yourself. Estimate what is left that you meant to give Codex: if it is small (a few edits you can already see), finish it and say Codex was unavailable; if it is substantial, stop and ask the user, with the error and the remaining work, whether to wait or fix Codex and continue, have you do it yourself (give a rough size), or do something else.\nSandbox selection: Set sandbox on every delegation. Use read-only for investigations, code reviews and questions that need no writes. Use write for anything that edits files or runs builds and tests; the user's panel setting decides how write runs (by default with full access, so network, dependency installs and paths outside cwd work). Full access does not expand authorization: no deployment, live operations, or writes to production or shared data unless the user asked for them; name off-limits paths and systems in the brief. State known requirements in the brief (Python interpreter, dependencies, temp paths). If a result reports sandbox_denied, the panel sandbox is on: fix the path (prefer cwd or the default temp dir), pass add_dirs, or ask the user to turn the sandbox off; never repeat the same blocked attempt. A failure caused only by sandbox restrictions or missing environment dependencies does not justify raising the reasoning tier.",
-  "codexGuidance": "Cost (added by the delegating tool): work economically. Search before opening whole files and read only what you need, prefer a targeted test over re-running the full suite on every step, and stop once the acceptance criteria are met. Never skip the verification needed to be sure the change is correct. Keep the diff minimal and targeted: change only what the task needs and never rewrite a whole file or module when a local edit works. In your final report, list every existing behaviour you removed, disabled, narrowed or simplified (deleted branches, narrowed conditions or time windows, dropped arguments, flags or recovery paths), or state that there were none.",
+  "guidance": "Cost policy: Codex usage is billed per token, and the higher tiers cost several times more. Pick the cheapest tier that will get the task right; cheap means fewer wasted tokens, never a sloppier result. When unsure, take the cheaper one, unless the task is in the risky class named by high. First decide the kind of task, then the tier. Read-only (facts only, no edits): light → scout → low; use high when the reviewed code touches live trading, money, concurrency or security, medium when a non-risky review must judge cross-module design; ask for file:line and spot-check key facts. Code changes: light → routine → low → medium → high → deep. Operations (a fixed spec; glue code or a runner assembled from frozen functions): ops. In ops, a bug that needs diagnosis continues the same session_id on low (medium if hard), never a higher Terra effort; long commands run the same on every model; a Terra run cut short by missing model metadata is an environment failure (retry), not a capability one; an unclear or contradictory spec makes Codex stop with needs_decision; live trading or production operations use Sol and need the user's explicit go-ahead. Escalate on evidence: after a check FAIL or a wrong result, continue the same session_id on the next tier of the same kind. Pick the tier per call, not per session: a resume may switch tier when the work changes kind. Overloaded result (server retries exhausted): move read-only work to light or scout and small writes to routine on the same session_id; work that needs medium or above waits, or ask the user. Keep briefs tight and pass only the checks that prove the change. Frontend design stays with you: page layout, visual style, CSS, component look and feel, and UI copy are yours to do, not Codex's (its design taste is weak); backend, data plumbing and tests behind a UI can still be delegated. Opinion and direction calls stay with you: when a question asks for judgement (which approach, architecture or direction to take, whether a plan, design or trade-off is right, what to prioritise or recommend), use Codex only to gather objective facts and data (what the code actually does, measurements, test or benchmark results, documented behaviour, counts and comparisons), and ask it for findings, not conclusions. Form the judgement and make the final decision yourself; never adopt Codex's opinion or recommendation as the answer. When Codex can't work: if a delegate call fails for an environment reason (quota or rate limit, auth, network, codex crash, a timeout or abort with no usable result; not the user pressing Stop), retry once only if the error looks transient. If it still fails, don't quietly take the delegated work over yourself. Estimate what is left that you meant to give Codex: if it is small (a few edits you can already see), finish it and say Codex was unavailable; if it is substantial, stop and ask the user, with the error and the remaining work, whether to wait or fix Codex and continue, have you do it yourself (give a rough size), or do something else.\nSandbox selection: Set sandbox on every delegation. Use read-only for investigations, code reviews and questions that need no writes. Use write for anything that edits files or runs builds and tests; the user's panel setting decides how write runs (by default with full access, so network, dependency installs and paths outside cwd work). Full access does not expand authorization: no deployment, live operations, or writes to production or shared data unless the user asked for them; name off-limits paths and systems in the brief. State known requirements in the brief (Python interpreter, dependencies, temp paths). If a result reports sandbox_denied, the panel sandbox is on: fix the path (prefer cwd or the default temp dir), pass add_dirs, or ask the user to turn the sandbox off; never repeat the same blocked attempt. A failure caused only by sandbox restrictions or missing environment dependencies does not justify raising the reasoning tier.",
+  "codexGuidance": "Cost (added by the delegating tool): work economically. Search before opening whole files and read only what you need, prefer a targeted test over re-running the full suite on every step, and stop once the acceptance criteria are met. Never skip the verification needed to be sure the change is correct. Keep the diff minimal and targeted: change only what the task needs and never rewrite a whole file or module when a local edit works. In your final report, list every existing behaviour you removed, disabled, narrowed or simplified (deleted branches, narrowed conditions or time windows, dropped arguments, flags or recovery paths), or state that there were none. Fixed specs: when the brief fixes the method, parameters, data, windows or steps, follow them exactly. Any deviation (a changed parameter, other data, a skipped step, a loosened condition), even one that would make the run succeed, means stop and report needs_decision instead of deciding yourself; in the final report, list the settings actually used.",
   "tiers": [
     {
       "id": "light",
       "model": "gpt-6-luna",
       "effort": "xhigh",
-      "use": "Mechanical, fully specified tasks with no meaningful ambiguity or design decisions: renaming, version bumps, applying a provided patch, straightforward lint fixes, or simple factual lookups. The solution should be directly executable without investigating alternatives."
+      "use": "Mechanical, fully specified code changes (renaming, version bumps, applying a provided patch, straightforward lint fixes), and read-only lookups where you already know where to look and want a value, line, date or count back with file:line for every fact. Nothing that needs investigating alternatives."
+    },
+    {
+      "id": "scout",
+      "model": "gpt-6.1-terra",
+      "effort": "low",
+      "use": "Default for read-only fact gathering that needs several files, logs, data or test output pieced together: tracing a call path, building an inventory, reading what a config or job actually does, counts and comparisons. Ask for findings with file:line, not a verdict. Read-only questions that need real reasoning, such as a root cause across modules, go to low."
+    },
+    {
+      "id": "routine",
+      "model": "gpt-6.1-terra",
+      "effort": "medium",
+      "use": "Small code changes that follow an existing pattern: a single-file bug with a known cause, tests for existing behaviour, docs, config and script tweaks, and non-risky reviews of a small diff. Not for multi-file features or unclear causes (low), and not for writes that process untrusted external content (Terra follows injected instructions far more often than Sol; use low)."
+    },
+    {
+      "id": "ops",
+      "model": "gpt-6.1-terra",
+      "effort": "medium",
+      "use": "Operations with a fixed spec: run a pre-registered backtest or study, train a model whose data source and training method are set, run an existing test suite or benchmark, batch-generate data files. Codex may write glue code and assemble a new runner from the frozen functions the spec names, but never change the method; data-handling choices the spec leaves open (missing days, adjustments) go to low. Not for designing experiments, choosing parameters, or live trading or production."
     },
     {
       "id": "low",
       "model": "gpt-6.1-sol",
       "effort": "low",
-      "use": "Default tier for ordinary, non-risky work: features and bug fixes across a few files that follow the project's existing conventions, bugs whose cause can be found by reading or reproducing, moderate refactoring, writing or fixing tests, and routine judgement between obvious local approaches. Use medium only when real design choices are left open, or high when the task is in the risky class."
+      "use": "Default for ordinary, non-risky coding work: features and bug fixes across several files that follow the project's existing conventions, bugs whose cause can be found by reading or reproducing, moderate refactoring, and routine judgement between obvious local approaches. Also read-only questions that need real reasoning. Use medium only when real design choices are left open, or high when the task is in the risky class."
     },
     {
       "id": "medium",
@@ -68,11 +88,18 @@ export const DEFAULT_POLICY: Policy = {
       "model": "gpt-6.1-sol",
       "effort": "high",
       "use": "Complex or high-risk tasks involving unclear root causes, cross-module architecture or design tradeoffs, concurrency, security, financial correctness, data migration, or many interacting edge cases. Requires deep investigation, careful validation, or substantial independent reasoning. Also a medium attempt that failed for lack of reasoning (not for external or environmental issues)."
+    },
+    {
+      "id": "deep",
+      "model": "gpt-6.1-sol",
+      "effort": "xhigh",
+      "use": "Escalation only: a high attempt that failed for lack of reasoning, or a problem known up front to need very long careful analysis (subtle concurrency or numerical bugs, verifying financial logic, large data migrations). Costs well above high per run; never the first choice for ordinary risky work."
     }
   ],
   "models": [
     "gpt-6.1-sol",
-    "gpt-6-luna"
+    "gpt-6-luna",
+    "gpt-6.1-terra"
   ]
 };
 
@@ -99,6 +126,11 @@ export function validatePolicy(input: unknown, models: ModelInfo[] = listModels(
   if (!raw.retention || typeof raw.retention !== "object" || Array.isArray(raw.retention)) return { ok: false, error: "invalid retention policy" };
   const retention = { ...DEFAULT_POLICY.retention, ...raw.retention };
   if (Object.values(retention).some(v => typeof v !== "number" || !Number.isFinite(v) || v <= 0)) return { ok: false, error: "retention limits must be positive numbers" };
+  const overload = { ...DEFAULT_POLICY.overload, ...(raw.overload as Partial<Policy["overload"]>) };
+  if (!raw.overload || typeof raw.overload !== "object" || Array.isArray(raw.overload)
+    || !Array.isArray(overload.backoff_s) || !overload.backoff_s.length
+    || overload.backoff_s.some(v => !Number.isInteger(v) || v < 0 || v > 3600)
+    || !Number.isInteger(overload.max_total_retries) || overload.max_total_retries < 0) return { ok: false, error: "invalid overload policy" };
   const stall = raw.stall as StallPolicy | undefined;
   if (stall !== undefined && (!stall || typeof stall !== "object" || Array.isArray(stall)
     || [stall.silent_s, stall.command_s].some(v => v !== undefined && (!Number.isFinite(v) || v < 0))
@@ -140,7 +172,7 @@ export function validatePolicy(input: unknown, models: ModelInfo[] = listModels(
     tiers.push({ id, ...(provider ? { provider } : {}), ...(model ? { model } : {}), effort, use });
   }
   if (patrol.tier !== undefined && !tiers.some(t => t.id === patrol.tier)) return { ok: false, error: "unknown patrol tier" };
-  return { ok: true, policy: { ...raw, sandboxWrites: raw.sandboxWrites, retention, guidance, codexGuidance, tiers, models: allowed, patrol, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
+  return { ok: true, policy: { ...raw, overload, sandboxWrites: raw.sandboxWrites, retention, guidance, codexGuidance, tiers, models: allowed, patrol, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
 }
 
 /** Missing file → defaults. A broken file also falls back to the defaults, and says why. */

@@ -60,7 +60,7 @@ are Unix epoch **milliseconds**; timeline `ts` is an ISO timestamp or `null`.
 
 ```ts
 type ExitKind = "completed" | "timeout" | "stalled" | "cancelled" | "crashed" | "api_error";
-type ErrorKind = "quota" | "rate_limit" | "auth" | "network" | "context" | "other";
+type ErrorKind = "quota" | "rate_limit" | "auth" | "network" | "overloaded" | "context" | "other";
 type Stall = {
   kind: "silent" | "command";
   idleMs: number;
@@ -72,6 +72,10 @@ type Stall = {
 type ResultFields = {
   exitKind: ExitKind;
   errorKind?: ErrorKind;
+  overloadRetries?: number;
+  overloadLastProgressAt?: number;
+  overloadConsecutive?: number;
+  overloadDurationMs?: number;
   stalled: boolean;
   stall?: Stall;
 };
@@ -80,7 +84,7 @@ type ResultFields = {
 // New runs always include phase, pid, heartbeatAt and the three idle windows.
 // Old runs may lack these fields.
 type ProgressFields = {
-  phase?: "codex" | "checks" | "done";
+  phase?: "codex" | "overload_wait" | "checks" | "done";
   pid?: number;                 // MCP server PID
   codexPid?: number;
   lastEventAt?: number;         // any Codex stdout line, including non-JSON lines
@@ -88,6 +92,7 @@ type ProgressFields = {
   heartbeatAt?: number;
   exitKind?: ExitKind;
   errorKind?: ErrorKind;
+  overload?: { attempt: number; consecutive: number; limit: number; totalRetries: number; nextRetryAt?: number; lastProgressAt?: number; lastError?: string };
   stall?: Stall;
   checksStartedAt?: number;
   idleTimeoutSec?: number;
@@ -191,6 +196,46 @@ Failures start with `status: error (<exitKind>[/<errorKind>])`. A single `next:`
 advises resuming a stalled session and addressing the hanging command, retrying
 network/rate-limit crashes or API errors once with the same session, or telling the
 user about quota/auth environment problems. Other failures retain the error details.
+
+App-server model capacity failures have `errorKind: "overloaded"`. They resume
+the same thread and model automatically, without completing the run or waking the
+lead. The policy `overload` section merges missing fields with defaults:
+`{ backoff_s: [30, 60, 60, 120, 120], max_total_retries: 30 }`.
+Backoff entries are integer seconds between 0 and 120. Each consecutive failure
+without progress consumes one entry; after five such retries another no-progress
+failure exhausts the default schedule. A newly completed command, file change or
+agent message, or new output tokens, resets the counter to zero and restarts at
+the first delay. Duplicate items and unchanged token totals do not reset it.
+The total retry cap and original run timeout still apply regardless of progress.
+Models never switch automatically. The exec engine only classifies overloads.
+
+During backoff `phase: "overload_wait"` keeps heartbeats active, disables stall
+windows, and is active dashboard health (ownership/heartbeat checks still apply).
+Patrol does not launch during the wait; a patrol already in flight cannot publish
+an alert or error while the worker is waiting. Cancellation and inbox interrupt
+end the run promptly; steer starts the next turn immediately with the overload
+continuation message and the steer text. Queued inbox inputs still drain normally.
+Live launcher jobs remain in `kept` and in the continuation preamble; overload
+recovery never kills them. Final cleanup and kept-command reminders still apply.
+
+`meta.overload.attempt` counts overloaded failed turns; `consecutive` counts
+no-progress failures since the latest progress (zero for a turn with progress),
+`limit` is the schedule length, and `totalRetries` counts actual turn/start
+retry requests. `nextRetryAt` records the scheduled retry time and is cleared on
+resume; a terminal cancellation/timeout during the wait may retain it. `lastProgressAt`
+is the most recent progress timestamp, initially the run start; `lastError`
+holds the latest overload message. Final values remain in metadata after exit.
+Result `overloadRetries`, `overloadConsecutive`, `overloadLastProgressAt`
+and `overloadDurationMs` expose retry count, final consecutive count, last progress
+and elapsed time since the first overload. Exhaustion returns
+`api_error/overloaded`, skips host checks and advises the lead to continue the
+same session at the same tier or a cheaper policy tier, without taking over.
+Successful recovery adds only `model overload: auto-resumed N times` for overload.
+
+App-server `turn.usage` events contain cumulative run usage (`cumulative: true`),
+excluding earlier turns in a resumed session. Metadata/result `tokens` now retain
+usage on failed, cancelled and timeout exits too. Completed-turn events carrying
+the same cumulative usage are deduplicated; exec per-turn usage still sums.
 
 ## v0.7.0 diagnostics and retention contract
 

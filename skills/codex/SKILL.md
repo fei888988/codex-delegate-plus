@@ -1,6 +1,6 @@
 ---
 name: codex
-description: Claude leads, a Codex model (GPT-6.1 Sol by default) does the work. Delegate implementation, debugging, tests or analysis to the Codex CLI while Claude briefs, picks the cheapest cost tier (model + reasoning effort) that will get the task right, and accepts the result. Use when the user invokes /codex, or says things like "让 codex 做", "交给 sol", "use sol 6.1 to implement X", "have codex do it, you review", "get a second opinion from codex".
+description: Claude leads, a Codex model (GPT-6.1 Sol by default) does the work. Delegate implementation, debugging, tests or analysis to the Codex CLI while Claude briefs, picks the cheapest cost tier (model + reasoning effort) that will get the task right, and accepts the result. Use by default for implementation, debugging, tests, refactoring, code investigation and data analysis whenever the codex tools are available, even if the user does not mention Codex; skip it for quick single edits, frontend design and judgement calls. Also use when the user invokes /codex, or says things like "让 codex 做", "交给 sol", "use sol 6.1 to implement X", "have codex do it, you review", "get a second opinion from codex".
 argument-hint: "[model] -- <task>  (e.g. sol 6.1 -- add input validation to the signup form)"
 ---
 
@@ -68,16 +68,67 @@ opinion or recommendation as the answer.
 `effort` names a tier of the user's delegation policy. Each tier fixes a model and a reasoning
 effort. The tool description lists the tiers cheapest first, says when to use each, and carries
 the user's cost guidance. Those come from the dashboard and override this section where they
-differ. Defaults: `light` (gpt-6-luna#xhigh) → `low` (gpt-6.1-sol#low) →
-`medium` (gpt-6.1-sol#medium) → `high` (gpt-6.1-sol#high).
+differ. Defaults, cheapest first: `light` (gpt-6-luna#xhigh), `scout` (gpt-6.1-terra#low),
+`routine` and `ops` (gpt-6.1-terra#medium), `low` / `medium` / `high` (gpt-6.1-sol),
+`deep` (gpt-6.1-sol#xhigh, escalation only).
 
+First decide which of three kinds the task is, then pick the tier within that kind:
+
+| Kind | What it is | Ladder |
+|---|---|---|
+| Read-only | Facts only, no edits | `light` → `scout` → `low` (risky code review: `high`) |
+| Code change | New or changed behaviour | `light` → `routine` → `low` → `medium` → `high` → `deep` |
+| Operations | Run a fixed spec; light glue code only | `ops` |
+
+- **Read-only.** `light` when you know where to look and want a value, line, date or count back.
+  `scout` (the default) when facts must be pieced together from several files, logs, data or test
+  output. `low` when the question needs real reasoning, such as a root cause across modules;
+  `high` when reviewing code that touches money, live trading, concurrency or security. Always
+  ask for file:line on every fact and spot-check the ones your decision rests on: read-only
+  results have no checks behind them.
+- **Code change.** `routine` for small changes that follow an existing pattern (single-file bug with
+  a known cause, tests for existing behaviour, config and script tweaks). Ordinary multi-file
+  work stays on `low`. Keep Terra off writes that process untrusted external content.
+- **Operations.** `ops` when the method, parameters, data and steps are already fixed: run a
+  pre-registered backtest or study, train a model with a set data source and method, run an
+  existing test suite or benchmark, batch-generate data. Codex may write glue code (config,
+  runner scripts, path fixes) and assemble a new runner from the frozen functions the spec
+  names (e.g. reuse `execute`, `shifted`, `bootstrap` from an existing study and only wire in
+  the new variant), but must not change the method. If the run needs data-handling choices the
+  spec leaves open (missing days, dividend or split adjustment, new data sources), it is a
+  code change: use `low`. In the brief, state the spec
+  exactly (or point to the prereg file and commit) and say any deviation means stop with
+  `needs_decision`. Then:
+  - a bug that needs diagnosis: continue the same `session_id` on `low` (`medium` if hard),
+    never a higher Terra effort;
+  - an unclear or contradictory spec: Codex stops; you decide, or ask the user;
+  - live trading or production operations are never `ops`: use Sol, and only with the user's
+    explicit go-ahead;
+  - a long run is no reason to avoid Terra. Long commands go through the server's launcher
+    (`longrun.mjs`), which works the same for every model; it is not a Sol feature. A Terra
+    result that is `partial` after a warning like `Model metadata for gpt-6.1-terra not found`
+    is an environment problem (codex-cli's model catalog had not caught up): resume the same
+    `session_id` on `ops` once. Do not move it to Sol unless the retry also fails for a reason
+    that is not environmental.
+
+  Designing the experiment, choosing parameters and judging the results stay with you (or a
+  code-change tier), not `ops`. For the first few `ops` runs, check the reported settings
+  against the spec before trusting the results.
 - Cost matters, and quality isn't up for trade. Take the cheapest tier that will get it right. When
   unsure, take the cheaper one, unless the task is in the risky class the top tier names
   (security, money, concurrency, data migration, unclear root cause). There a failed attempt costs
   more than the difference.
-- Escalate on evidence: after a check FAIL or a wrong result, continue the **same `session_id`** one
-  tier up. Tiers pin their model, so escalating from `light` moves the session to gpt-6.1-sol.
-- Each call picks its own tier. A small follow-up fix to a `high` run can drop back down.
+- Escalate on evidence: after a check FAIL or a wrong result, continue the **same `session_id`** on
+  the next tier of the same kind. Tiers pin their model, so escalating can switch models.
+- Model overload: the server already waits and resumes the same thread on its own (policy
+  `overload`), so an `errorKind overloaded` result means its tolerance ran out. Then move read-only
+  work to `light` or `scout` and small writes to `routine`, continuing the same `session_id`; work
+  that needs `medium` or above waits for Sol, or ask the user. Never take the work over yourself.
+- Each call picks its own tier, including resumes. The tier belongs to the call, not the session:
+  before resuming a `session_id`, decide the kind and tier for *this* call's work and pass that,
+  even if the session ran on another tier before. A `low` session whose next step is a re-run of
+  a fixed spec resumes on `ops`; a small follow-up fix to a `high` run can drop back down.
+  Never keep a tier only because the session used it last time.
 - In your final report, give the tier you used and the reason in one phrase.
 
 ## 3. Write a lean brief (`prompt`)
@@ -87,7 +138,7 @@ Codex cannot see this conversation, but it can read the repo. Write what and why
 1. **Goal** and the user-visible behaviour wanted.
 2. **Where to start**: entry points you already know. Don't pre-read the codebase to spell out
    steps; Codex investigates. If you can't scope the task, first send a read-only question
-   (`sandbox: "read-only"`, usually `effort: "low"` or `"medium"`).
+   (`sandbox: "read-only"`, `effort: "light"` or `"scout"`; `"low"` when it needs real reasoning).
 3. **Constraints**: interfaces that must not change, files not to touch, no new dependencies.
 4. **Done when**: acceptance criteria. Put the test/build commands in `checks` (e.g.
    `["npm test"]`); the server runs them on the host after Codex and returns PASS/FAIL.

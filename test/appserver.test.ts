@@ -216,6 +216,8 @@ test("quota: structured error kind, no host checks, STOP instruction with the re
 
 test("translation helpers", () => {
   assert.equal(kindFromInfo("usageLimitExceeded"), "quota");
+  assert.equal(kindFromInfo("serverOverloaded"), "overloaded");
+  assert.equal(kindFromInfo("internalServerError"), "network");
   assert.equal(kindFromInfo({ responseStreamDisconnected: { httpStatusCode: 502 } }), "network");
   assert.equal(kindFromInfo("other"), undefined);
   assert.deepEqual(execItem({ type: "commandExecution", id: "c", command: "ls", aggregatedOutput: "x", exitCode: 0, status: "completed" }),

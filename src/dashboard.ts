@@ -30,6 +30,7 @@ export function pidAlive(pid: number): boolean {
 export function deriveHealth(run: RunSummary, now = Date.now(), alive = pidAlive): NonNullable<RunSummary["health"]> {
   if (run.state !== "running") return "ok";
   if ((run.pid !== undefined && !alive(run.pid)) || (run.heartbeatAt !== undefined && now - run.heartbeatAt > 90000)) return "orphaned";
+  if (run.phase === "overload_wait") return "active";
   const check = run.phase === "checks" ? run.checks?.find((c) => c.state === "running") : undefined;
   const last = check ? check.lastOutputAt ?? check.startedAt : run.stallWindowSince ?? run.lastEventAt ?? run.startedAt;
   const age = now - last;

@@ -37926,12 +37926,12 @@ async function runChecks(commands, cwd, timeoutMs, signal, options = {}) {
 
 // src/codex.ts
 import { spawn as spawn2 } from "node:child_process";
-import { createWriteStream, existsSync as existsSync4, readFileSync as readFileSync6, writeFileSync as writeFileSync6 } from "node:fs";
+import { createWriteStream, existsSync as existsSync4, readFileSync as readFileSync8, writeFileSync as writeFileSync7 } from "node:fs";
 
 // src/appserver.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
-import { readFileSync as readFileSync5, writeFileSync as writeFileSync5 } from "node:fs";
-import { join as join9 } from "node:path";
+import { readFileSync as readFileSync7, writeFileSync as writeFileSync6 } from "node:fs";
+import { join as join10 } from "node:path";
 
 // src/longruns.ts
 import { appendFileSync, copyFileSync as copyFileSync2, existsSync as existsSync3, readdirSync as readdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync4 } from "node:fs";
@@ -38060,6 +38060,215 @@ function keptReminder(runDir, kept) {
   ].join("\n");
 }
 
+// src/policy.ts
+import { mkdirSync as mkdirSync2, readFileSync as readFileSync6, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "node:fs";
+
+// src/models.ts
+import { readFileSync as readFileSync5 } from "node:fs";
+import { join as join9 } from "node:path";
+function listModels(path = join9(config.codexHome, "models_cache.json")) {
+  let data;
+  try {
+    data = JSON.parse(readFileSync5(path, "utf8"));
+  } catch {
+    return [];
+  }
+  const models = Array.isArray(data?.models) ? data.models : [];
+  return models.filter((m) => typeof m?.slug === "string" && (m.visibility ?? "list") === "list").map((m) => ({
+    slug: m.slug,
+    efforts: (m.supported_reasoning_levels ?? []).map((l) => l?.effort).filter(Boolean)
+  }));
+}
+var STOPWORDS = /* @__PURE__ */ new Set(["use", "using", "with", "from", "in", "on", "via", "the", "a", "model", "codex", "openai", "by"]);
+function tokenize(s) {
+  return s.toLowerCase().replace(/([a-z])(\d)/g, "$1 $2").replace(/[^a-z0-9.]+/g, " ").split(" ").map((t) => t.replace(/^\.+|\.+$/g, "")).filter((t) => t && !STOPWORDS.has(t));
+}
+var isVersion = (t) => /\d/.test(t);
+function version2(slug) {
+  return Number.parseFloat(tokenize(slug).find(isVersion) ?? "0") || 0;
+}
+function resolveModel(query, models) {
+  const [base = "", effortRaw] = query.trim().split("#", 2);
+  const effort = effortRaw?.trim().toLowerCase() || void 0;
+  const withEffort = (m, slug) => {
+    if (effort && m?.efforts.length && !m.efforts.includes(effort)) {
+      return { ok: false, reason: `${slug} does not support effort '${effort}' (supported: ${m.efforts.join(", ")})`, candidates: [] };
+    }
+    return { ok: true, model: slug, effort, known: !!m };
+  };
+  const exact = models.find((m) => m.slug.toLowerCase() === base.trim().toLowerCase());
+  if (exact) return withEffort(exact, exact.slug);
+  const tokens = tokenize(base);
+  if (!tokens.length) return { ok: false, reason: `empty model name '${query}'`, candidates: [] };
+  const scored = models.map((m) => {
+    const slugTokens = tokenize(m.slug);
+    const set2 = new Set(slugTokens);
+    if (!tokens.filter(isVersion).every((t) => set2.has(t))) return void 0;
+    let score = 0;
+    for (const t of tokens) {
+      const hit = set2.has(t) ? 3 : m.slug.toLowerCase().includes(t) ? 1 : 0;
+      score += isVersion(t) ? hit * 2 : hit;
+    }
+    if (tokens.some((t) => !isVersion(t)) && !tokens.some((t) => !isVersion(t) && m.slug.toLowerCase().includes(t))) return void 0;
+    if (!score) return void 0;
+    return { m, score, extras: slugTokens.filter((n) => !tokens.includes(n)).length, version: version2(m.slug) };
+  }).filter((x) => !!x).sort((a, b) => b.score - a.score || a.extras - b.extras || b.version - a.version || a.m.slug.localeCompare(b.m.slug));
+  const best = scored[0];
+  if (!best) {
+    if (/^[\w.-]+$/.test(base.trim())) return withEffort(void 0, base.trim());
+    return { ok: false, reason: `no codex model matches '${query}'`, candidates: [] };
+  }
+  const tied = scored.filter((s) => s.score === best.score && s.extras === best.extras && s.version === best.version);
+  if (tied.length > 1) return { ok: false, reason: `'${query}' is ambiguous`, candidates: tied.map((t) => t.m.slug) };
+  return withEffort(best.m, best.m.slug);
+}
+function resolveModelOrThrow(query) {
+  const r = resolveModel(query, listModels());
+  if (r.ok) return r;
+  throw new Error(`${r.reason}.${r.candidates.length ? ` Did you mean one of: ${r.candidates.join(", ")}?` : ""} Use list_models to see all models.`);
+}
+
+// src/policy.ts
+var DEFAULT_POLICY = {
+  overload: { backoff_s: [30, 60, 60, 120, 120], max_total_retries: 30 },
+  patrol: { every_s: 1800, timeout_s: 300, timeout_default_s: 14400 },
+  sandboxWrites: false,
+  retention: { cmdLogMaxMB: 5, failedLogDays: 3, runDays: 30, totalMaxMB: 1024 },
+  stall: { long_commands: [{ match: "unittest discover|pytest|npm (run )?test|node --test", idle_s: 1800 }] },
+  "guidance": "Cost policy: Codex usage is billed per token, and the higher tiers cost several times more. Pick the cheapest tier that will get the task right; cheap means fewer wasted tokens, never a sloppier result. When unsure, take the cheaper one, unless the task is in the risky class named by high. First decide the kind of task, then the tier. Read-only (facts only, no edits): light \u2192 scout \u2192 low; use high when the reviewed code touches live trading, money, concurrency or security, medium when a non-risky review must judge cross-module design; ask for file:line and spot-check key facts. Code changes: light \u2192 routine \u2192 low \u2192 medium \u2192 high \u2192 deep. Operations (a fixed spec; glue code or a runner assembled from frozen functions): ops. In ops, a bug that needs diagnosis continues the same session_id on low (medium if hard), never a higher Terra effort; long commands run the same on every model; a Terra run cut short by missing model metadata is an environment failure (retry), not a capability one; an unclear or contradictory spec makes Codex stop with needs_decision; live trading or production operations use Sol and need the user's explicit go-ahead. Escalate on evidence: after a check FAIL or a wrong result, continue the same session_id on the next tier of the same kind. Pick the tier per call, not per session: a resume may switch tier when the work changes kind. Overloaded result (server retries exhausted): move read-only work to light or scout and small writes to routine on the same session_id; work that needs medium or above waits, or ask the user. Keep briefs tight and pass only the checks that prove the change. Frontend design stays with you: page layout, visual style, CSS, component look and feel, and UI copy are yours to do, not Codex's (its design taste is weak); backend, data plumbing and tests behind a UI can still be delegated. Opinion and direction calls stay with you: when a question asks for judgement (which approach, architecture or direction to take, whether a plan, design or trade-off is right, what to prioritise or recommend), use Codex only to gather objective facts and data (what the code actually does, measurements, test or benchmark results, documented behaviour, counts and comparisons), and ask it for findings, not conclusions. Form the judgement and make the final decision yourself; never adopt Codex's opinion or recommendation as the answer. When Codex can't work: if a delegate call fails for an environment reason (quota or rate limit, auth, network, codex crash, a timeout or abort with no usable result; not the user pressing Stop), retry once only if the error looks transient. If it still fails, don't quietly take the delegated work over yourself. Estimate what is left that you meant to give Codex: if it is small (a few edits you can already see), finish it and say Codex was unavailable; if it is substantial, stop and ask the user, with the error and the remaining work, whether to wait or fix Codex and continue, have you do it yourself (give a rough size), or do something else.\nSandbox selection: Set sandbox on every delegation. Use read-only for investigations, code reviews and questions that need no writes. Use write for anything that edits files or runs builds and tests; the user's panel setting decides how write runs (by default with full access, so network, dependency installs and paths outside cwd work). Full access does not expand authorization: no deployment, live operations, or writes to production or shared data unless the user asked for them; name off-limits paths and systems in the brief. State known requirements in the brief (Python interpreter, dependencies, temp paths). If a result reports sandbox_denied, the panel sandbox is on: fix the path (prefer cwd or the default temp dir), pass add_dirs, or ask the user to turn the sandbox off; never repeat the same blocked attempt. A failure caused only by sandbox restrictions or missing environment dependencies does not justify raising the reasoning tier.",
+  "codexGuidance": "Cost (added by the delegating tool): work economically. Search before opening whole files and read only what you need, prefer a targeted test over re-running the full suite on every step, and stop once the acceptance criteria are met. Never skip the verification needed to be sure the change is correct. Keep the diff minimal and targeted: change only what the task needs and never rewrite a whole file or module when a local edit works. In your final report, list every existing behaviour you removed, disabled, narrowed or simplified (deleted branches, narrowed conditions or time windows, dropped arguments, flags or recovery paths), or state that there were none. Fixed specs: when the brief fixes the method, parameters, data, windows or steps, follow them exactly. Any deviation (a changed parameter, other data, a skipped step, a loosened condition), even one that would make the run succeed, means stop and report needs_decision instead of deciding yourself; in the final report, list the settings actually used.",
+  "tiers": [
+    {
+      "id": "light",
+      "model": "gpt-6-luna",
+      "effort": "xhigh",
+      "use": "Mechanical, fully specified code changes (renaming, version bumps, applying a provided patch, straightforward lint fixes), and read-only lookups where you already know where to look and want a value, line, date or count back with file:line for every fact. Nothing that needs investigating alternatives."
+    },
+    {
+      "id": "scout",
+      "model": "gpt-6.1-terra",
+      "effort": "low",
+      "use": "Default for read-only fact gathering that needs several files, logs, data or test output pieced together: tracing a call path, building an inventory, reading what a config or job actually does, counts and comparisons. Ask for findings with file:line, not a verdict. Read-only questions that need real reasoning, such as a root cause across modules, go to low."
+    },
+    {
+      "id": "routine",
+      "model": "gpt-6.1-terra",
+      "effort": "medium",
+      "use": "Small code changes that follow an existing pattern: a single-file bug with a known cause, tests for existing behaviour, docs, config and script tweaks, and non-risky reviews of a small diff. Not for multi-file features or unclear causes (low), and not for writes that process untrusted external content (Terra follows injected instructions far more often than Sol; use low)."
+    },
+    {
+      "id": "ops",
+      "model": "gpt-6.1-terra",
+      "effort": "medium",
+      "use": "Operations with a fixed spec: run a pre-registered backtest or study, train a model whose data source and training method are set, run an existing test suite or benchmark, batch-generate data files. Codex may write glue code and assemble a new runner from the frozen functions the spec names, but never change the method; data-handling choices the spec leaves open (missing days, adjustments) go to low. Not for designing experiments, choosing parameters, or live trading or production."
+    },
+    {
+      "id": "low",
+      "model": "gpt-6.1-sol",
+      "effort": "low",
+      "use": "Default for ordinary, non-risky coding work: features and bug fixes across several files that follow the project's existing conventions, bugs whose cause can be found by reading or reproducing, moderate refactoring, and routine judgement between obvious local approaches. Also read-only questions that need real reasoning. Use medium only when real design choices are left open, or high when the task is in the risky class."
+    },
+    {
+      "id": "medium",
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "use": "Work that needs genuine design decisions without an existing pattern to follow: new structure spanning several modules, non-obvious tradeoffs, or many routine edge cases that interact, while still outside the risky class named by high. Also a low attempt that failed for lack of reasoning."
+    },
+    {
+      "id": "high",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "use": "Complex or high-risk tasks involving unclear root causes, cross-module architecture or design tradeoffs, concurrency, security, financial correctness, data migration, or many interacting edge cases. Requires deep investigation, careful validation, or substantial independent reasoning. Also a medium attempt that failed for lack of reasoning (not for external or environmental issues)."
+    },
+    {
+      "id": "deep",
+      "model": "gpt-6.1-sol",
+      "effort": "xhigh",
+      "use": "Escalation only: a high attempt that failed for lack of reasoning, or a problem known up front to need very long careful analysis (subtle concurrency or numerical bugs, verifying financial logic, large data migrations). Costs well above high per run; never the first choice for ordinary risky work."
+    }
+  ],
+  "models": [
+    "gpt-6.1-sol",
+    "gpt-6-luna",
+    "gpt-6.1-terra"
+  ]
+};
+var TIER_ID = /^[a-z0-9][a-z0-9_-]{0,23}$/;
+var SLUG = /^[\w.-]{1,64}$/;
+var MAX_TEXT = 4e3;
+var str = (v) => typeof v === "string" ? v.trim() : void 0;
+function validatePolicy(input2, models = listModels()) {
+  if (!input2 || typeof input2 !== "object" || Array.isArray(input2)) return { ok: false, error: "policy must be a JSON object" };
+  const raw = { ...DEFAULT_POLICY, ...input2 };
+  const patrol = { ...DEFAULT_POLICY.patrol, ...raw.patrol };
+  if (!raw.patrol || typeof raw.patrol !== "object" || Array.isArray(raw.patrol) || !Number.isInteger(patrol.every_s) || patrol.every_s < 600 || !Number.isInteger(patrol.timeout_default_s) || patrol.timeout_default_s <= 0 || !Number.isInteger(patrol.timeout_s) || patrol.timeout_s <= 0 || patrol.tier !== void 0 && typeof patrol.tier !== "string") return { ok: false, error: "invalid patrol policy" };
+  if (typeof raw.sandboxWrites !== "boolean") return { ok: false, error: "sandboxWrites must be boolean" };
+  if (!raw.retention || typeof raw.retention !== "object" || Array.isArray(raw.retention)) return { ok: false, error: "invalid retention policy" };
+  const retention = { ...DEFAULT_POLICY.retention, ...raw.retention };
+  if (Object.values(retention).some((v) => typeof v !== "number" || !Number.isFinite(v) || v <= 0)) return { ok: false, error: "retention limits must be positive numbers" };
+  const overload = { ...DEFAULT_POLICY.overload, ...raw.overload };
+  if (!raw.overload || typeof raw.overload !== "object" || Array.isArray(raw.overload) || !Array.isArray(overload.backoff_s) || !overload.backoff_s.length || overload.backoff_s.some((v) => !Number.isInteger(v) || v < 0 || v > 3600) || !Number.isInteger(overload.max_total_retries) || overload.max_total_retries < 0) return { ok: false, error: "invalid overload policy" };
+  const stall = raw.stall;
+  if (stall !== void 0 && (!stall || typeof stall !== "object" || Array.isArray(stall) || [stall.silent_s, stall.command_s].some((v) => v !== void 0 && (!Number.isFinite(v) || v < 0)) || stall.long_commands !== void 0 && (!Array.isArray(stall.long_commands) || stall.long_commands.some((r) => !r || typeof r.match !== "string" || !Number.isFinite(r.idle_s) || r.idle_s < 0))))
+    return { ok: false, error: "invalid stall policy" };
+  const guidance = str(raw.guidance);
+  const codexGuidance = str(raw.codexGuidance);
+  if (guidance === void 0 || guidance.length > MAX_TEXT) return { ok: false, error: `guidance must be text of at most ${MAX_TEXT} characters` };
+  if (codexGuidance === void 0 || codexGuidance.length > MAX_TEXT) return { ok: false, error: `codexGuidance must be text of at most ${MAX_TEXT} characters` };
+  if (!Array.isArray(raw.models) || raw.models.length > 32) return { ok: false, error: "models must be a list of at most 32 model slugs" };
+  const allowed = [];
+  for (const m of raw.models) {
+    const slug = str(m);
+    if (!slug || !SLUG.test(slug)) return { ok: false, error: `invalid model slug '${String(m)}'` };
+    if (!allowed.includes(slug)) allowed.push(slug);
+  }
+  if (!Array.isArray(raw.tiers) || !raw.tiers.length || raw.tiers.length > 12) return { ok: false, error: "tiers must be a list of 1 to 12 tiers" };
+  const tiers = [];
+  for (const t of raw.tiers) {
+    const id = str(t?.id)?.toLowerCase() ?? "";
+    if (!TIER_ID.test(id)) return { ok: false, error: `tier id '${id}' must be 1-24 of a-z, 0-9, '-', '_'` };
+    if (tiers.some((x) => x.id === id)) return { ok: false, error: `duplicate tier id '${id}'` };
+    const provider = t.provider;
+    if (provider !== void 0 && (typeof provider !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(provider))) return { ok: false, error: `tier provider must be an id or system` };
+    const model2 = str(t.model) || void 0;
+    if (model2 && !SLUG.test(model2)) return { ok: false, error: `tier '${id}': invalid model slug '${model2}'` };
+    const effort = str(t.effort)?.toLowerCase() ?? "";
+    if (!EFFORT_ORDER.includes(effort)) return { ok: false, error: `tier '${id}': unknown effort '${effort}' (known: ${EFFORT_ORDER.join(", ")})` };
+    const use = str(t.use) ?? "";
+    if (!use || use.length > 500) return { ok: false, error: `tier '${id}': 'use' must be 1-500 characters` };
+    const effective = model2 ?? config.defaultModel ?? configuredModel();
+    if (model2 && allowed.length && !allowed.includes(model2)) return { ok: false, error: `tier '${id}': model '${model2}' is not in the allowed models` };
+    const info = models.find((m) => m.slug === effective);
+    if (info?.efforts.length && !info.efforts.includes(effort)) {
+      return { ok: false, error: `tier '${id}': ${info.slug} does not support effort '${effort}' (supported: ${info.efforts.join(", ")})` };
+    }
+    tiers.push({ id, ...provider ? { provider } : {}, ...model2 ? { model: model2 } : {}, effort, use });
+  }
+  if (patrol.tier !== void 0 && !tiers.some((t) => t.id === patrol.tier)) return { ok: false, error: "unknown patrol tier" };
+  return { ok: true, policy: { ...raw, overload, sandboxWrites: raw.sandboxWrites, retention, guidance, codexGuidance, tiers, models: allowed, patrol, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
+}
+function loadPolicy(file2 = config.policyFile) {
+  let text2;
+  try {
+    text2 = readFileSync6(file2, "utf8");
+  } catch {
+    return { policy: DEFAULT_POLICY };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text2);
+  } catch (e) {
+    return { policy: DEFAULT_POLICY, error: `${file2} is not valid JSON (${e instanceof Error ? e.message : e}); using the default policy` };
+  }
+  const r = validatePolicy(parsed, []);
+  return r.ok ? { policy: r.policy } : { policy: DEFAULT_POLICY, error: `${file2}: ${r.error}; using the default policy` };
+}
+var findTier = (policy, id) => id ? policy.tiers.find((t) => t.id === id.toLowerCase()) : void 0;
+function tierLabel(t) {
+  const dflt = config.defaultModel ?? configuredModel();
+  return `${t.model ?? (dflt ? dflt : "codex default")}#${t.effort}`;
+}
+
 // src/appserver.ts
 var MAX_REMINDERS = 2;
 var APP_SERVER_ARGS = ["app-server", "-c", `approval_policy="never"`];
@@ -38087,7 +38296,8 @@ function kindFromInfo(info) {
   if (/rateLimit/i.test(key2)) return "rate_limit";
   if (/unauthorized/i.test(key2)) return "auth";
   if (/contextWindow/i.test(key2)) return "context";
-  if (/serverOverloaded|internalServerError|ConnectionFailed|StreamDisconnected|TooManyFailedAttempts/i.test(key2)) return "network";
+  if (/server_?Overloaded/i.test(key2)) return "overloaded";
+  if (/internalServerError|ConnectionFailed|StreamDisconnected|TooManyFailedAttempts/i.test(key2)) return "network";
   return void 0;
 }
 var snake = (s) => s.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
@@ -38230,6 +38440,18 @@ var AppServerTurn = class {
   running = /* @__PURE__ */ new Map();
   redirecting;
   keptCommands = [];
+  overloadWaiting = false;
+  overloadAttempt = 0;
+  overloadConsecutive = 0;
+  overloadTotal = 0;
+  overloadProgress = 0;
+  lastProgressAt = Date.now();
+  lastOverloadError;
+  overloadStartedAt;
+  overloadTimer;
+  overloadGeneration = 0;
+  completedItems = /* @__PURE__ */ new Set();
+  turnError;
   reminders = 0;
   child;
   o;
@@ -38242,6 +38464,7 @@ var AppServerTurn = class {
     });
     child.on("close", () => {
       this.closed = true;
+      clearTimeout(this.overloadTimer);
       for (const p of this.pending.values()) p.reject(new Error("codex app-server exited"));
       this.pending.clear();
     });
@@ -38306,6 +38529,10 @@ var AppServerTurn = class {
         this.running.delete(it.id);
         if (it.type === "userMessage") return this.consumed(it.clientId);
         if (it.type === "agentMessage" && typeof it.text === "string") this.lastText = it.text;
+        if (["agentMessage", "commandExecution", "fileChange"].includes(it.type) && !this.completedItems.has(it.id)) {
+          this.completedItems.add(it.id);
+          this.markProgress();
+        }
         this.hooks.emit({ type: "item.completed", item: execItem(it) });
         return;
       }
@@ -38317,7 +38544,7 @@ var AppServerTurn = class {
         this.tokens(p.tokenUsage);
         return this.ping();
       case "turn/started":
-        this.turnId ??= p.turn?.id;
+        this.turnId = p.turn?.id ?? this.turnId;
         return this.ping();
       case "turn/completed":
         if (!this.turnId || p.turn?.id === this.turnId) this.complete(p.turn ?? {});
@@ -38344,19 +38571,39 @@ var AppServerTurn = class {
       reasoningOutputTokens: t.reasoningOutputTokens - (l?.reasoningOutputTokens ?? 0)
     };
     const b = this.usageBase;
+    const previousOutput = this.usage.output;
     this.usage = {
       input: t.inputTokens - b.inputTokens,
       cached: t.cachedInputTokens - b.cachedInputTokens,
       output: t.outputTokens - b.outputTokens,
       reasoning: t.reasoningOutputTokens - b.reasoningOutputTokens
     };
+    if (this.usage.output > previousOutput) this.markProgress();
+    this.emitUsage();
+  }
+  markProgress() {
+    this.overloadProgress++;
+    this.lastProgressAt = Date.now();
+    this.overloadConsecutive = 0;
+    if (this.overloadAttempt && !this.overloadWaiting) this.publishOverload("codex");
+  }
+  emitUsage() {
+    this.hooks.emit({ type: "turn.usage", cumulative: true, usage: {
+      input_tokens: this.usage.input,
+      cached_input_tokens: this.usage.cached,
+      output_tokens: this.usage.output,
+      reasoning_output_tokens: this.usage.reasoning
+    } });
   }
   fail(error62) {
+    this.turnError = error62;
     const kind = kindFromInfo(error62?.codexErrorInfo);
+    if ((kind ?? classifyError(String(error62?.message ?? ""))) === "overloaded") return;
     if (kind) this.errorKinds.push(kind);
     this.hooks.emit({ type: "error", message: error62?.message ?? "codex turn failed" });
   }
   complete(turn, checkedQueue = false) {
+    if (turn.status === "failed" && !turn.error && this.turnError) turn = { ...turn, error: this.turnError };
     if (turn.status === "completed" && this.redirecting) return this.complete({ ...turn, status: "interrupted" });
     if (turn.status === "completed" && !checkedQueue && !this.finished) {
       void this.serialize(async () => {
@@ -38366,6 +38613,11 @@ var AppServerTurn = class {
       return;
     }
     if (this.finished) return;
+    if (this.overloadWaiting) return;
+    if (turn.status === "failed" && (kindFromInfo(turn.error?.codexErrorInfo) ?? classifyError(String(turn.error?.message ?? ""))) === "overloaded") {
+      void this.handleOverload(turn).catch((e) => this.failRun(e));
+      return;
+    }
     const runDir = this.o.runDir;
     if (turn.status === "interrupted") {
       const redirect = this.redirecting;
@@ -38381,7 +38633,7 @@ var AppServerTurn = class {
         if (!/longrun\.mjs/i.test(r.command)) killed.push(r.command);
       }
       for (const n of live2) {
-        if (redirect && !redirect.kill || this.userInterrupt && !this.userInterrupt.killLongruns) kept.push({ n, command: longrunCommand(runDir, n), log: join9(runDir, `cmd-${n}.log`), keptAt: Date.now(), outcome: "running" });
+        if (redirect && !redirect.kill || this.userInterrupt && !this.userInterrupt.killLongruns) kept.push({ n, command: longrunCommand(runDir, n), log: join10(runDir, `cmd-${n}.log`), keptAt: Date.now(), outcome: "running" });
         else if (stopLongrun(runDir, n, redirect ? "lead redirected with kill" : "task cancelled")) killed.push(longrunCommand(runDir, n));
       }
       if (redirect) {
@@ -38404,15 +38656,16 @@ var AppServerTurn = class {
       this.keptCommands = this.keptCommands.map((k) => k.outcome === "running" && stopLongrun(runDir, k.n, "codex ended the run without dealing with it") ? { ...k, outcome: "killed_forgotten" } : k);
     }
     this.finished = true;
+    this.emitUsage();
     const text2 = turn.items?.filter((i) => i.type === "agentMessage").at(-1)?.text ?? this.lastText;
     if (this.o.lastMessageFile && typeof text2 === "string") {
       try {
-        writeFileSync5(this.o.lastMessageFile, text2);
+        writeFileSync6(this.o.lastMessageFile, text2);
       } catch {
       }
     }
     if (turn.status === "completed") {
-      this.hooks.emit({ type: "turn.completed", usage: {
+      this.hooks.emit({ type: "turn.completed", cumulative: true, usage: {
         input_tokens: this.usage.input,
         cached_input_tokens: this.usage.cached,
         output_tokens: this.usage.output,
@@ -38452,7 +38705,7 @@ var AppServerTurn = class {
       const res = o.sessionId ? await this.rpc(o.fork ? "thread/fork" : "thread/resume", { threadId: o.sessionId, ...params, excludeTurns: true }) : await this.rpc("thread/start", params);
       this.threadId = res.thread?.id;
       this.hooks.emit({ type: "thread.started", thread_id: this.threadId });
-      if (o.outputSchemaFile) this.outputSchema = JSON.parse(readFileSync5(o.outputSchemaFile, "utf8"));
+      if (o.outputSchemaFile) this.outputSchema = JSON.parse(readFileSync7(o.outputSchemaFile, "utf8"));
       const input2 = [{ type: "text", text: o.prompt, text_elements: [] }];
       for (const path of o.images ?? []) input2.push({ type: "localImage", path });
       await this.startTurn(input2);
@@ -38461,6 +38714,8 @@ var AppServerTurn = class {
     }
   }
   async startTurn(input2, clientUserMessageId) {
+    this.overloadProgress = 0;
+    this.turnError = void 0;
     const turn = await this.rpc("turn/start", {
       threadId: this.threadId,
       input: input2,
@@ -38470,6 +38725,79 @@ var AppServerTurn = class {
     });
     this.turnId = turn.turn?.id ?? this.turnId;
     this.hooks.emit({ type: "turn.started", turn_id: this.turnId });
+    this.overloadWaiting = false;
+    if (this.overloadAttempt) this.publishOverload("codex");
+  }
+  async handleOverload(turn) {
+    this.captureOverloadKept();
+    this.running.clear();
+    this.emitUsage();
+    const policy = this.o.overload ?? DEFAULT_POLICY.overload;
+    const progressed = this.overloadProgress > 0;
+    if (progressed) this.overloadConsecutive = 0;
+    else this.overloadConsecutive++;
+    this.overloadAttempt++;
+    this.overloadStartedAt ??= Date.now();
+    this.lastOverloadError = String(turn.error?.message ?? "model overload");
+    const limit = policy.backoff_s.length;
+    if (this.overloadConsecutive > limit || this.overloadTotal >= policy.max_total_retries) return this.finishOverload(turn);
+    const wait = (policy.backoff_s[Math.max(0, this.overloadConsecutive - 1)] ?? 0) * 1e3;
+    this.overloadWaiting = true;
+    const nextRetryAt = Date.now() + wait;
+    this.hooks.emit({ type: "turn.redirected", turn_id: turn.id, kept: this.kept.map((k) => k.n), killed: [] });
+    this.publishOverload("overload_wait", nextRetryAt);
+    this.hooks.activity();
+    const generation = ++this.overloadGeneration;
+    this.overloadTimer = setTimeout(() => {
+      void this.serialize(async () => {
+        if (generation === this.overloadGeneration && this.overloadWaiting && !this.finished) await this.resumeOverload();
+      }).catch((e) => this.failRun(e));
+    }, wait);
+  }
+  get waitingOnOverload() {
+    return this.overloadWaiting;
+  }
+  publishOverload(phase, nextRetryAt) {
+    this.o.overload?.onUpdate?.({
+      phase,
+      attempt: this.overloadAttempt,
+      consecutive: this.overloadConsecutive,
+      limit: (this.o.overload ?? DEFAULT_POLICY.overload).backoff_s.length,
+      totalRetries: this.overloadTotal,
+      nextRetryAt,
+      lastProgressAt: this.lastProgressAt,
+      lastError: this.lastOverloadError
+    });
+  }
+  async resumeOverload(text2, record2) {
+    clearTimeout(this.overloadTimer);
+    this.overloadGeneration++;
+    this.overloadWaiting = false;
+    if (this.finished || this.userInterrupt || this.o.signal?.aborted || this.closed) return;
+    this.overloadTotal++;
+    const open3 = this.kept.filter((k) => k.outcome === "running");
+    const preamble = this.o.runDir && open3.length ? keptPreamble(this.o.runDir, open3, []) : "";
+    const message = `The previous turn was cut off by model overload (attempt ${this.overloadAttempt}); continue the original task from where it stopped, do not redo finished steps.`;
+    this.publishOverload("codex");
+    this.hooks.activity();
+    await this.startTurn([{ type: "text", text: message + "\n\n" + preamble + (text2 ?? ""), text_elements: [] }], record2?.clientId);
+  }
+  captureOverloadKept() {
+    const dir2 = this.o.runDir;
+    if (!dir2) return;
+    const tracked = new Set(this.keptCommands.map((k) => k.n));
+    for (const n of runningLongruns(dir2)) if (!tracked.has(n)) this.keptCommands.push({ n, command: longrunCommand(dir2, n), log: join10(dir2, `cmd-${n}.log`), keptAt: Date.now(), outcome: "running" });
+  }
+  finishOverload(turn) {
+    this.finished = true;
+    this.overloadWaiting = false;
+    this.publishOverload("codex");
+    const kind = "overloaded";
+    this.errorKinds.push(kind);
+    this.emitUsage();
+    this.hooks.emit({ type: "turn.failed", error: { message: turn.error?.message ?? "model overloaded" } });
+    for (const wake of this.waiters.values()) wake();
+    this.hooks.done();
   }
   /**
    * Stop what codex is doing right now (including a long command) and continue the same thread with
@@ -38479,6 +38807,23 @@ var AppServerTurn = class {
     return this.serialize(() => this.redirectNow(text2, opts));
   }
   async redirectNow(text2, opts = {}) {
+    if (this.overloadWaiting) {
+      const kept = this.kept.filter((k) => k.outcome === "running");
+      const killed = [];
+      if (opts.kill && this.o.runDir) for (const k of kept) {
+        if (stopLongrun(this.o.runDir, k.n, "lead redirected with kill")) killed.push(k.command);
+      }
+      const record3 = { at: Date.now(), text: text2.slice(0, 500), clientId: `redirect-${randomUUID4().slice(0, 8)}`, redirect: true };
+      this.steers.push(record3);
+      this.hooks.emit({ type: "steer.sent", client_id: record3.clientId, text: record3.text, redirect: true });
+      try {
+        await this.resumeOverload(text2, record3);
+      } catch (e) {
+        this.failRun(e);
+        throw e;
+      }
+      return { consumed: true, record: record3, kept: opts.kill ? [] : kept, killed };
+    }
     if (!this.threadId || !this.turnId) throw new Error("codex has not started its turn yet; try again in a few seconds");
     if (this.finished) throw new Error("codex already finished this turn");
     const record2 = { at: Date.now(), text: text2.slice(0, 500), clientId: `redirect-${randomUUID4().slice(0, 8)}`, redirect: true };
@@ -38517,9 +38862,23 @@ var AppServerTurn = class {
     const runDir = this.o.runDir;
     return runDir ? this.keptCommands = this.keptCommands.map((k) => refresh(runDir, k)) : this.keptCommands;
   }
+  get overloadTotalRetries() {
+    return this.overloadTotal;
+  }
+  get overloadLastProgress() {
+    return this.lastProgressAt;
+  }
+  get overloadConsecutiveFailures() {
+    return this.overloadConsecutive;
+  }
+  get overloadStart() {
+    return this.overloadStartedAt;
+  }
   failRun(e) {
     if (this.finished) return;
     this.finished = true;
+    clearTimeout(this.overloadTimer);
+    this.emitUsage();
     this.hooks.emit({ type: "turn.failed", error: { message: e instanceof Error ? e.message : String(e) } });
     this.hooks.done();
   }
@@ -38527,6 +38886,27 @@ var AppServerTurn = class {
     return this.serialize(() => this.steerNow(text2, waitMs));
   }
   async steerNow(text2, waitMs) {
+    if (this.overloadWaiting) {
+      const record3 = { at: Date.now(), text: text2.slice(0, 500), clientId: `steer-${randomUUID4().slice(0, 8)}` };
+      this.steers.push(record3);
+      let timer2;
+      const seen2 = new Promise((resolve4) => {
+        this.waiters.set(record3.clientId, resolve4);
+        timer2 = setTimeout(resolve4, waitMs);
+      });
+      try {
+        await this.resumeOverload(text2, record3);
+        this.hooks.emit({ type: "steer.sent", client_id: record3.clientId, text: record3.text });
+        if (!record3.consumedAt) await seen2;
+        return { consumed: record3.consumedAt !== void 0, record: record3 };
+      } catch (e) {
+        this.failRun(e);
+        throw e;
+      } finally {
+        clearTimeout(timer2);
+        this.waiters.delete(record3.clientId);
+      }
+    }
     if (!this.threadId || !this.turnId) throw new Error("codex has not started its turn yet; try again in a few seconds");
     if (this.finished) throw new Error("codex already finished this turn");
     const record2 = { at: Date.now(), text: text2.slice(0, 500), clientId: `steer-${randomUUID4().slice(0, 8)}` };
@@ -38558,6 +38938,13 @@ var AppServerTurn = class {
   async interrupt() {
     this.redirecting = void 0;
     if (this.finished || !this.threadId || !this.turnId) return;
+    if (this.overloadWaiting) {
+      clearTimeout(this.overloadTimer);
+      this.overloadWaiting = false;
+      this.overloadGeneration++;
+      this.complete({ status: "interrupted", id: this.turnId });
+      return;
+    }
     try {
       await this.rpc("turn/interrupt", { threadId: this.threadId, turnId: this.turnId });
     } catch {
@@ -38570,6 +38957,7 @@ function classifyError(text2) {
   if (/quota|usage limit|insufficient_quota|credits|billing|exceeded.*usage/i.test(text2)) return "quota";
   if (/rate.?limit|429|too many requests/i.test(text2)) return "rate_limit";
   if (/auth|401|403|api.?key|unauthorized|forbidden|log.?in/i.test(text2)) return "auth";
+  if (/at capacity|overloaded|server_overloaded/i.test(text2)) return "overloaded";
   if (/network|connect|ECONN|ENOTFOUND|fetch failed|socket|stream disconnect|timed? ?out|\b50[234]\b/i.test(text2)) return "network";
   if (/context|token limit|too many tokens|maximum.*tokens/i.test(text2)) return "context";
   return "other";
@@ -38613,6 +39001,7 @@ var EventCollector = class {
   fileChanges = [];
   tokens = { input: 0, cachedInput: 0, output: 0, reasoning: 0 };
   turns = 0;
+  lastUsage = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 };
   warnings = [];
   errors = [];
   raw = [];
@@ -38657,18 +39046,22 @@ var EventCollector = class {
         this.item(e.item ?? {});
         break;
       }
-      case "turn.completed": {
-        this.turns++;
-        const u = e.usage ?? {};
-        this.tokens.input += u.input_tokens ?? 0;
-        this.tokens.cachedInput += u.cached_input_tokens ?? 0;
-        this.tokens.output += u.output_tokens ?? 0;
-        this.tokens.reasoning += u.reasoning_output_tokens ?? 0;
+      case "turn.completed":
+      case "turn.usage":
+      case "turn.failed": {
+        if (e.type === "turn.completed") this.turns++;
+        if (e.usage) {
+          const u = e.usage;
+          const base = e.cumulative ? this.lastUsage : void 0;
+          this.tokens.input += (u.input_tokens ?? 0) - (base?.input_tokens ?? 0);
+          this.tokens.cachedInput += (u.cached_input_tokens ?? 0) - (base?.cached_input_tokens ?? 0);
+          this.tokens.output += (u.output_tokens ?? 0) - (base?.output_tokens ?? 0);
+          this.tokens.reasoning += (u.reasoning_output_tokens ?? 0) - (base?.reasoning_output_tokens ?? 0);
+          if (e.cumulative) this.lastUsage = u;
+        }
+        if (e.type === "turn.failed") this.error(e.error?.message ?? e.error);
         break;
       }
-      case "turn.failed":
-        this.error(e.error?.message ?? e.error);
-        break;
       case "turn.redirected":
         this.inflight.clear();
         break;
@@ -38718,7 +39111,7 @@ var EventCollector = class {
 function readFinal(file2) {
   if (!file2 || !existsSync4(file2)) return void 0;
   try {
-    return readFileSync6(file2, "utf8").trim() || void 0;
+    return readFileSync8(file2, "utf8").trim() || void 0;
   } catch {
     return void 0;
   }
@@ -38796,7 +39189,10 @@ function runCodexProcess(o) {
     log?.on("error", () => {
     });
     let exitTimer;
-    const turn = appServer ? new AppServerTurn(child, o, {
+    const turn = appServer ? new AppServerTurn(child, o.overload ? { ...o, overload: {
+      ...o.overload,
+      onUpdate: (state) => o.overload?.onUpdate?.({ ...state, lastError: state.lastError === void 0 ? void 0 : redact(state.lastError) })
+    } } : o, {
       emit: (event) => {
         const line = redactLine(JSON.stringify(event));
         log?.write(`${line}
@@ -38881,7 +39277,7 @@ function runCodexProcess(o) {
     const idleWindow = () => ({
       key: command()?.id ?? "silent",
       since: windowSince ?? collector.lastEventAt,
-      timeoutMs: (threshold ?? (command() ? selection().seconds : o.stall?.silent_s ?? (o.idleTimeoutMs === void 0 ? config.idleTimeoutSec : o.idleTimeoutMs / 1e3))) * 1e3
+      timeoutMs: turn?.waitingOnOverload ? 0 : (threshold ?? (command() ? selection().seconds : o.stall?.silent_s ?? (o.idleTimeoutMs === void 0 ? config.idleTimeoutSec : o.idleTimeoutMs / 1e3))) * 1e3
     });
     const watchdog = softWatchdog(child.pid, idleWindow, (evidence) => {
       const it = command();
@@ -38976,7 +39372,7 @@ ${stderr}
       const final = readFinal(o.lastMessageFile);
       if (final && o.lastMessageFile && redactLine(final) !== final) {
         try {
-          writeFileSync6(o.lastMessageFile, redactLine(final));
+          writeFileSync7(o.lastMessageFile, redactLine(final));
         } catch {
         }
       }
@@ -38991,6 +39387,10 @@ ${stderr}
         steers: turn?.steers.length ? turn.steers : void 0,
         rateLimits: turn?.rateLimits,
         kept: turn?.kept.length ? turn.kept : void 0,
+        overloadRetries: turn?.overloadTotalRetries,
+        overloadLastProgressAt: turn?.overloadLastProgress,
+        overloadConsecutive: turn?.overloadConsecutiveFailures,
+        overloadDurationMs: turn?.overloadStart === void 0 ? void 0 : Date.now() - turn.overloadStart,
         stalled: !!stall,
         stall,
         sessionId: collector.sessionId,
@@ -39015,7 +39415,7 @@ ${stderr}
 // src/git.ts
 import { spawn as spawn3 } from "node:child_process";
 import { readFile as readFile4, stat as stat2 } from "node:fs/promises";
-import { join as join10 } from "node:path";
+import { join as join11 } from "node:path";
 function parsePorcelainZ(out) {
   const parts = out.split("\0");
   const entries2 = [];
@@ -39065,7 +39465,7 @@ async function snapshot(cwd) {
   await Promise.all(Array.from({ length: Math.min(64, entries2.length) }, async () => {
     while (next < entries2.length) {
       const i = next++;
-      fingerprints[i] = await fingerprint(join10(cwd, entries2[i].path));
+      fingerprints[i] = await fingerprint(join11(cwd, entries2[i].path));
     }
   }));
   for (const [i, e] of entries2.entries()) snap.set(e.path, { xy: e.xy, hash: fingerprints[i] });
@@ -39101,7 +39501,7 @@ async function diffStat(cwd, changes) {
   async function fileStat(c) {
     if (c.xy === "??") {
       try {
-        const file2 = join10(cwd, c.path);
+        const file2 = join11(cwd, c.path);
         if ((await stat2(file2)).size > MAX_COUNT_BYTES) return { ...c };
         const buf = await readFile4(file2);
         if (buf.includes(0)) return { ...c, binary: true };
@@ -39113,185 +39513,6 @@ async function diffStat(cwd, changes) {
     }
     return { ...c, ...nums.get(c.path) };
   }
-}
-
-// src/models.ts
-import { readFileSync as readFileSync7 } from "node:fs";
-import { join as join11 } from "node:path";
-function listModels(path = join11(config.codexHome, "models_cache.json")) {
-  let data;
-  try {
-    data = JSON.parse(readFileSync7(path, "utf8"));
-  } catch {
-    return [];
-  }
-  const models = Array.isArray(data?.models) ? data.models : [];
-  return models.filter((m) => typeof m?.slug === "string" && (m.visibility ?? "list") === "list").map((m) => ({
-    slug: m.slug,
-    efforts: (m.supported_reasoning_levels ?? []).map((l) => l?.effort).filter(Boolean)
-  }));
-}
-var STOPWORDS = /* @__PURE__ */ new Set(["use", "using", "with", "from", "in", "on", "via", "the", "a", "model", "codex", "openai", "by"]);
-function tokenize(s) {
-  return s.toLowerCase().replace(/([a-z])(\d)/g, "$1 $2").replace(/[^a-z0-9.]+/g, " ").split(" ").map((t) => t.replace(/^\.+|\.+$/g, "")).filter((t) => t && !STOPWORDS.has(t));
-}
-var isVersion = (t) => /\d/.test(t);
-function version2(slug) {
-  return Number.parseFloat(tokenize(slug).find(isVersion) ?? "0") || 0;
-}
-function resolveModel(query, models) {
-  const [base = "", effortRaw] = query.trim().split("#", 2);
-  const effort = effortRaw?.trim().toLowerCase() || void 0;
-  const withEffort = (m, slug) => {
-    if (effort && m?.efforts.length && !m.efforts.includes(effort)) {
-      return { ok: false, reason: `${slug} does not support effort '${effort}' (supported: ${m.efforts.join(", ")})`, candidates: [] };
-    }
-    return { ok: true, model: slug, effort, known: !!m };
-  };
-  const exact = models.find((m) => m.slug.toLowerCase() === base.trim().toLowerCase());
-  if (exact) return withEffort(exact, exact.slug);
-  const tokens = tokenize(base);
-  if (!tokens.length) return { ok: false, reason: `empty model name '${query}'`, candidates: [] };
-  const scored = models.map((m) => {
-    const slugTokens = tokenize(m.slug);
-    const set2 = new Set(slugTokens);
-    if (!tokens.filter(isVersion).every((t) => set2.has(t))) return void 0;
-    let score = 0;
-    for (const t of tokens) {
-      const hit = set2.has(t) ? 3 : m.slug.toLowerCase().includes(t) ? 1 : 0;
-      score += isVersion(t) ? hit * 2 : hit;
-    }
-    if (tokens.some((t) => !isVersion(t)) && !tokens.some((t) => !isVersion(t) && m.slug.toLowerCase().includes(t))) return void 0;
-    if (!score) return void 0;
-    return { m, score, extras: slugTokens.filter((n) => !tokens.includes(n)).length, version: version2(m.slug) };
-  }).filter((x) => !!x).sort((a, b) => b.score - a.score || a.extras - b.extras || b.version - a.version || a.m.slug.localeCompare(b.m.slug));
-  const best = scored[0];
-  if (!best) {
-    if (/^[\w.-]+$/.test(base.trim())) return withEffort(void 0, base.trim());
-    return { ok: false, reason: `no codex model matches '${query}'`, candidates: [] };
-  }
-  const tied = scored.filter((s) => s.score === best.score && s.extras === best.extras && s.version === best.version);
-  if (tied.length > 1) return { ok: false, reason: `'${query}' is ambiguous`, candidates: tied.map((t) => t.m.slug) };
-  return withEffort(best.m, best.m.slug);
-}
-function resolveModelOrThrow(query) {
-  const r = resolveModel(query, listModels());
-  if (r.ok) return r;
-  throw new Error(`${r.reason}.${r.candidates.length ? ` Did you mean one of: ${r.candidates.join(", ")}?` : ""} Use list_models to see all models.`);
-}
-
-// src/policy.ts
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync8, renameSync as renameSync2, writeFileSync as writeFileSync7 } from "node:fs";
-var DEFAULT_POLICY = {
-  patrol: { every_s: 1800, timeout_s: 300, timeout_default_s: 14400 },
-  sandboxWrites: false,
-  retention: { cmdLogMaxMB: 5, failedLogDays: 3, runDays: 30, totalMaxMB: 1024 },
-  stall: { long_commands: [{ match: "unittest discover|pytest|npm (run )?test|node --test", idle_s: 1800 }] },
-  "guidance": "Cost policy: Codex usage is billed per token, and the higher tiers cost several times more. Pick the cheapest tier that will get this task right; quality is not negotiable, so cheap means fewer wasted tokens, not a sloppier result. Unsure between two tiers: take the cheaper one, unless the task is in the risky class named by the top tier, where a failed attempt costs more than the difference. Escalate on evidence: after a check FAIL or a wrong result, continue the same session_id one tier up. Keep briefs tight and pass only the checks that prove the change. Read-only reviews and questions: use high when the reviewed code touches live trading, money, concurrency or security; low for other reviews and for questions; medium when a non-risky review must judge cross-module design. Frontend design stays with you: page layout, visual style, CSS, component look and feel, and UI copy are yours to do, not Codex's (its design taste is weak); backend, data plumbing and tests behind a UI can still be delegated. Opinion and direction calls stay with you: when a question asks for judgement (which approach, architecture or direction to take, whether a plan, design or trade-off is right, what to prioritise or recommend), use Codex only to gather objective facts and data (what the code actually does, measurements, test or benchmark results, documented behaviour, counts and comparisons), and ask it for findings, not conclusions. Form the judgement and make the final decision yourself; never adopt Codex's opinion or recommendation as the answer. When Codex can't work: if a delegate call fails for an environment reason (quota or rate limit, auth, network, codex crash, a timeout or abort with no usable result; not the user pressing Stop), retry once only if the error looks transient. If it still fails, don't quietly take the delegated work over yourself. Estimate what is left that you meant to give Codex: if it is small (a few edits you can already see), finish it and say Codex was unavailable; if it is substantial, stop and ask the user, with the error and the remaining work, whether to wait or fix Codex and continue, have you do it yourself (give a rough size), or do something else.\nSandbox selection: Set sandbox on every delegation. Use read-only for investigations, code reviews and questions that need no writes. Use write for anything that edits files or runs builds and tests; the user's panel setting decides how write runs (by default with full access, so network, dependency installs and paths outside cwd work). Full access does not expand authorization: no deployment, live operations, or writes to production or shared data unless the user asked for them; name off-limits paths and systems in the brief. State known requirements in the brief (Python interpreter, dependencies, temp paths). If a result reports sandbox_denied, the panel sandbox is on: fix the path (prefer cwd or the default temp dir), pass add_dirs, or ask the user to turn the sandbox off; never repeat the same blocked attempt. A failure caused only by sandbox restrictions or missing environment dependencies does not justify raising the reasoning tier.",
-  "codexGuidance": "Cost (added by the delegating tool): work economically. Search before opening whole files and read only what you need, prefer a targeted test over re-running the full suite on every step, and stop once the acceptance criteria are met. Never skip the verification needed to be sure the change is correct. Keep the diff minimal and targeted: change only what the task needs and never rewrite a whole file or module when a local edit works. In your final report, list every existing behaviour you removed, disabled, narrowed or simplified (deleted branches, narrowed conditions or time windows, dropped arguments, flags or recovery paths), or state that there were none.",
-  "tiers": [
-    {
-      "id": "light",
-      "model": "gpt-6-luna",
-      "effort": "xhigh",
-      "use": "Mechanical, fully specified tasks with no meaningful ambiguity or design decisions: renaming, version bumps, applying a provided patch, straightforward lint fixes, or simple factual lookups. The solution should be directly executable without investigating alternatives."
-    },
-    {
-      "id": "low",
-      "model": "gpt-6.1-sol",
-      "effort": "low",
-      "use": "Default tier for ordinary, non-risky work: features and bug fixes across a few files that follow the project's existing conventions, bugs whose cause can be found by reading or reproducing, moderate refactoring, writing or fixing tests, and routine judgement between obvious local approaches. Use medium only when real design choices are left open, or high when the task is in the risky class."
-    },
-    {
-      "id": "medium",
-      "model": "gpt-6.1-sol",
-      "effort": "medium",
-      "use": "Work that needs genuine design decisions without an existing pattern to follow: new structure spanning several modules, non-obvious tradeoffs, or many routine edge cases that interact, while still outside the risky class named by high. Also a low attempt that failed for lack of reasoning."
-    },
-    {
-      "id": "high",
-      "model": "gpt-6.1-sol",
-      "effort": "high",
-      "use": "Complex or high-risk tasks involving unclear root causes, cross-module architecture or design tradeoffs, concurrency, security, financial correctness, data migration, or many interacting edge cases. Requires deep investigation, careful validation, or substantial independent reasoning. Also a medium attempt that failed for lack of reasoning (not for external or environmental issues)."
-    }
-  ],
-  "models": [
-    "gpt-6.1-sol",
-    "gpt-6-luna"
-  ]
-};
-var TIER_ID = /^[a-z0-9][a-z0-9_-]{0,23}$/;
-var SLUG = /^[\w.-]{1,64}$/;
-var MAX_TEXT = 4e3;
-var str = (v) => typeof v === "string" ? v.trim() : void 0;
-function validatePolicy(input2, models = listModels()) {
-  if (!input2 || typeof input2 !== "object" || Array.isArray(input2)) return { ok: false, error: "policy must be a JSON object" };
-  const raw = { ...DEFAULT_POLICY, ...input2 };
-  const patrol = { ...DEFAULT_POLICY.patrol, ...raw.patrol };
-  if (!raw.patrol || typeof raw.patrol !== "object" || Array.isArray(raw.patrol) || !Number.isInteger(patrol.every_s) || patrol.every_s < 600 || !Number.isInteger(patrol.timeout_default_s) || patrol.timeout_default_s <= 0 || !Number.isInteger(patrol.timeout_s) || patrol.timeout_s <= 0 || patrol.tier !== void 0 && typeof patrol.tier !== "string") return { ok: false, error: "invalid patrol policy" };
-  if (typeof raw.sandboxWrites !== "boolean") return { ok: false, error: "sandboxWrites must be boolean" };
-  if (!raw.retention || typeof raw.retention !== "object" || Array.isArray(raw.retention)) return { ok: false, error: "invalid retention policy" };
-  const retention = { ...DEFAULT_POLICY.retention, ...raw.retention };
-  if (Object.values(retention).some((v) => typeof v !== "number" || !Number.isFinite(v) || v <= 0)) return { ok: false, error: "retention limits must be positive numbers" };
-  const stall = raw.stall;
-  if (stall !== void 0 && (!stall || typeof stall !== "object" || Array.isArray(stall) || [stall.silent_s, stall.command_s].some((v) => v !== void 0 && (!Number.isFinite(v) || v < 0)) || stall.long_commands !== void 0 && (!Array.isArray(stall.long_commands) || stall.long_commands.some((r) => !r || typeof r.match !== "string" || !Number.isFinite(r.idle_s) || r.idle_s < 0))))
-    return { ok: false, error: "invalid stall policy" };
-  const guidance = str(raw.guidance);
-  const codexGuidance = str(raw.codexGuidance);
-  if (guidance === void 0 || guidance.length > MAX_TEXT) return { ok: false, error: `guidance must be text of at most ${MAX_TEXT} characters` };
-  if (codexGuidance === void 0 || codexGuidance.length > MAX_TEXT) return { ok: false, error: `codexGuidance must be text of at most ${MAX_TEXT} characters` };
-  if (!Array.isArray(raw.models) || raw.models.length > 32) return { ok: false, error: "models must be a list of at most 32 model slugs" };
-  const allowed = [];
-  for (const m of raw.models) {
-    const slug = str(m);
-    if (!slug || !SLUG.test(slug)) return { ok: false, error: `invalid model slug '${String(m)}'` };
-    if (!allowed.includes(slug)) allowed.push(slug);
-  }
-  if (!Array.isArray(raw.tiers) || !raw.tiers.length || raw.tiers.length > 12) return { ok: false, error: "tiers must be a list of 1 to 12 tiers" };
-  const tiers = [];
-  for (const t of raw.tiers) {
-    const id = str(t?.id)?.toLowerCase() ?? "";
-    if (!TIER_ID.test(id)) return { ok: false, error: `tier id '${id}' must be 1-24 of a-z, 0-9, '-', '_'` };
-    if (tiers.some((x) => x.id === id)) return { ok: false, error: `duplicate tier id '${id}'` };
-    const provider = t.provider;
-    if (provider !== void 0 && (typeof provider !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(provider))) return { ok: false, error: `tier provider must be an id or system` };
-    const model2 = str(t.model) || void 0;
-    if (model2 && !SLUG.test(model2)) return { ok: false, error: `tier '${id}': invalid model slug '${model2}'` };
-    const effort = str(t.effort)?.toLowerCase() ?? "";
-    if (!EFFORT_ORDER.includes(effort)) return { ok: false, error: `tier '${id}': unknown effort '${effort}' (known: ${EFFORT_ORDER.join(", ")})` };
-    const use = str(t.use) ?? "";
-    if (!use || use.length > 500) return { ok: false, error: `tier '${id}': 'use' must be 1-500 characters` };
-    const effective = model2 ?? config.defaultModel ?? configuredModel();
-    if (model2 && allowed.length && !allowed.includes(model2)) return { ok: false, error: `tier '${id}': model '${model2}' is not in the allowed models` };
-    const info = models.find((m) => m.slug === effective);
-    if (info?.efforts.length && !info.efforts.includes(effort)) {
-      return { ok: false, error: `tier '${id}': ${info.slug} does not support effort '${effort}' (supported: ${info.efforts.join(", ")})` };
-    }
-    tiers.push({ id, ...provider ? { provider } : {}, ...model2 ? { model: model2 } : {}, effort, use });
-  }
-  if (patrol.tier !== void 0 && !tiers.some((t) => t.id === patrol.tier)) return { ok: false, error: "unknown patrol tier" };
-  return { ok: true, policy: { ...raw, sandboxWrites: raw.sandboxWrites, retention, guidance, codexGuidance, tiers, models: allowed, patrol, stall: { ...DEFAULT_POLICY.stall, ...stall } } };
-}
-function loadPolicy(file2 = config.policyFile) {
-  let text2;
-  try {
-    text2 = readFileSync8(file2, "utf8");
-  } catch {
-    return { policy: DEFAULT_POLICY };
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(text2);
-  } catch (e) {
-    return { policy: DEFAULT_POLICY, error: `${file2} is not valid JSON (${e instanceof Error ? e.message : e}); using the default policy` };
-  }
-  const r = validatePolicy(parsed, []);
-  return r.ok ? { policy: r.policy } : { policy: DEFAULT_POLICY, error: `${file2}: ${r.error}; using the default policy` };
-}
-var findTier = (policy, id) => id ? policy.tiers.find((t) => t.id === id.toLowerCase()) : void 0;
-function tierLabel(t) {
-  const dflt = config.defaultModel ?? configuredModel();
-  return `${t.model ?? (dflt ? dflt : "codex default")}#${t.effort}`;
 }
 
 // src/checkpoints.ts
@@ -39488,7 +39709,7 @@ function renderReport(r) {
 // package.json
 var package_default = {
   name: "claude-codex-delegate",
-  version: "0.17.1",
+  version: "0.20.0",
   description: "MCP server + Claude Code plugin that lets Claude delegate tasks to OpenAI Codex models (GPT-6 Sol, Astra, Luna\u2026) while staying the orchestrator.",
   type: "module",
   license: "MIT",
@@ -39708,13 +39929,13 @@ ${digest}`,
     const cancelled = new Promise((_, reject) => controller.signal.addEventListener("abort", () => reject(Object.assign(new Error("patrol cancelled"), { kind: "timeout" })), { once: true }));
     const execution = run();
     this.active = Promise.race([execution, timeout, cancelled]).then((v) => {
-      if (this.stopped) return;
+      if (this.stopped || this.meta.phase === "overload_wait") return;
       this.meta.patrols ??= [];
       this.meta.patrols.push({ at: Date.now(), ...v, repeat: v.verdict !== "healthy" && v.new === false, suspicionAt: suspicion?.suspectedAt });
       if (suspicion && (v.verdict === "healthy" || v.new === false) && this.meta.suspicion?.suspectedAt === suspicion.suspectedAt) this.rearm();
       this.publish();
     }, (error62) => {
-      if (this.stopped) return;
+      if (this.stopped || this.meta.phase === "overload_wait") return;
       this.meta.patrols ??= [];
       this.meta.patrols.push({
         at: Date.now(),
@@ -39823,7 +40044,7 @@ async function delegate(input2, signal, onProgress, stallControl, context) {
     activeWriters.set(lockKey, { signal, done });
   }
   try {
-    const run = { provider, cwd, sandbox: sandbox2, readOnly, model: context?.original.model ?? model2, effort: context?.original.effort ?? effort, tier: context ? context.original.tier : tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, fast: context ? context.original.fast : fast, images, structured, notes, continued, context };
+    const run = { provider, cwd, sandbox: sandbox2, readOnly, model: context?.original.model ?? model2, effort: context?.original.effort ?? effort, tier: context ? context.original.tier : tier?.id, codexGuidance: policy.codexGuidance, retention: policy.retention, overload: policy.overload, fast: context ? context.original.fast : fast, images, structured, notes, continued, context };
     const stall = {
       silent_s: input2.stall?.silent_s ?? input2.idle_timeout_s ?? policy.stall?.silent_s ?? config.idleTimeoutSec,
       command_s: input2.stall?.command_s ?? input2.idle_timeout_s ?? policy.stall?.command_s ?? config.commandIdleTimeoutSec,
@@ -39838,7 +40059,7 @@ async function delegate(input2, signal, onProgress, stallControl, context) {
   }
 }
 async function execute(input2, r, signal, onProgress, stallControl) {
-  const { cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier, codexGuidance, fast, images, structured, notes, continued } = r;
+  const { cwd, sandbox: sandbox2, readOnly, model: model2, effort, tier, codexGuidance, fast, images, structured, notes, continued, overload } = r;
   const runDir = newRunDir(r.context?.runsDir);
   if (r.context && !runDir) throw new Error("Cannot create dashboard run directory");
   const engine = r.context ? "app-server" : config.engine;
@@ -40084,6 +40305,14 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
       },
       stall: input2.stall,
       stallControl,
+      overload: { ...overload, onUpdate: ({ phase, ...state }) => {
+        const phaseChanged = meta3.phase !== phase;
+        meta3.overload = state;
+        meta3.suspicion = void 0;
+        meta3.phase = phase;
+        progress();
+        if (phaseChanged) writeMeta();
+      } },
       evidenceSampler: stallControl?.evidenceSampler,
       prompt,
       model: model2,
@@ -40146,7 +40375,7 @@ Command logs (added by the server): for commands likely to run longer than ~1 mi
     const report = structured ? parseReport(result.text) : void 0;
     if (structured && !report && result.ok) notes.push("codex did not return the JSON report; showing its raw final message");
     let checks;
-    const envStop = !!result.userInterrupt || !result.ok && (result.errorKind === "quota" || result.errorKind === "auth");
+    const envStop = !!result.userInterrupt || !result.ok && (result.errorKind === "quota" || result.errorKind === "auth" || result.errorKind === "overloaded");
     if (envStop && input2.checks?.length) notes.push(`host checks skipped: ${result.userInterrupt ? "user interrupted" : `codex stopped on ${result.errorKind}`}`);
     if (input2.checks?.length && !signal?.aborted && !envStop) {
       meta3.phase = "checks";
@@ -40303,13 +40532,14 @@ ${patrolLine}` : "");
   ];
   if (patrolLine) lines.push(patrolLine);
   if (r.exitKind !== "completed") {
-    const hint = r.errorKind === "quota" ? `codex is out of quota${quotaReset(r) ? ` until ${quotaReset(r)}` : ""}. STOP now: do not continue the delegated work yourself, do not sleep or poll for the reset. End your turn with what codex finished (git changes below), what is left, and ask the user whether to wait for the reset, have you take over the rest, or something else. Resume later with session_id.` : r.errorKind === "auth" ? "codex is not logged in or its credentials were rejected. STOP: tell the user (they run `codex login`), don't take over the work." : r.exitKind === "stalled" ? `codex hung on ${r.stall?.command?.replace(/\s+/g, " ").slice(0, 200) ?? "a silent model turn"}; the session keeps context: resume with session_id and tell it the command hung (run it with a timeout / fix the hang)` : (r.exitKind === "crashed" || r.exitKind === "api_error") && (r.errorKind === "network" || r.errorKind === "rate_limit") ? "transient: retry once with the same session_id" : void 0;
+    const hint = r.errorKind === "quota" ? `codex is out of quota${quotaReset(r) ? ` until ${quotaReset(r)}` : ""}. STOP now: do not continue the delegated work yourself, do not sleep or poll for the reset. End your turn with what codex finished (git changes below), what is left, and ask the user whether to wait for the reset, have you take over the rest, or something else. Resume later with session_id.` : r.errorKind === "auth" ? "codex is not logged in or its credentials were rejected. STOP: tell the user (they run `codex login`), don't take over the work." : r.errorKind === "overloaded" ? `model overloaded, server auto-resumed ${r.overloadRetries ?? 0} times over ${((r.overloadDurationMs ?? 0) / 6e4).toFixed(1)} min, no progress since ${r.overloadLastProgressAt ? new Date(r.overloadLastProgressAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }) : new Date(Date.now() - r.durationMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}; continue the same session_id (same tier, or a cheaper tier per policy); do not take over the work yourself` : r.exitKind === "stalled" ? `codex hung on ${r.stall?.command?.replace(/\s+/g, " ").slice(0, 200) ?? "a silent model turn"}; the session keeps context: resume with session_id and tell it the command hung (run it with a timeout / fix the hang)` : (r.exitKind === "crashed" || r.exitKind === "api_error") && (r.errorKind === "network" || r.errorKind === "rate_limit") ? "transient: retry once with the same session_id" : void 0;
     if (hint) lines.splice(1, 0, `next: ${hint}`);
   } else if (o.report && o.report.status !== "done") {
     const n = o.report.questions?.length ?? 0;
     lines[0] = `status: ${o.report.status} (codex finished but the work is not done)`;
     lines.splice(1, 0, `next: ${REPORT_NEXT[o.report.status]}${o.report.status === "needs_decision" && n ? ` (${n} question${n > 1 ? "s" : ""} below)` : ""}`);
   }
+  if (r.exitKind === "completed" && r.overloadRetries) lines.push(`model overload: auto-resumed ${r.overloadRetries} times`);
   if (o.continued) {
     lines.push(`continued: the interrupted run in this cwd (session ${o.continued.sessionId}); codex kept its context and partial edits and was told your new message wins. Pass fresh: true to start over instead.`);
   }

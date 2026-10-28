@@ -204,6 +204,10 @@
   @keyframes hazard { to { background-position: 0 17px; } }
   .alert.err { background: rgba(255,77,94,.07); color: var(--err); border-color: rgba(255,77,94,.28); }
   .alert b { font-weight: 650; }
+  .alert-body { flex: 1; min-width: 0; line-height: 1.55; }
+  .alert-close { flex: none; display: grid; place-items: center; width: 28px; height: 28px; margin: -5px -8px 0 0; padding: 0;
+    border: 0; border-radius: 8px; background: transparent; color: currentColor; font: 700 23px/1 system-ui, sans-serif; opacity: .72; cursor: pointer; }
+  .alert-close:hover, .alert-close:focus-visible { background: rgba(255,255,255,.09); opacity: 1; outline: none; }
   /* 调用记录：航迹列表 */
   .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-left: auto; }
   .toolbar input[type=search] { width: 270px; }
@@ -547,6 +551,11 @@
   .sw-row { display: flex; align-items: flex-start; gap: 14px; border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; background: rgba(255,255,255,.015); }
   .sw-row .muted { font-size: 12px; line-height: 1.6; margin-top: 3px; }
   .sw-state { font-size: 13px; font-weight: 600; }
+  .ov-row { display: flex; flex-wrap: wrap; gap: 10px 18px; border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px; background: rgba(255,255,255,.015); }
+  .ov-row label { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+  .ov-row input { font: 12.5px var(--mono); color: var(--text); background: rgba(0,0,0,.25); border: 1px solid var(--line2); border-radius: 8px; padding: 5px 8px; }
+  .ov-row input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 4px var(--accent-soft); }
+  .ov-row input[aria-invalid="true"] { border-color: var(--err, #e5484d); }
   .pswitch { flex: none; position: relative; width: 44px; height: 24px; padding: 0; border-radius: 999px; border: 1px solid var(--line2); background: rgba(0,0,0,.3); transition: background .25s, border-color .25s; }
   .pswitch i { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform .25s var(--out), background .25s; }
   .pswitch[aria-checked="true"] { background: var(--accent-soft); border-color: var(--accent); box-shadow: 0 0 16px -6px var(--accent-glow); }
@@ -811,6 +820,13 @@
         </div>
       </section>
       <section class="p-sec">
+        <h3>满载容忍 <small>模型满载时服务端自己等待后续跑，用完才叫醒 Claude</small></h3>
+        <div class="ov-row">
+          <label title="每次满载后等几秒再续跑；连续没有进展的失败超过这里的个数就叫醒 Claude。有进展就从头计。单个值 0–3600">退避（秒）<input id="pOvBackoff" size="22" placeholder="30, 60, 60, 120, 120"></label>
+          <label title="一次运行最多自动续跑几次，不管有没有进展">总次数上限<input id="pOvMax" type="number" min="0" step="1" style="width:72px"></label>
+        </div>
+      </section>
+      <section class="p-sec">
         <h3>提示词</h3>
         <div class="p-texts">
           <div class="p-text"><label for="pGuide">Claude：怎么选档位、哪些活自己干</label><textarea id="pGuide"></textarea></div>
@@ -888,11 +904,10 @@ function fmtRel(ms) {
 const base = (p) => p ? String(p).split(/[\\/]/).filter(Boolean).pop() : "";
 const toMs = (v) => typeof v === "number" ? v : v ? Date.parse(v) : NaN;
 const lastSeenAt = (r) => [r.heartbeatAt, r.lastEventAt, r.startedAt].map(toMs).filter(Number.isFinite).reduce((a, b) => Math.max(a, b), 0);
-const ORPHANED_RUNNING_MS = 2 * 60 * 60 * 1000;
-const isLongOrphaned = (r, now = Date.now()) => r.state === "running" && r.health === "orphaned" && now - lastSeenAt(r) > ORPHANED_RUNNING_MS;
-const isUiRunning = (r) => r.state === "running" && !isLongOrphaned(r);
-const dur = (r) => r.durationMs ?? (r.endedAt && r.startedAt ? r.endedAt - r.startedAt : r.state === "running" ? Math.max(0, (isLongOrphaned(r) ? lastSeenAt(r) : Date.now()) - r.startedAt) : null);
-const isBad = (r) => isLongOrphaned(r) || r.state === "error" || r.state === "interrupted" || r.state === "user_interrupted" || r.reportStatus === "blocked";
+const isOrphaned = (r) => r.state === "running" && r.health === "orphaned";
+const isUiRunning = (r) => r.state === "running" && !isOrphaned(r);
+const dur = (r) => r.durationMs ?? (r.endedAt && r.startedAt ? r.endedAt - r.startedAt : r.state === "running" ? Math.max(0, (isOrphaned(r) ? lastSeenAt(r) : Date.now()) - r.startedAt) : null);
+const isBad = (r) => isOrphaned(r) || r.state === "error" || r.state === "interrupted" || r.state === "user_interrupted" || r.reportStatus === "blocked";
 
 const STATE = { running: ["进行中", "b-run"], ok: ["完成", "b-ok"], error: ["出错", "b-err"], interrupted: ["已中断", "b-warn"], user_interrupted: ["你中断了", "b-warn"] };
 const REPORT = { done: ["完成", "b-ok"], partial: ["部分完成", "b-warn"], blocked: ["受阻", "b-err"], needs_decision: ["待决策", "b-warn"] };
@@ -900,7 +915,17 @@ const badge = ([t, c]) => `<span class="badge ${c}">${esc(t)}</span>`;
 const HEALTH = { active: ["运行中", "b-run"], quiet: ["无输出", "b-warn"], stalled: ["疑似卡住", "b-err"], orphaned: ["已失联", "b-err"] };
 const EXIT = { stalled: "卡住被终止", timeout: "超时", crashed: "异常退出", api_error: "API 错误", cancelled: "已取消" };
 const ERRK = { quota: "额度用尽", rate_limit: "限流", auth: "认证失败", network: "网络", context: "上下文超限" };
-const PHASE = { codex: "Codex 执行中", checks: "主机检查中", done: "收尾" };
+const PHASE = { codex: "Codex 执行中", overload_wait: "满载等待", checks: "主机检查中", done: "收尾" };
+/** "满载等待 2/5 · 40 秒后续跑" while waiting; "满载续跑 n 次" once codex is running again. */
+function overloadText(r) {
+  const o = r.overload;
+  if (!o) return "";
+  if (r.phase === "overload_wait") {
+    const s = o.nextRetryAt ? Math.max(0, Math.round((toMs(o.nextRetryAt) - Date.now()) / 1000)) : null;
+    return `满载等待 ${o.consecutive}/${o.limit}${s !== null ? ` · ${s} 秒后续跑` : ""}`;
+  }
+  return o.totalRetries ? `满载续跑 ${o.totalRetries} 次` : "";
+}
 const ago = (v) => { const ms = toMs(v); return ms ? fmtDur(Math.max(0, Date.now() - ms)) : "—"; };
 function statusBadge(r) {
   if (r.state === "running" && HEALTH[r.health]) {
@@ -914,7 +939,8 @@ function statusBadge(r) {
 /** One line of live state for a running run: phase, last codex event, the command in flight. */
 function liveText(r) {
   if (!isUiRunning(r)) return "";
-  const parts = [PHASE[r.phase] || "运行中"];
+  const parts = [r.phase === "overload_wait" ? overloadText(r) : PHASE[r.phase] || "运行中"];
+  if (r.phase !== "overload_wait" && overloadText(r)) parts.push(overloadText(r));
   if (r.lastEventAt) parts.push(`最后事件 ${ago(r.lastEventAt)}前`);
   const f = r.inflight;
   if (f) parts.push(`${f.type === "command_execution" ? "执行" : f.type} ${f.command ? `「${f.command.slice(0, 120)}」` : ""}已 ${ago(f.startedAt)}`);
@@ -1024,18 +1050,26 @@ const DIST_COLORS = ["#c6ff3d", "#4de3ff", "#ff6a3d", "#ffb547", "#b58cff", "#ff
 function renderPending(pending, tasks) {
   const linkedRun = (item) => {
     const runs = data?.runs || [];
+    const startedAt = toMs(item.startedAt);
+    const closest = (candidates) => candidates
+      .map((r) => ({ run: r, delta: Math.abs(toMs(r.startedAt) - startedAt) }))
+      .filter((x) => Number.isFinite(x.delta) && x.delta < 2 * 60 * 1000)
+      .sort((a, b) => a.delta - b.delta)[0]?.run;
     if (item.sessionId) {
-      const bySession = runs.find((r) => r.sessionId === item.sessionId);
+      const bySession = closest(runs.filter((r) => r.sessionId === item.sessionId));
       if (bySession) return bySession;
     }
-    return item.title ? runs.find((r) => titleOf(r) === item.title && Math.abs(r.startedAt - item.startedAt) < 2 * 60 * 1000) : undefined;
+    return item.title ? closest(runs.filter((r) => titleOf(r) === item.title)) : undefined;
   };
-  const staleOrphan = (item) => isLongOrphaned(linkedRun(item) || {});
-  const runningTasks = tasks.filter((t) => t.status === "running" && !staleOrphan(t));
+  const staleRun = (item) => {
+    const run = linkedRun(item);
+    return !!run && (run.state !== "running" || isOrphaned(run));
+  };
+  const runningTasks = tasks.filter((t) => t.status === "running" && !staleRun(t));
   const taskOf = (p) => p.sessionId && runningTasks.find((t) => t.sessionId === p.sessionId);
   // An async delegate writes both a pending record and a task record for the same run: show it once.
   const items = [
-    ...pending.filter((p) => p.state !== "running" || !staleOrphan(p)).map((p) => {
+    ...pending.filter((p) => p.state !== "running" || !staleRun(p)).map((p) => {
       const run = linkedRun(p);
       return { kind: p.state === "interrupted" ? "被中断" : "运行中", title: p.title || taskOf(p)?.title || (run && titleOf(run)) || (p.prompt || "").split("\n")[0], cwd: p.cwd, t: p.startedAt, sid: p.sessionId, live: p.state === "running", runId: run?.id };
     }),
@@ -1113,12 +1147,52 @@ function render() {
 }
 
 function showAlerts(msgs) {
-  $("#alert").hidden = !msgs.length;
-  $("#alert").innerHTML = msgs.map(([cls, icon, html]) => `<div class="alert ${cls}" role="status"><span aria-hidden="true">${icon}</span><div>${html}</div></div>`).join("");
+  const root = $("#alert");
+  root.hidden = !msgs.length;
+  root.innerHTML = msgs.map(([cls, icon, html, keys]) => {
+    const close = keys?.length
+      ? '<button type="button" class="alert-close" aria-label="关闭此提示" title="关闭此提示" data-dismiss-keys="' + esc(JSON.stringify(keys)) + '">×</button>'
+      : "";
+    return '<div class="alert ' + esc(cls) + '" role="status"><span aria-hidden="true">' + icon + '</span><div class="alert-body">' + html + '</div>' + close + '</div>';
+  }).join("");
 }
+const ALERT_TTL_MS = 12 * 60 * 60 * 1000;
+const ALERT_DISMISS_STORAGE_KEY = "codex-delegate-dismissed-alerts-v1";
+function readDismissedAlertKeys() {
+  try {
+    const value = JSON.parse(localStorage.getItem(ALERT_DISMISS_STORAGE_KEY) || "[]");
+    return new Set(Array.isArray(value) ? value.filter((key) => typeof key === "string") : []);
+  } catch { return new Set(); }
+}
+function writeDismissedAlertKeys(keys) {
+  try { localStorage.setItem(ALERT_DISMISS_STORAGE_KEY, JSON.stringify([...keys])); } catch {}
+}
+function alertAt(kind, run) {
+  return toMs(kind === "sick" ? run.lastEventAt || run.startedAt : run.endedAt || run.startedAt);
+}
+function alertItemKey(kind, run) {
+  return kind + ":" + String(run.id || "") + ":" + String(alertAt(kind, run));
+}
+function pruneDismissedAlertKeys(eligible) {
+  const previous = readDismissedAlertKeys();
+  const retained = new Set([...previous].filter((key) => eligible.has(key)));
+  if (retained.size !== previous.size) writeDismissedAlertKeys(retained);
+  return retained;
+}
+$("#alert").addEventListener("click", (event) => {
+  const button = event.target instanceof Element ? event.target.closest(".alert-close") : null;
+  if (!button) return;
+  let keys;
+  try { keys = JSON.parse(button.dataset.dismissKeys || "[]"); } catch { return; }
+  if (!Array.isArray(keys)) return;
+  const dismissed = readDismissedAlertKeys();
+  for (const key of keys) if (typeof key === "string") dismissed.add(key);
+  writeDismissedAlertKeys(dismissed);
+  button.closest(".alert")?.remove();
+  $("#alert").hidden = !$("#alert").children.length;
+});
 let nextLoadAt = 0;
-const WAITING_ALERT_TTL_MS = 12 * 60 * 60 * 1000;
-let waitingAlertTimer = 0;
+let alertExpiryTimer = 0;
 function restartCountdown() {
   nextLoadAt = Date.now() + 10000;
   const b = $("#refresh");
@@ -1132,19 +1206,34 @@ async function load() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     data = await res.json();
     data.runs ||= [];
-    const sick = data.runs.filter((r) => r.state === "running" && (r.health === "stalled" || r.health === "orphaned"));
+    const now = Date.now();
+    const sick = data.runs.filter((r) => r.state === "running" && (r.health === "stalled" || r.health === "orphaned") &&
+      Number.isFinite(alertAt("sick", r)) && now - alertAt("sick", r) < ALERT_TTL_MS);
     // Waiting on Claude: codex asked for a decision (or stopped short) and no later run resumed that session.
     const waiting = data.runs.filter((r) => ["needs_decision", "partial", "blocked"].includes(r.reportStatus) && r.sessionId &&
-      Date.now() - (r.endedAt || r.startedAt) < WAITING_ALERT_TTL_MS &&
+      Number.isFinite(alertAt("waiting", r)) && now - alertAt("waiting", r) < ALERT_TTL_MS &&
       !data.runs.some((x) => x.startedAt > r.startedAt && x.sessionId === r.sessionId));
-    clearTimeout(waitingAlertTimer);
-    if (waiting.length) {
-      const nextExpiry = Math.min(...waiting.map((r) => toMs(r.endedAt || r.startedAt) + WAITING_ALERT_TTL_MS));
-      waitingAlertTimer = setTimeout(load, Math.max(0, nextExpiry - Date.now()) + 25);
+    clearTimeout(alertExpiryTimer);
+    const expiries = [...sick.map((r) => alertAt("sick", r)), ...waiting.map((r) => alertAt("waiting", r))]
+      .filter(Number.isFinite).map((at) => at + ALERT_TTL_MS);
+    if (expiries.length) {
+      const nextExpiry = Math.min(...expiries);
+      alertExpiryTimer = setTimeout(load, Math.max(0, nextExpiry - Date.now()) + 25);
     }
+    const eligibleKeys = new Set([
+      ...sick.map((r) => alertItemKey("sick", r)),
+      ...waiting.map((r) => alertItemKey("waiting", r)),
+    ]);
+    const dismissed = pruneDismissedAlertKeys(eligibleKeys);
+    const visibleSick = sick.filter((r) => !dismissed.has(alertItemKey("sick", r)));
+    const visibleWaiting = waiting.filter((r) => !dismissed.has(alertItemKey("waiting", r)));
     const msgs = [];
-    if (sick.length) msgs.push(["err", "⚠", `<b>${sick.length} 个调用疑似卡住或已失联</b>：${sick.map((r) => `「${esc(titleOf(r))}」${HEALTH[r.health][0]}，最后事件 ${ago(r.lastEventAt || r.startedAt)}前`).join("；")}`]);
-    if (waiting.length) msgs.push(["", "⏸", `<b>${waiting.length} 个调用在等 Claude 处理</b>（尚未续接）：${waiting.map((r) => `「${esc(titleOf(r))}」${REPORT[r.reportStatus][0]}，${ago(r.endedAt)}前结束`).join("；")}`]);
+    if (visibleSick.length) msgs.push(["err", "⚠", "<b>" + visibleSick.length + " 个调用疑似卡住或已失联</b>：" +
+      visibleSick.map((r) => "「" + esc(titleOf(r)) + "」" + HEALTH[r.health][0] + "，最后事件 " + ago(r.lastEventAt || r.startedAt) + "前").join("；"),
+      visibleSick.map((r) => alertItemKey("sick", r))]);
+    if (visibleWaiting.length) msgs.push(["", "⏸", "<b>" + visibleWaiting.length + " 个调用在等 Claude 处理</b>（尚未续接）：" +
+      visibleWaiting.map((r) => "「" + esc(titleOf(r)) + "」" + REPORT[r.reportStatus][0] + "，" + ago(r.endedAt || r.startedAt) + "前结束").join("；"),
+      visibleWaiting.map((r) => alertItemKey("waiting", r))]);
     showAlerts(msgs);
     render();
   } catch (e) {
@@ -1372,7 +1461,7 @@ function visibleEntries() {
 }
 function tlFoot() {
   const r = view.run || {};
-  if (isLongOrphaned(r)) return `<div class="end-line">已失联</div>`;
+  if (isOrphaned(r)) return `<div class="end-line">已失联</div>`;
   if (r.state === "user_interrupted") {
     const why = view.io?.interrupt?.reason;
     return `<div class="end-line">你在 ${esc(fmtFull(r.endedAt))} 中断了这次运行 · ${why ? `理由：${esc(why.slice(0, 120))}` : "未写理由"}</div>`;
@@ -1397,7 +1486,7 @@ function tlBar() {
 function renderTimeline() {
   const body = $("#dlgBody");
   if (!$("#tl") || $("#tl").dataset.mode !== view.mode) { body.innerHTML = tlBar(); $("#tl").dataset.mode = view.mode; }
-  const empty = (has) => `<div class="empty">${has ? "没有匹配的条目" : view.loadError ? esc(view.loadError) : isLongOrphaned(view.run || {}) ? "已失联" : isUiRunning(view.run || {}) ? "等待 Codex 的第一条消息…" : "加载中…"}</div>`;
+  const empty = (has) => `<div class="empty">${has ? "没有匹配的条目" : view.loadError ? esc(view.loadError) : isOrphaned(view.run || {}) ? "已失联" : isUiRunning(view.run || {}) ? "等待 Codex 的第一条消息…" : "加载中…"}</div>`;
   if (view.mode === "chat") {
     const items = buildConvo(view.entries);
     const says = items.filter((x) => x.type === "say").length, steps = items.filter((x) => x.type === "steps").reduce((a, g) => a + g.steps.length, 0);
@@ -1443,7 +1532,7 @@ function renderStrip(r) {
   if (el.hidden) return;
   el.className = `strip ${liveCls(r)}`;
   const f = r.inflight;
-  el.innerHTML = `<b>${esc(PHASE[r.phase] || "运行中")}</b><span>已运行 ${esc(ago(r.startedAt))}</span>
+  el.innerHTML = `<b>${esc(r.phase === "overload_wait" ? overloadText(r) : PHASE[r.phase] || "运行中")}</b>${r.phase !== "overload_wait" && overloadText(r) ? `<span>${esc(overloadText(r))}</span>` : ""}<span>已运行 ${esc(ago(r.startedAt))}</span>
     <span>最后事件 ${esc(r.lastEventAt ? ago(r.lastEventAt) + "前" : "—")}</span>${r.heartbeatAt ? `<span>心跳 ${esc(ago(r.heartbeatAt))}前</span>` : ""}
     ${f ? `<span class="cmd" title="${esc(f.command || "")}">进行中（${esc(ago(f.startedAt))}）：${esc(f.command || f.type)}</span>` : ""}`;
 }
@@ -1901,7 +1990,17 @@ const collect = () => ({
   guidance: $("#pGuide").value, codexGuidance: $("#pCodex").value, tiers: readTiers(),
   models: [...document.querySelectorAll('#pModels .chip[aria-pressed="true"]')].map((c) => c.value),
   sandboxWrites: $("#pSandbox").getAttribute("aria-checked") === "true",
+  overload: readOverload(),
 });
+/** The backoff field is a comma list; an unparsable value is sent as-is so the server rejects it with a message. */
+function readOverload() {
+  const raw = $("#pOvBackoff").value.trim();
+  const backoff = raw.split(/[\s,，]+/).filter(Boolean).map(Number);
+  const ok = backoff.length > 0 && backoff.every((v) => Number.isInteger(v) && v >= 0 && v <= 3600);
+  $("#pOvBackoff").setAttribute("aria-invalid", ok ? "false" : "true");
+  const max = Number($("#pOvMax").value);
+  return { ...pol.policy.overload, backoff_s: ok ? backoff : raw, max_total_retries: $("#pOvMax").value === "" ? NaN : max };
+}
 function setSandbox(on) {
   $("#pSandbox").setAttribute("aria-checked", on);
   $("#pSandboxState").textContent = on ? "开启 · 写任务在 workspace-write 沙箱里跑" : "关闭 · 写任务直接放开权限";
@@ -1910,6 +2009,8 @@ function fillForm(p) {
   $("#pGuide").value = p.guidance;
   $("#pCodex").value = p.codexGuidance;
   setSandbox(!!p.sandboxWrites);
+  $("#pOvBackoff").value = (p.overload?.backoff_s ?? [30, 60, 60, 120, 120]).join(", ");
+  $("#pOvMax").value = p.overload?.max_total_retries ?? 30;
   renderTiers(p.tiers);
   renderChips(p.models);
   markDirty();

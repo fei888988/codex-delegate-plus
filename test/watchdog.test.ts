@@ -191,7 +191,7 @@ test("exit classification requires turn.completed and distinguishes API errors a
 
 test("error text classification", () => {
   for (const [text, kind] of [["usage limit reached", "quota"], ["429 too many requests", "rate_limit"], ["invalid API key", "auth"],
-    ["ECONNRESET", "network"], ["context window exceeded", "context"], ["mystery", "other"]]) assert.equal(classifyError(text!), kind);
+    ["ECONNRESET", "network"], ["model at capacity", "overloaded"], ["server_overloaded", "overloaded"], ["context window exceeded", "context"], ["mystery", "other"]]) assert.equal(classifyError(text!), kind);
 });
 
 test("host checks stop on idle output, record startedAt, and can disable idle detection", async () => {

@@ -15,12 +15,13 @@ export interface StallControl { evidenceSampler?: EvidenceSampler; rearm?: (seco
 export interface CodexProgress { commands?: CommandTiming[]; denials?: Denials; stallWindowSince?: number; suspicion?: Suspicion; effectiveThresholdSec?: number; matchedRule?: string; codexPid?: number; lastEventAt: number; inflight?: InflightItem; turnId?: string; steers?: SteerRecord[]; kept?: KeptCommand[] }
 export interface Stall { kind: "silent" | "command"; idleMs: number; command?: string; commandStartedAt?: number }
 export type ExitKind = "user_interrupted" | "completed" | "timeout" | "stalled" | "cancelled" | "crashed" | "api_error";
-export type ErrorKind = "quota" | "rate_limit" | "auth" | "network" | "context" | "other";
+export type ErrorKind = "quota" | "rate_limit" | "auth" | "network" | "overloaded" | "context" | "other";
 
 export function classifyError(text: string): ErrorKind {
   if (/quota|usage limit|insufficient_quota|credits|billing|exceeded.*usage/i.test(text)) return "quota";
   if (/rate.?limit|429|too many requests/i.test(text)) return "rate_limit";
   if (/auth|401|403|api.?key|unauthorized|forbidden|log.?in/i.test(text)) return "auth";
+  if (/at capacity|overloaded|server_overloaded/i.test(text)) return "overloaded";
   if (/network|connect|ECONN|ENOTFOUND|fetch failed|socket|stream disconnect|timed? ?out|\b50[234]\b/i.test(text)) return "network";
   if (/context|token limit|too many tokens|maximum.*tokens/i.test(text)) return "context";
   return "other";
@@ -62,6 +63,7 @@ export interface RunOptions {
   onSession?: (id: string) => void;
   /** Called with the codex process id right after it starts. */
   onSpawn?: (pid: number) => void;
+  overload?: { backoff_s: number[]; max_total_retries: number; onUpdate?: (state: { phase: "overload_wait" | "codex"; attempt: number; consecutive: number; limit: number; totalRetries: number; nextRetryAt?: number; lastProgressAt?: number; lastError?: string }) => void };
 }
 
 export interface ToolCall {
@@ -106,6 +108,10 @@ export interface RunResult {
   rateLimits?: RateLimits;
   /** App-server only: long commands kept running across a redirect, and what became of them. */
   kept?: KeptCommand[];
+  overloadRetries?: number;
+  overloadLastProgressAt?: number;
+  overloadConsecutive?: number;
+  overloadDurationMs?: number;
 }
 
 const toml = (v: string) => JSON.stringify(v);
@@ -156,6 +162,7 @@ export class EventCollector {
   fileChanges: FileChange[] = [];
   tokens = { input: 0, cachedInput: 0, output: 0, reasoning: 0 };
   turns = 0;
+  private lastUsage = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 };
   warnings: string[] = [];
   errors: string[] = [];
   raw: string[] = [];
@@ -197,18 +204,22 @@ export class EventCollector {
         this.item(e.item ?? {});
         break;
       }
-      case "turn.completed": {
-        this.turns++;
-        const u = e.usage ?? {};
-        this.tokens.input += u.input_tokens ?? 0;
-        this.tokens.cachedInput += u.cached_input_tokens ?? 0;
-        this.tokens.output += u.output_tokens ?? 0;
-        this.tokens.reasoning += u.reasoning_output_tokens ?? 0;
+      case "turn.completed":
+      case "turn.usage":
+      case "turn.failed": {
+        if (e.type === "turn.completed") this.turns++;
+        if (e.usage) {
+          const u = e.usage;
+          const base = e.cumulative ? this.lastUsage : undefined;
+          this.tokens.input += (u.input_tokens ?? 0) - (base?.input_tokens ?? 0);
+          this.tokens.cachedInput += (u.cached_input_tokens ?? 0) - (base?.cached_input_tokens ?? 0);
+          this.tokens.output += (u.output_tokens ?? 0) - (base?.output_tokens ?? 0);
+          this.tokens.reasoning += (u.reasoning_output_tokens ?? 0) - (base?.reasoning_output_tokens ?? 0);
+          if (e.cumulative) this.lastUsage = u;
+        }
+        if (e.type === "turn.failed") this.error(e.error?.message ?? e.error);
         break;
       }
-      case "turn.failed":
-        this.error(e.error?.message ?? e.error);
-        break;
       case "turn.redirected":
         // The interrupted turn's commands never complete; they must not hold the stall window.
         this.inflight.clear();
@@ -328,7 +339,9 @@ function runCodexProcess(o: RunOptions): Promise<RunResult> {
     // exec: the brief is read from stdin; closing it is also what tells codex the prompt is complete.
     // app-server: stdin carries JSON-RPC; the turn's events are translated into exec event lines.
     let exitTimer: ReturnType<typeof setTimeout> | undefined;
-    const turn = appServer ? new AppServerTurn(child, o, {
+    const turn = appServer ? new AppServerTurn(child, o.overload ? { ...o, overload: { ...o.overload,
+      onUpdate: state => o.overload?.onUpdate?.({ ...state, lastError: state.lastError === undefined ? undefined : redact(state.lastError) }),
+    } } : o, {
       emit: (event) => { const line = redactLine(JSON.stringify(event)); log?.write(`${line}\n`); collector.push(line); alive(); },
       activity: () => { collector.lastEventAt = Date.now(); alive(); },
       // Codex is done with the turn: let the server exit, and make sure it does.
@@ -379,7 +392,7 @@ function runCodexProcess(o: RunOptions): Promise<RunResult> {
     const selection = () => commandThreshold(command()?.command ?? "", o.stall?.command_s ?? (o.idleTimeoutMs === undefined ? config.commandIdleTimeoutSec : o.idleTimeoutMs / 1000), o.stall?.long_commands);
     const selectedRule = () => command() ? selection().matchedRule : undefined;
     const idleWindow = () => ({ key: command()?.id ?? "silent", since: windowSince ?? collector.lastEventAt,
-      timeoutMs: (threshold ?? (command() ? selection().seconds : o.stall?.silent_s ?? (o.idleTimeoutMs === undefined ? config.idleTimeoutSec : o.idleTimeoutMs / 1000))) * 1000 });
+      timeoutMs: turn?.waitingOnOverload ? 0 : (threshold ?? (command() ? selection().seconds : o.stall?.silent_s ?? (o.idleTimeoutMs === undefined ? config.idleTimeoutSec : o.idleTimeoutMs / 1000))) * 1000 });
     const watchdog = softWatchdog(child.pid, idleWindow, evidence => {
       const it = command();
       suspicion = { kind: it ? "command" : "silent", command: it?.command, commandStartedAt: it?.startedAt,
@@ -479,6 +492,10 @@ function runCodexProcess(o: RunOptions): Promise<RunResult> {
         steers: turn?.steers.length ? turn.steers : undefined,
         rateLimits: turn?.rateLimits,
         kept: turn?.kept.length ? turn.kept : undefined,
+        overloadRetries: turn?.overloadTotalRetries,
+        overloadLastProgressAt: turn?.overloadLastProgress,
+        overloadConsecutive: turn?.overloadConsecutiveFailures,
+        overloadDurationMs: turn?.overloadStart === undefined ? undefined : Date.now() - turn.overloadStart,
         stalled: !!stall,
         stall,
         sessionId: collector.sessionId,

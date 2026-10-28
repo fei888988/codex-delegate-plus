@@ -60,11 +60,11 @@ test("tools are listed and delegate defaults cwd to the server's cwd", async () 
   const list = await call("tools/list");
   const names = list.result.tools.map((t: any) => t.name);
   for (const n of ["delegate", "delegate_async", "task_result", "task_cancel", "task_inspect", "list_models"]) assert(names.includes(n), n);
-  // The lead must pick a cost tier from the policy (defaults: light, low, medium, high).
+  // The lead must pick a cost tier from the policy (defaults: light … deep).
   const schema = list.result.tools.find((t: any) => t.name === "delegate").inputSchema;
   assert(schema.required.includes("effort"));
   assert.deepEqual(schema.properties.sandbox.enum, ["read-only", "write"]);
-  assert.deepEqual(schema.properties.effort.enum, ["light", "low", "medium", "high"]);
+  assert.deepEqual(schema.properties.effort.enum, ["light", "scout", "routine", "ops", "low", "medium", "high", "deep"]);
   assert.match(list.result.tools.find((t: any) => t.name === "delegate").description, /Cost policy:/);
   const bad = await call("tools/call", { name: "delegate", arguments: { prompt: "x", effort: "xhigh" } });
   assert.equal(bad.result?.isError ?? !!bad.error, true, "xhigh rejected by the schema");
@@ -109,7 +109,7 @@ test("saving the policy file updates the tool definitions and notifies the clien
   } finally {
     // Later tests use the default tiers.
     rmSync(join(dir, "policy.json"), { force: true });
-    await waitFor(["light", "low", "medium", "high"]);
+    await waitFor(["light", "scout", "routine", "ops", "low", "medium", "high", "deep"]);
   }
 });
 

@@ -3,10 +3,11 @@ import { ack, claim, inboxPath, launcherJobs, markQueued, messages, readJson, ty
 import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import type { ErrorKind, RunOptions } from "./codex.ts";
+import { classifyError, type ErrorKind, type RunOptions } from "./codex.ts";
 import { join } from "node:path";
 import { keptPreamble, keptReminder, longrunCommand, refresh, runningLongruns, stopLongrun, untrackRunDir, type KeptCommand } from "./longruns.ts";
 import { killPidTree } from "./procs.ts";
+import { DEFAULT_POLICY } from "./policy.ts";
 
 /** Reminder turns codex gets for still-running kept commands before the server stops them. */
 const MAX_REMINDERS = 2;
@@ -74,7 +75,8 @@ export function kindFromInfo(info: unknown): ErrorKind | undefined {
   if (/rateLimit/i.test(key)) return "rate_limit";
   if (/unauthorized/i.test(key)) return "auth";
   if (/contextWindow/i.test(key)) return "context";
-  if (/serverOverloaded|internalServerError|ConnectionFailed|StreamDisconnected|TooManyFailedAttempts/i.test(key)) return "network";
+  if (/server_?Overloaded/i.test(key)) return "overloaded";
+  if (/internalServerError|ConnectionFailed|StreamDisconnected|TooManyFailedAttempts/i.test(key)) return "network";
   return undefined;
 }
 
@@ -203,6 +205,18 @@ export class AppServerTurn implements LiveTurn {
   private running = new Map<string, { pid: number; command: string }>();
   private redirecting?: { kill: boolean; go: (kept: KeptCommand[], killed: string[]) => void };
   private keptCommands: KeptCommand[] = [];
+  private overloadWaiting = false;
+  private overloadAttempt = 0;
+  private overloadConsecutive = 0;
+  private overloadTotal = 0;
+  private overloadProgress = 0;
+  private lastProgressAt = Date.now();
+  private lastOverloadError?: string;
+  private overloadStartedAt?: number;
+  private overloadTimer?: ReturnType<typeof setTimeout>;
+  private overloadGeneration = 0;
+  private completedItems = new Set<string>();
+  private turnError?: any;
   private reminders = 0;
   private child: ChildProcessWithoutNullStreams;
   private o: RunOptions;
@@ -215,6 +229,7 @@ export class AppServerTurn implements LiveTurn {
     child.stdin.on("error", () => {});
     child.on("close", () => {
       this.closed = true;
+      clearTimeout(this.overloadTimer);
       for (const p of this.pending.values()) p.reject(new Error("codex app-server exited"));
       this.pending.clear();
     });
@@ -276,6 +291,10 @@ export class AppServerTurn implements LiveTurn {
         this.running.delete(it.id);
         if (it.type === "userMessage") return this.consumed(it.clientId);
         if (it.type === "agentMessage" && typeof it.text === "string") this.lastText = it.text;
+        if (["agentMessage", "commandExecution", "fileChange"].includes(it.type) && !this.completedItems.has(it.id)) {
+          this.completedItems.add(it.id);
+          this.markProgress();
+        }
         this.hooks.emit({ type: "item.completed", item: execItem(it) });
         return;
       }
@@ -287,7 +306,7 @@ export class AppServerTurn implements LiveTurn {
         this.tokens(p.tokenUsage);
         return this.ping();
       case "turn/started":
-        this.turnId ??= p.turn?.id;
+        this.turnId = p.turn?.id ?? this.turnId;
         return this.ping();
       case "turn/completed":
         if (!this.turnId || p.turn?.id === this.turnId) this.complete(p.turn ?? {});
@@ -315,17 +334,35 @@ export class AppServerTurn implements LiveTurn {
       outputTokens: t.outputTokens - (l?.outputTokens ?? 0), reasoningOutputTokens: t.reasoningOutputTokens - (l?.reasoningOutputTokens ?? 0),
     };
     const b = this.usageBase;
+    const previousOutput = this.usage.output;
     this.usage = { input: t.inputTokens - b.inputTokens, cached: t.cachedInputTokens - b.cachedInputTokens,
       output: t.outputTokens - b.outputTokens, reasoning: t.reasoningOutputTokens - b.reasoningOutputTokens };
+    if (this.usage.output > previousOutput) this.markProgress();
+    this.emitUsage();
+  }
+
+  private markProgress() {
+    this.overloadProgress++;
+    this.lastProgressAt = Date.now();
+    this.overloadConsecutive = 0;
+    if (this.overloadAttempt && !this.overloadWaiting) this.publishOverload("codex");
+  }
+
+  private emitUsage() {
+    this.hooks.emit({ type: "turn.usage", cumulative: true, usage: { input_tokens: this.usage.input, cached_input_tokens: this.usage.cached,
+      output_tokens: this.usage.output, reasoning_output_tokens: this.usage.reasoning } });
   }
 
   private fail(error: any) {
+    this.turnError = error;
     const kind = kindFromInfo(error?.codexErrorInfo);
+    if ((kind ?? classifyError(String(error?.message ?? ""))) === "overloaded") return;
     if (kind) this.errorKinds.push(kind);
     this.hooks.emit({ type: "error", message: error?.message ?? "codex turn failed" });
   }
 
   private complete(turn: any, checkedQueue = false): void {
+    if (turn.status === "failed" && !turn.error && this.turnError) turn = { ...turn, error: this.turnError };
     if (turn.status === "completed" && this.redirecting) return this.complete({ ...turn, status: "interrupted" });
     if (turn.status === "completed" && !checkedQueue && !this.finished) {
       void this.serialize(async () => {
@@ -335,6 +372,11 @@ export class AppServerTurn implements LiveTurn {
       return;
     }
     if (this.finished) return;
+    if (this.overloadWaiting) return;
+    if (turn.status === "failed" && (kindFromInfo(turn.error?.codexErrorInfo) ?? classifyError(String(turn.error?.message ?? ""))) === "overloaded") {
+      void this.handleOverload(turn).catch(e => this.failRun(e));
+      return;
+    }
     const runDir = this.o.runDir;
     if (turn.status === "interrupted") {
       const redirect = this.redirecting;
@@ -384,10 +426,11 @@ export class AppServerTurn implements LiveTurn {
         k.outcome === "running" && stopLongrun(runDir, k.n, "codex ended the run without dealing with it") ? { ...k, outcome: "killed_forgotten" as const } : k);
     }
     this.finished = true;
+    this.emitUsage();
     const text = turn.items?.filter((i: any) => i.type === "agentMessage").at(-1)?.text ?? this.lastText;
     if (this.o.lastMessageFile && typeof text === "string") { try { writeFileSync(this.o.lastMessageFile, text); } catch {} }
     if (turn.status === "completed") {
-      this.hooks.emit({ type: "turn.completed", usage: { input_tokens: this.usage.input, cached_input_tokens: this.usage.cached,
+      this.hooks.emit({ type: "turn.completed", cumulative: true, usage: { input_tokens: this.usage.input, cached_input_tokens: this.usage.cached,
         output_tokens: this.usage.output, reasoning_output_tokens: this.usage.reasoning } });
     } else if (turn.status === "failed") {
       const kind = kindFromInfo(turn.error?.codexErrorInfo);
@@ -435,10 +478,82 @@ export class AppServerTurn implements LiveTurn {
   }
 
   private async startTurn(input: any[], clientUserMessageId?: string) {
+    this.overloadProgress = 0;
+    this.turnError = undefined;
     const turn = await this.rpc("turn/start", { threadId: this.threadId, input, ...(clientUserMessageId ? { clientUserMessageId } : {}),
       ...(this.o.effort ? { effort: this.o.effort } : {}), ...(this.outputSchema ? { outputSchema: this.outputSchema } : {}) });
     this.turnId = turn.turn?.id ?? this.turnId;
     this.hooks.emit({ type: "turn.started", turn_id: this.turnId });
+    this.overloadWaiting = false;
+    if (this.overloadAttempt) this.publishOverload("codex");
+  }
+
+  private async handleOverload(turn: any) {
+    this.captureOverloadKept();
+    this.running.clear();
+    this.emitUsage();
+    const policy = this.o.overload ?? DEFAULT_POLICY.overload;
+    const progressed = this.overloadProgress > 0;
+    if (progressed) this.overloadConsecutive = 0;
+    else this.overloadConsecutive++;
+    this.overloadAttempt++;
+    this.overloadStartedAt ??= Date.now();
+    this.lastOverloadError = String(turn.error?.message ?? "model overload");
+    const limit = policy.backoff_s.length;
+    if (this.overloadConsecutive > limit || this.overloadTotal >= policy.max_total_retries) return this.finishOverload(turn);
+    const wait = (policy.backoff_s[Math.max(0, this.overloadConsecutive - 1)] ?? 0) * 1000;
+    this.overloadWaiting = true;
+    const nextRetryAt = Date.now() + wait;
+    this.hooks.emit({ type: "turn.redirected", turn_id: turn.id, kept: this.kept.map(k => k.n), killed: [] });
+    this.publishOverload("overload_wait", nextRetryAt);
+    this.hooks.activity();
+    const generation = ++this.overloadGeneration;
+    this.overloadTimer = setTimeout(() => {
+      void this.serialize(async () => {
+        if (generation === this.overloadGeneration && this.overloadWaiting && !this.finished) await this.resumeOverload();
+      }).catch(e => this.failRun(e));
+    }, wait);
+  }
+
+  get waitingOnOverload() { return this.overloadWaiting; }
+
+  private publishOverload(phase: "codex" | "overload_wait", nextRetryAt?: number) {
+    this.o.overload?.onUpdate?.({ phase, attempt: this.overloadAttempt, consecutive: this.overloadConsecutive,
+      limit: (this.o.overload ?? DEFAULT_POLICY.overload).backoff_s.length, totalRetries: this.overloadTotal,
+      nextRetryAt, lastProgressAt: this.lastProgressAt, lastError: this.lastOverloadError });
+  }
+
+  private async resumeOverload(text?: string, record?: SteerRecord) {
+    clearTimeout(this.overloadTimer);
+    this.overloadGeneration++;
+    this.overloadWaiting = false;
+    if (this.finished || this.userInterrupt || this.o.signal?.aborted || this.closed) return;
+    this.overloadTotal++;
+    const open = this.kept.filter(k => k.outcome === "running");
+    const preamble = this.o.runDir && open.length ? keptPreamble(this.o.runDir, open, []) : "";
+    const message = `The previous turn was cut off by model overload (attempt ${this.overloadAttempt}); continue the original task from where it stopped, do not redo finished steps.`;
+    this.publishOverload("codex");
+    this.hooks.activity();
+    await this.startTurn([{ type: "text", text: message + "\n\n" + preamble + (text ?? ""), text_elements: [] }], record?.clientId);
+  }
+
+  private captureOverloadKept() {
+    const dir = this.o.runDir;
+    if (!dir) return;
+    const tracked = new Set(this.keptCommands.map(k => k.n));
+    for (const n of runningLongruns(dir)) if (!tracked.has(n)) this.keptCommands.push({ n, command: longrunCommand(dir, n), log: join(dir, `cmd-${n}.log`), keptAt: Date.now(), outcome: "running" });
+  }
+
+  private finishOverload(turn: any) {
+    this.finished = true;
+    this.overloadWaiting = false;
+    this.publishOverload("codex");
+    const kind = "overloaded" as const;
+    this.errorKinds.push(kind);
+    this.emitUsage();
+    this.hooks.emit({ type: "turn.failed", error: { message: turn.error?.message ?? "model overloaded" } });
+    for (const wake of this.waiters.values()) wake();
+    this.hooks.done();
   }
 
   /**
@@ -449,6 +564,19 @@ export class AppServerTurn implements LiveTurn {
     return this.serialize(() => this.redirectNow(text, opts));
   }
   private async redirectNow(text: string, opts: { kill?: boolean; waitMs?: number } = {}) {
+    if (this.overloadWaiting) {
+      const kept = this.kept.filter(k => k.outcome === "running");
+      const killed: string[] = [];
+      if (opts.kill && this.o.runDir) for (const k of kept) {
+        if (stopLongrun(this.o.runDir, k.n, "lead redirected with kill")) killed.push(k.command);
+      }
+      const record: SteerRecord = { at: Date.now(), text: text.slice(0, 500), clientId: `redirect-${randomUUID().slice(0, 8)}`, redirect: true };
+      this.steers.push(record);
+      this.hooks.emit({ type: "steer.sent", client_id: record.clientId, text: record.text, redirect: true });
+      try { await this.resumeOverload(text, record); }
+      catch (e) { this.failRun(e); throw e; }
+      return { consumed: true, record, kept: opts.kill ? [] : kept, killed };
+    }
     if (!this.threadId || !this.turnId) throw new Error("codex has not started its turn yet; try again in a few seconds");
     if (this.finished) throw new Error("codex already finished this turn");
     const record: SteerRecord = { at: Date.now(), text: text.slice(0, 500), clientId: `redirect-${randomUUID().slice(0, 8)}`, redirect: true };
@@ -486,9 +614,16 @@ export class AppServerTurn implements LiveTurn {
     return runDir ? (this.keptCommands = this.keptCommands.map((k) => refresh(runDir, k))) : this.keptCommands;
   }
 
+  get overloadTotalRetries() { return this.overloadTotal; }
+  get overloadLastProgress() { return this.lastProgressAt; }
+  get overloadConsecutiveFailures() { return this.overloadConsecutive; }
+  get overloadStart() { return this.overloadStartedAt; }
+
   private failRun(e: unknown) {
     if (this.finished) return;
     this.finished = true;
+    clearTimeout(this.overloadTimer);
+    this.emitUsage();
     this.hooks.emit({ type: "turn.failed", error: { message: e instanceof Error ? e.message : String(e) } });
     this.hooks.done();
   }
@@ -497,6 +632,22 @@ export class AppServerTurn implements LiveTurn {
     return this.serialize(() => this.steerNow(text, waitMs));
   }
   private async steerNow(text: string, waitMs: number) {
+    if (this.overloadWaiting) {
+      const record: SteerRecord = { at: Date.now(), text: text.slice(0, 500), clientId: `steer-${randomUUID().slice(0, 8)}` };
+      this.steers.push(record);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const seen = new Promise<void>(resolve => {
+        this.waiters.set(record.clientId, resolve);
+        timer = setTimeout(resolve, waitMs);
+      });
+      try {
+        await this.resumeOverload(text, record);
+        this.hooks.emit({ type: "steer.sent", client_id: record.clientId, text: record.text });
+        if (!record.consumedAt) await seen;
+        return { consumed: record.consumedAt !== undefined, record };
+      } catch (e) { this.failRun(e); throw e; }
+      finally { clearTimeout(timer); this.waiters.delete(record.clientId); }
+    }
     if (!this.threadId || !this.turnId) throw new Error("codex has not started its turn yet; try again in a few seconds");
     if (this.finished) throw new Error("codex already finished this turn");
     const record: SteerRecord = { at: Date.now(), text: text.slice(0, 500), clientId: `steer-${randomUUID().slice(0, 8)}` };
@@ -527,6 +678,13 @@ export class AppServerTurn implements LiveTurn {
     // A cancel wins over a redirect in progress: the interrupted turn ends the run.
     this.redirecting = undefined;
     if (this.finished || !this.threadId || !this.turnId) return;
+    if (this.overloadWaiting) {
+      clearTimeout(this.overloadTimer);
+      this.overloadWaiting = false;
+      this.overloadGeneration++;
+      this.complete({ status: "interrupted", id: this.turnId });
+      return;
+    }
     try { await this.rpc("turn/interrupt", { threadId: this.threadId, turnId: this.turnId }); } catch {}
   }
 }

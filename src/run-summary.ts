@@ -14,6 +14,7 @@ export interface RunSummary {
   origin?: "dashboard";
   patrol?: false | import("./patrol.ts").PatrolConfig;
   patrols?: import("./patrol.ts").PatrolRecord[];
+  overload?: { attempt: number; consecutive: number; limit: number; totalRetries: number; nextRetryAt?: number; lastProgressAt?: number; lastError?: string };
   parentRunId?: string;
   inputs?: import("./inbox.ts").InputMessage[];
   provider?: string;
@@ -28,7 +29,7 @@ export interface RunSummary {
   endedAt?: number;
   interruptedReason?: string;
   state: "running" | "ok" | "error" | "interrupted" | "user_interrupted" | "needs_decision" | "partial" | "blocked" | "cancelled";
-  phase?: "codex" | "checks" | "done";
+  phase?: "codex" | "overload_wait" | "checks" | "done";
   engine?: import("./config.ts").Engine;
   /** App-server: the active turn, and lead messages steered into it. */
   turnId?: string;
