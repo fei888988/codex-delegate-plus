@@ -594,7 +594,7 @@ function quotaReset(r: RunResult): string | undefined {
 
 export function formatOutcome(o: DelegateOutcome): string {
   const r = o.result;
-  const patrolLine = o.patrols?.length ? `patrol: ${o.patrols.length} checks, ${o.patrols.filter(p => p.error || (p.verdict !== "healthy" && !p.repeat)).length} alerts${o.patrols.some(p => p.repeat) ? `, ${o.patrols.filter(p => p.repeat).length} repeats` : ""}` : "";
+  const patrolLine = o.patrols?.length ? `patrol: ${o.patrols.length} checks, ${o.patrols.filter(p => p.error || (p.verdict !== "healthy" && !p.repeat && !p.held)).length} alerts${o.patrols.some(p => p.repeat) ? `, ${o.patrols.filter(p => p.repeat).length} repeats` : ""}${o.patrols.some(p => p.held && !p.error) ? `, ${o.patrols.filter(p => p.held && !p.error).length} notes` : ""}` : "";
   if (r.userInterrupt) return interruptText(r.userInterrupt, r.sessionId, r.inputs ?? [], r.interruptedJobs ?? [], o.runDir ?? "") + "\n" + renderInputs(r.inputs ?? []) + (patrolLine ? `\n${patrolLine}` : "");
   const model = o.model ?? (o.resumed ? "(same as session)" : `(codex config${configuredModel() ? `: ${configuredModel()}` : ""})`);
   const lines = [

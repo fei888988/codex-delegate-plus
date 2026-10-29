@@ -55,11 +55,11 @@ test("healthy patrol never wakes a waiting lead; read-only fresh runner options"
 });
 
 test("non-healthy wakes once with patrol_alert and next actions", async () => {
-  const s = setup(async () => result(verdict("off_course")));
+  const s = setup(async () => result(verdict("stalled")));
   const wait = waitTask(s.task, 10);
   await s.monitor.check(); await wait;
   const text = formatPatrolAlerts(s.task);
-  assert.match(text, /status: patrol_alert/); assert.match(text, /off_course/);
+  assert.match(text, /status: patrol_alert/); assert.match(text, /stalled/);
   assert.match(text, /test command idle/); assert.match(text, /next:.*task_result.*task_steer.*task_cancel/);
   assert.equal(newPatrolAlerts(s.task).length, 0); await s.monitor.stop();
 });
@@ -270,7 +270,7 @@ test("patrol requires positive warning signs for uncertain", async () => {
 
 for (const freshness of [false, true, undefined, "invalid"]) {
   test(`non-healthy freshness ${freshness}: wake or defer once`, async () => {
-    const s = setup(async () => result(JSON.stringify({ verdict: "off_course", reason: "same problem", evidence: ["worker command"], new: freshness })));
+    const s = setup(async () => result(JSON.stringify({ verdict: "stalled", reason: "same problem", evidence: ["worker command"], new: freshness })));
     let woke = false;
     const wait = waitTask(s.task, .08).then(() => { woke = true; });
     await s.monitor.check();
@@ -279,7 +279,7 @@ for (const freshness of [false, true, undefined, "invalid"]) {
       assert.equal(woke, false);
       assert.equal(s.meta.patrols![0]!.repeat, true);
       const { appendDeferredCheckpoints } = await import("../src/tasks.ts");
-      assert.match(appendDeferredCheckpoints(s.task, "result"), /patrol repeat: off_course.*same problem/);
+      assert.match(appendDeferredCheckpoints(s.task, "result"), /patrol repeat: stalled.*same problem/);
       assert.equal(appendDeferredCheckpoints(s.task, "result"), "result");
       const outcome = { result: result("", { warnings: [], tokens: { input: 0, cachedInput: 0, output: 0, reasoning: 0 } }), notes: [], changes: [], checks: [], patrols: s.meta.patrols } as unknown as import("../src/delegate.ts").DelegateOutcome;
       assert.match(formatOutcome(outcome), /patrol: 1 checks, 0 alerts, 1 repeats/);
@@ -350,5 +350,50 @@ test("repeat triage rearms watchdog without waking, preserving escalation", asyn
   assert.equal(newPatrolAlerts(s.task).length, 0);
   assert.equal(s.rearmed(), 1);
   s.meta.suspicion = suspicion(3); assert(wakeSuspicion(s.task));
+  await s.monitor.stop();
+});
+
+test("uncertain never wakes; off_course wakes only on the second in a row; notes ride along", async () => {
+  const { appendDeferredCheckpoints } = await import("../src/tasks.ts");
+  const verdicts: [string, boolean?][] = [["uncertain"], ["off_course", false], ["healthy"], ["off_course"], ["off_course", false], ["off_course", false]];
+  let i = 0;
+  const s = setup(async () => {
+    const [v, fresh] = verdicts[i++]!;
+    return result(JSON.stringify({ verdict: v, reason: `r${i}`, evidence: ["worker command"], ...(fresh === undefined ? {} : { new: fresh }) }));
+  });
+  s.meta.suspicion = suspicion(1);
+  s.monitor.observe(s.meta.suspicion); await s.monitor.check();
+  assert.equal(s.meta.patrols![0]!.held, true); assert.equal(newPatrolAlerts(s.task).length, 0);
+  assert.equal(s.rearmed(), 1, "a held verdict rearms the watchdog like a healthy one");
+  await s.monitor.check();
+  assert.equal(s.meta.patrols![1]!.held, true, "off_course after uncertain is a first off_course");
+  await s.monitor.check(); await s.monitor.check();
+  assert.equal(s.meta.patrols![3]!.held, true, "healthy in between resets the streak");
+  assert.equal(newPatrolAlerts(s.task).length, 0);
+  let woke = false;
+  const wait = waitTask(s.task, 10).then(() => { woke = true; });
+  await s.monitor.check(); await wait;
+  assert.equal(woke, true);
+  assert.equal(s.meta.patrols![4]!.confirmed, true, "second in a row confirms even when marked not new");
+  assert.match(formatPatrolAlerts(s.task), /status: patrol_alert[\s\S]*off_course/);
+  await s.monitor.check();
+  assert.equal(s.meta.patrols![5]!.repeat, true, "a restatement after the alert does not wake again");
+  assert.equal(newPatrolAlerts(s.task).length, 0);
+  const notes = appendDeferredCheckpoints(s.task, "result");
+  assert.match(notes, /patrol note: uncertain — r1/); assert.match(notes, /patrol note: off_course — r4/);
+  assert.match(notes, /patrol repeat: off_course — r6/);
+  const outcome = { result: result("", { warnings: [], tokens: { input: 0, cachedInput: 0, output: 0, reasoning: 0 } }), notes: [], changes: [], checks: [], patrols: s.meta.patrols } as unknown as import("../src/delegate.ts").DelegateOutcome;
+  assert.match(formatOutcome(outcome), /patrol: 6 checks, 1 alerts, 1 repeats, 3 notes/);
+  await s.monitor.stop();
+});
+
+test("a patrol failure still wakes and does not break an off_course streak", async () => {
+  const runs = [() => result(verdict("off_course")), () => result("bad JSON"), () => result(verdict("off_course"))];
+  let i = 0;
+  const s = setup(async () => runs[i++]!());
+  await s.monitor.check(); assert.equal(newPatrolAlerts(s.task).length, 0);
+  await s.monitor.check(); assert.equal(newPatrolAlerts(s.task).length, 1); formatPatrolAlerts(s.task);
+  await s.monitor.check();
+  assert.equal(s.meta.patrols![2]!.confirmed, true); assert.equal(newPatrolAlerts(s.task).length, 1);
   await s.monitor.stop();
 });
